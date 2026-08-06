@@ -12,10 +12,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
+from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter
+from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
-from ai_creation_canvas.config import Settings
+from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
 
@@ -87,12 +89,18 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(
-    settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None
-) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, portal_transport=None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
-    app.state.model_catalog = model_catalog or ModelCatalog(AdapterRegistry())
+    if model_catalog is None:
+        registry = AdapterRegistry()
+        if settings.services_config_path is not None:
+            declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
+            client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
+            for declaration in declarations:
+                registry.register_generation(PortalJobsAdapter(declaration, client))
+        model_catalog = ModelCatalog(registry)
+    app.state.model_catalog = model_catalog
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
     build_dir = build_dir.resolve(strict=False)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ai_creation_canvas.adapters.portal.client import PortalClient
@@ -90,6 +91,9 @@ class PortalJobsAdapter:
         )
         if response.status_code != 200 or len(response.content) > _MAX_CONFIG_BYTES:
             raise ValueError("Portal model configuration is unavailable")
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise ValueError("Portal model configuration is invalid")
         try:
             payload = response.json()
         except ValueError as error:
@@ -142,7 +146,8 @@ class ModelCatalog:
     async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> CatalogResult:
         models: list[ModelSpec] = []
         diagnostics: list[dict[str, str]] = []
-        for adapter in self._registry.generation_adapters():
+        adapters = self._registry.generation_adapters()
+        async def load(adapter):
             try:
                 if cookie_header is not None and isinstance(adapter, PortalCookieGenerationPort):
                     adapter_models = await adapter.list_models_with_cookie(context, cookie_header)
@@ -150,9 +155,19 @@ class ModelCatalog:
                     adapter_models = await adapter.list_models(context)
                 if any(model.service_id != adapter.service_id for model in adapter_models):
                     raise ValueError("adapter returned a mismatched service")
-                models.extend(adapter_models)
             except Exception:
+                return adapter, None
+            return adapter, adapter_models
+        results = await asyncio.gather(*(load(adapter) for adapter in adapters), return_exceptions=True)
+        for adapter, result in zip(adapters, results, strict=True):
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
                 diagnostics.append({"service_id": adapter.service_id, "code": "MODEL_CATALOG_UNAVAILABLE"})
+            elif result[1] is None:
+                diagnostics.append({"service_id": adapter.service_id, "code": "MODEL_CATALOG_UNAVAILABLE"})
+            else:
+                models.extend(result[1])
         duplicate_ids = {model.model_id for model in models if sum(other.model_id == model.model_id for other in models) > 1}
         if duplicate_ids:
             impacted = sorted({model.service_id for model in models if model.model_id in duplicate_ids})

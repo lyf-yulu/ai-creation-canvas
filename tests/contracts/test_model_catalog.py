@@ -57,7 +57,7 @@ async def test_catalog_rejects_duplicate_model_ids_across_services():
 async def test_portal_adapter_ignores_dangerous_unknown_fields_and_rejects_unsupported_operations():
     client = PortalClient(
         "https://portal.test", allowed_mounts=("/image-service",),
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"content-type": "application/json"}, json={
             "models": [{
                 "id": "image-a", "display_name": "Image A", "operations": ["image.generate"],
                 "script": "alert(1)", "upstream_url": "https://example.invalid", "parameter_schema": {},
@@ -75,7 +75,7 @@ async def test_portal_adapter_rejects_an_unbounded_parameter_schema():
         nested = {"nested": nested}
     client = PortalClient(
         "https://portal.test", allowed_mounts=("/image-service",),
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"content-type": "application/json"}, json={
             "models": [{"id": "image-a", "display_name": "Image A", "operations": ["image.generate"], "parameter_schema": nested}]
         })),
     )

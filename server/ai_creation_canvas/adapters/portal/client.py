@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -50,12 +52,22 @@ def _safe_path(value: str) -> str:
     return value
 
 
-def _base_url(value: str) -> str:
+def _base_url(value: str, *, allow_loopback_http: bool = False) -> str:
     if not isinstance(value, str):
         raise ValueError("Portal base URL must be a string")
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Portal base URL must have an http(s) scheme and host")
+    host = parsed.hostname
+    if any(ord(char) > 127 for char in host):
+        raise ValueError("Portal base URL host must be ASCII")
+    if parsed.scheme == "http":
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not allow_loopback_http or not loopback:
+            raise ValueError("Portal HTTP URL must be explicit loopback")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         raise ValueError("Portal base URL must not contain a path, query, or fragment")
     try:
@@ -76,9 +88,11 @@ class PortalClient:
         verify: bool | str | Path = True,
         timeout_seconds: float = _DEFAULT_TIMEOUT,
         allowed_methods: Sequence[str] = ("GET",),
+        allow_loopback_http: bool = False,
+        max_concurrency: int = 8,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._base_url = _base_url(portal_base_url)
+        self._base_url = _base_url(portal_base_url, allow_loopback_http=allow_loopback_http)
         self._base = urlsplit(self._base_url)
         self._allowed_mounts = frozenset(_safe_mount(mount) for mount in allowed_mounts)
         if not self._allowed_mounts:
@@ -92,6 +106,9 @@ class PortalClient:
             raise ValueError("allowed_methods contains unsupported methods")
         self._allowed_methods = methods
         self._transport = transport
+        if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or not 1 <= max_concurrency <= 128:
+            raise ValueError("max_concurrency must be a finite positive integer")
+        self._semaphore = asyncio.Semaphore(max_concurrency)
 
     @staticmethod
     def _validate_verify(verify: bool | str | Path) -> bool | str:
@@ -130,7 +147,7 @@ class PortalClient:
             return {}
         if not isinstance(value, str) or not value or len(value.encode("utf-8")) > _MAX_COOKIE_BYTES:
             raise ValueError("Cookie header is invalid")
-        if any(char in value for char in ("\r", "\n", "\x00")):
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError("Cookie header is invalid")
         return {"Cookie": value}
 
@@ -152,12 +169,14 @@ class PortalClient:
             raise ValueError("method is not allowed")
         target = self._target(mount, path)
         headers = self._cookie_header(cookie_header)
-        async with httpx.AsyncClient(
+        async with self._semaphore, httpx.AsyncClient(
             verify=self.verify,
             timeout=self._timeout,
             follow_redirects=False,
             transport=self._transport,
             headers={},
+            trust_env=False,
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
         ) as client:
             request = client.build_request(verb, target, params=params, json=json, headers=headers)
             response = await client.send(request, stream=True)
