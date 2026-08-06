@@ -55,3 +55,13 @@ it("keeps a short single-line user-facing 4xx message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "This item is not available." }), { status: 403, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "This item is not available." });
 });
+
+it.each(["path=%2Fprivate.py", "path=%5Cprivate.py", "path=%252Fprivate.py", "path=%255Cprivate.py", "bad%ZZ"])("rejects encoded or malformed unsafe detail %s", async (message) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message }), { status: 403, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
+});
+
+it("keeps a normal colon in a short user-facing message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Please retry: the item is locked." }), { status: 403, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "Please retry: the item is locked." });
+});
