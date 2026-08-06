@@ -27,6 +27,7 @@ node_modules/
 .cache/
 dist/
 build/
+web/dist/
 coverage/
 .pytest_cache/
 __pycache__/
