@@ -71,7 +71,7 @@ async function responseError(response: Response): Promise<ApiRequestError> {
     }
     const details: ApiError = {
         code: safeString(payload?.code, fallback.code, /^[a-z0-9_.-]{1,80}$/i),
-        message: safeMessage(payload?.message, fallback.message),
+        message: response.status >= 500 ? fallback.message : safeMessage(payload?.message, fallback.message),
         retryable: typeof payload?.retryable === "boolean" ? payload.retryable : fallback.retryable,
         request_id: safeString(payload?.request_id, requestId, /^[A-Za-z0-9_-]{1,128}$/),
         phase: safeString(payload?.phase, "response", /^[a-z0-9_.-]{1,80}$/i),

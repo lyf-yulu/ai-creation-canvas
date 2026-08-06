@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
-import { onStorageScopeCleared, scopedStore } from "@/storage/scope";
+import { captureScopedStore, isStorageLeaseActive, onStorageScopeCleared, StorageScopeChangedError, type ScopedStoreLease } from "@/storage/scope";
 
 export type UploadedImage = {
     url: string;
@@ -13,10 +13,13 @@ export type UploadedImage = {
 
 const objectUrls = new Map<string, string>();
 
-function store() {
-    const instance = scopedStore("image_files");
-    if (!instance) throw new Error("A Portal session is required before accessing image storage");
-    return instance;
+function lease() {
+    const captured = captureScopedStore("image_files");
+    if (!captured) throw new Error("A Portal session is required before accessing image storage");
+    return captured;
+}
+function assertActive(captured: ScopedStoreLease) {
+    if (!isStorageLeaseActive(captured)) throw new StorageScopeChangedError();
 }
 
 onStorageScopeCleared(() => {
@@ -25,20 +28,29 @@ onStorageScopeCleared(() => {
 });
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
+    const captured = lease();
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    assertActive(captured);
     const storageKey = `image:${nanoid()}`;
-    await store().setItem(storageKey, blob);
+    await captured.store.setItem(storageKey, blob);
+    assertActive(captured);
     const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
+    if (!isStorageLeaseActive(captured)) {
+        URL.revokeObjectURL(url);
+        throw new StorageScopeChangedError();
+    }
+    objectUrls.set(storageKey, url);
     return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
 }
 
 export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
+    const captured = lease();
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store().getItem<Blob>(storageKey);
+    const blob = await captured.store.getItem<Blob>(storageKey);
+    assertActive(captured);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -46,11 +58,16 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getImageBlob(storageKey: string) {
-    return store().getItem<Blob>(storageKey);
+    const captured = lease();
+    const blob = await captured.store.getItem<Blob>(storageKey);
+    assertActive(captured);
+    return blob;
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
-    await store().setItem(storageKey, blob);
+    const captured = lease();
+    await captured.store.setItem(storageKey, blob);
+    assertActive(captured);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
@@ -63,22 +80,27 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {
+    const captured = lease();
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
-            await store().removeItem(key);
+            assertActive(captured);
+            await captured.store.removeItem(key);
+            assertActive(captured);
         }),
     );
 }
 
 export async function cleanupUnusedImages(usedData: unknown) {
+    const captured = lease();
     const usedKeys = collectImageStorageKeys(usedData);
     const unused: string[] = [];
-    await store().iterate<unknown, void>((_value: unknown, key: string) => {
+    await captured.store.iterate<unknown, void>((_value: unknown, key: string) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
+    assertActive(captured);
     await deleteStoredImages(unused);
 }
 

@@ -7,6 +7,15 @@ let scopeVersion = 0;
 const instances = new Map<string, LocalForage>();
 const clearListeners = new Set<() => void>();
 
+export class StorageScopeChangedError extends Error {
+    constructor() {
+        super("Browser storage scope changed while the operation was pending");
+        this.name = "StorageScopeChangedError";
+    }
+}
+
+export type ScopedStoreLease = { store: LocalForage; version: number };
+
 function encodeScopeSegment(value: string) {
     return encodeURIComponent(value);
 }
@@ -49,6 +58,20 @@ export function scopedStore(storeName: string): LocalForage | null {
         instances.set(key, instance);
     }
     return instance;
+}
+
+export function captureScopedStore(storeName: string): ScopedStoreLease | null {
+    const store = scopedStore(storeName);
+    return store ? { store, version: scopeVersion } : null;
+}
+
+export function isStorageLeaseActive(lease: ScopedStoreLease) {
+    return isCurrentStorageScopeVersion(lease.version);
+}
+
+export function requireActiveStorageLease(lease: ScopedStoreLease) {
+    if (!isStorageLeaseActive(lease)) throw new StorageScopeChangedError();
+    return lease.store;
 }
 
 export function onStorageScopeCleared(listener: () => void) {

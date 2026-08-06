@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { localForageStorage } from "@/lib/localforage-storage";
 import { cleanupUnusedImages, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, resolveMediaUrl } from "@/services/file-storage";
+import { currentStorageScopeVersion, isCurrentStorageScopeVersion, StorageScopeChangedError } from "@/storage/scope";
 
 export type AssetKind = "text" | "image" | "video";
 export type TextAsset = AssetBase<"text"> & { data: { content: string } };
@@ -39,24 +40,42 @@ const ASSET_STORE_KEY = "infinite-canvas:asset_store";
 
 const assetStorage: PersistStorage<AssetStore> = {
     getItem: async (name) => {
+        const version = currentStorageScopeVersion();
         const value = await localForageStorage.getItem(name);
-        if (!value) return null;
+        if (!value || !isCurrentStorageScopeVersion(version)) return null;
         const parsed = JSON.parse(value) as StorageValue<AssetStore>;
-        parsed.state.assets = await Promise.all(
-            parsed.state.assets.map(async (asset) => {
-                if (asset.kind === "video" && asset.data.storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(asset.data.storageKey, asset.data.url) } };
+        try {
+            parsed.state.assets = await Promise.all(
+                parsed.state.assets.map(async (asset) => {
+                    if (!isCurrentStorageScopeVersion(version)) throw new StorageScopeChangedError();
+                    if (asset.kind === "video" && asset.data.storageKey) {
+                        const url = await resolveMediaUrl(asset.data.storageKey, asset.data.url);
+                        if (!isCurrentStorageScopeVersion(version)) throw new StorageScopeChangedError();
+                        return { ...asset, data: { ...asset.data, url } };
+                    }
                 if (asset.kind !== "image") return asset;
-                if (asset.data.storageKey)
+                    if (asset.data.storageKey) {
+                        const coverUrl = asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(asset.data.storageKey, asset.coverUrl) : asset.coverUrl;
+                        if (!isCurrentStorageScopeVersion(version)) throw new StorageScopeChangedError();
+                        const dataUrl = await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl);
+                        if (!isCurrentStorageScopeVersion(version)) throw new StorageScopeChangedError();
                     return {
                         ...asset,
-                        coverUrl: asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(asset.data.storageKey, asset.coverUrl) : asset.coverUrl,
-                        data: { ...asset.data, dataUrl: await resolveImageUrl(asset.data.storageKey, asset.data.dataUrl) },
+                            coverUrl,
+                            data: { ...asset.data, dataUrl },
                     };
+                    }
                 if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
                 const image = await uploadImage(asset.data.dataUrl);
+                    if (!isCurrentStorageScopeVersion(version)) throw new StorageScopeChangedError();
                 return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
-            }),
-        );
+                }),
+            );
+        } catch (error) {
+            if (error instanceof StorageScopeChangedError) return null;
+            throw error;
+        }
+        if (!isCurrentStorageScopeVersion(version)) return null;
         return parsed;
     },
     setItem: (name, value) => localForageStorage.setItem(name, JSON.stringify(value)),

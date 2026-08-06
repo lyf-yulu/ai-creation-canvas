@@ -1,14 +1,17 @@
 import { nanoid } from "nanoid";
-import { onStorageScopeCleared, scopedStore } from "@/storage/scope";
+import { captureScopedStore, isStorageLeaseActive, onStorageScopeCleared, StorageScopeChangedError, type ScopedStoreLease } from "@/storage/scope";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
 
 const objectUrls = new Map<string, string>();
 
-function store() {
-    const instance = scopedStore("media_files");
-    if (!instance) throw new Error("A Portal session is required before accessing media storage");
-    return instance;
+function lease() {
+    const captured = captureScopedStore("media_files");
+    if (!captured) throw new Error("A Portal session is required before accessing media storage");
+    return captured;
+}
+function assertActive(captured: ScopedStoreLease) {
+    if (!isStorageLeaseActive(captured)) throw new StorageScopeChangedError();
 }
 
 onStorageScopeCleared(() => {
@@ -17,20 +20,29 @@ onStorageScopeCleared(() => {
 });
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
+    const captured = lease();
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    assertActive(captured);
     const storageKey = `${prefix}:${nanoid()}`;
-    await store().setItem(storageKey, blob);
+    await captured.store.setItem(storageKey, blob);
+    assertActive(captured);
     const url = URL.createObjectURL(blob);
-    objectUrls.set(storageKey, url);
     const meta = blob.type.startsWith("video/") ? await readVideoMeta(url) : blob.type.startsWith("audio/") ? await readAudioMeta(url) : {};
+    if (!isStorageLeaseActive(captured)) {
+        URL.revokeObjectURL(url);
+        throw new StorageScopeChangedError();
+    }
+    objectUrls.set(storageKey, url);
     return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };
 }
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
+    const captured = lease();
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store().getItem<Blob>(storageKey);
+    const blob = await captured.store.getItem<Blob>(storageKey);
+    assertActive(captured);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -38,34 +50,47 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getMediaBlob(storageKey: string) {
-    return store().getItem<Blob>(storageKey);
+    const captured = lease();
+    const blob = await captured.store.getItem<Blob>(storageKey);
+    assertActive(captured);
+    return blob;
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {
-    await store().setItem(storageKey, blob);
+    const captured = lease();
+    await captured.store.setItem(storageKey, blob);
+    assertActive(captured);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
 }
 
 export async function deleteStoredMedia(keys: Iterable<string>) {
+    const captured = lease();
     await Promise.all(
         Array.from(new Set(keys)).map(async (key) => {
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
-            await store().removeItem(key);
+            assertActive(captured);
+            await captured.store.removeItem(key);
+            assertActive(captured);
         }),
     );
 }
 
 export async function cleanupUnusedMedia(usedData: unknown) {
+    const captured = lease();
     const usedKeys = collectMediaStorageKeys(usedData);
     const unused: string[] = [];
-    await store().iterate<unknown, void>((_value: unknown, key: string) => {
+    await captured.store.iterate<unknown, void>((_value: unknown, key: string) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
-    await Promise.all(unused.map((key) => store().removeItem(key)));
+    assertActive(captured);
+    await Promise.all(unused.map(async (key) => {
+        await captured.store.removeItem(key);
+        assertActive(captured);
+    }));
 }
 
 export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()) {

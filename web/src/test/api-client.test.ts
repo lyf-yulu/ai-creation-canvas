@@ -20,7 +20,7 @@ it.each([
         ),
     );
 
-    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ code, message: "safe failure", request_id: "req-123", phase: "submit", retryable } satisfies Partial<ApiRequestError>);
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ code, message: status >= 500 ? "The service failed to process the request." : "safe failure", request_id: "req-123", phase: "submit", retryable } satisfies Partial<ApiRequestError>);
 });
 
 it("normalizes non-JSON failures without exposing response content", async () => {
@@ -34,4 +34,9 @@ it("normalizes non-JSON failures without exposing response content", async () =>
         phase: "response",
         retryable: true,
     } satisfies Partial<ApiRequestError>);
+});
+
+it("uses the fixed local message for 5xx JSON responses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "internal_error", message: "Traceback /srv/private.py: secret" }), { status: 500, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "The service failed to process the request." });
 });

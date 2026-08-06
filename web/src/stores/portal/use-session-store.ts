@@ -4,7 +4,7 @@ import { fetchSession } from "@/api/session";
 import type { PortalSession } from "@/api/contracts";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { clearCanvasInMemory } from "@/stores/canvas/use-canvas-store";
 
 type PortalSessionStore = {
     session: PortalSession | null;
@@ -18,10 +18,8 @@ type PortalSessionStore = {
 let sessionVersion = 0;
 
 function clearInMemoryUserState() {
-    useCanvasStore.getState().replaceProjects([]);
-    useCanvasStore.setState({ hydrated: false });
-    useAssetStore.getState().replaceAssets([]);
-    useAssetStore.setState({ hydrated: false });
+    clearCanvasInMemory();
+    useAssetStore.setState({ assets: [], hydrated: false });
 }
 
 export const useSessionStore = create<PortalSessionStore>()((set, get) => ({
@@ -55,6 +53,7 @@ async function activateSession(version: number, session: PortalSession, environm
     set({ session: null, environment: null });
     await setStorageScope({ environment, userId: session.user_id });
     if (version !== sessionVersion) return;
+    const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
     await Promise.all([useCanvasStore.persist.rehydrate(), useAssetStore.persist.rehydrate()]);
     if (version === sessionVersion) set({ session, environment });
 }

@@ -1,33 +1,43 @@
 import type { StateStorage } from "zustand/middleware";
-import { currentStorageScopeVersion, isCurrentStorageScopeVersion, scopedStore } from "@/storage/scope";
+import { captureScopedStore, isStorageLeaseActive, type ScopedStoreLease } from "@/storage/scope";
+
+export function captureAppStorageLease() {
+    return captureScopedStore("app_state");
+}
+
+export async function setItemForLease(lease: ScopedStoreLease, name: string, value: string) {
+    if (!isStorageLeaseActive(lease)) return false;
+    await lease.store.setItem(name, value);
+    return isStorageLeaseActive(lease);
+}
 
 export const localForageStorage: StateStorage = {
     getItem: async (name) => {
         if (typeof window === "undefined") return null;
-        const version = currentStorageScopeVersion();
-        const store = scopedStore("app_state");
-        if (!store) return null;
+        const lease = captureAppStorageLease();
+        if (!lease) return null;
         try {
-            const value = (await store.getItem<string>(name)) || null;
-            return isCurrentStorageScopeVersion(version) ? value : null;
+            const value = (await lease.store.getItem<string>(name)) || null;
+            return isStorageLeaseActive(lease) ? value : null;
         } catch {
             return null;
         }
     },
     setItem: async (name, value) => {
         if (typeof window === "undefined") return;
-        const store = scopedStore("app_state");
-        if (!store) return;
+        const lease = captureAppStorageLease();
+        if (!lease) return;
         try {
-            await store.setItem(name, value);
+            await setItemForLease(lease, name, value);
         } catch { /* Do not fall back to an unscoped browser store. */ }
     },
     removeItem: async (name) => {
         if (typeof window === "undefined") return;
-        const store = scopedStore("app_state");
-        if (!store) return;
+        const lease = captureAppStorageLease();
+        if (!lease) return;
         try {
-            await store.removeItem(name);
+            if (!isStorageLeaseActive(lease)) return;
+            await lease.store.removeItem(name);
         } catch { /* Do not fall back to an unscoped browser store. */ }
     },
 };

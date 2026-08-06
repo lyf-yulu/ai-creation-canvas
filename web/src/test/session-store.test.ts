@@ -8,6 +8,7 @@ vi.mock("@/storage/scope", () => ({
     setStorageScope: vi.fn(async () => events.push("scope:set")),
 }));
 vi.mock("@/stores/canvas/use-canvas-store", () => ({
+    clearCanvasInMemory: () => events.push("canvas:clear"),
     useCanvasStore: {
         getState: () => ({ replaceProjects: () => events.push("canvas:clear") }),
         setState: () => events.push("canvas:reset"),
@@ -27,13 +28,13 @@ import { useSessionStore } from "@/stores/portal/use-session-store";
 it("clears the old in-memory canvas before loading the next Portal user scope", async () => {
     events.length = 0;
     await useSessionStore.getState().setSession(session, "test");
-    expect(events).toEqual(["scope:clear", "canvas:clear", "canvas:reset", "assets:clear", "assets:reset", "scope:set", "canvas:load", "assets:load"]);
+    expect(events).toEqual(["scope:clear", "canvas:clear", "assets:reset", "scope:set", "canvas:load", "assets:load"]);
     expect(useSessionStore.getState().session).toEqual(session);
 });
 
 it("logout releases the active scope and in-memory user state without deleting data", () => {
     events.length = 0;
     useSessionStore.getState().clearSession();
-    expect(events).toEqual(["scope:clear", "canvas:clear", "canvas:reset", "assets:clear", "assets:reset"]);
+    expect(events).toEqual(["scope:clear", "canvas:clear", "assets:reset"]);
     expect(useSessionStore.getState().session).toBeNull();
 });

@@ -2,7 +2,8 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
-import { localForageStorage } from "@/lib/localforage-storage";
+import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
+import type { ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -37,6 +38,15 @@ const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
+let queuedLease: ScopedStoreLease | null = null;
+
+export function clearCanvasInMemory() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    queuedPersistState = null;
+    queuedLease = null;
+    useCanvasStore.setState({ projects: [], hydrated: false });
+}
 
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
@@ -49,11 +59,16 @@ const canvasStorage: PersistStorage<CanvasStore> = {
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
+        const lease = captureAppStorageLease();
+        if (!lease) return;
         queuedPersistState = nextState;
+        queuedLease = lease;
         if (saveTimer) clearTimeout(saveTimer);
         saveTimer = setTimeout(() => {
             saveTimer = null;
-            void localForageStorage.setItem(name, JSON.stringify(value));
+            const scheduledLease = queuedLease;
+            queuedLease = null;
+            if (scheduledLease) void setItemForLease(scheduledLease, name, JSON.stringify(value));
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
