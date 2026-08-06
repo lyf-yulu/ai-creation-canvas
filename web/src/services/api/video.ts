@@ -1,6 +1,5 @@
 import { nanoid } from "nanoid";
-import { assetUrl } from "@/api/client";
-import { assetIdsForReferences, createJob, waitForJob } from "@/api/jobs";
+import { assetIdsForReferences, createJob, protectedResultUrl, waitForJob } from "@/api/jobs";
 import type { AiConfig } from "@/stores/use-config-store";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import type { ReferenceImage } from "@/types/image";
@@ -18,8 +17,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
 export async function pollVideoGenerationTask(_config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
         const job = await waitForJob(task.id, { signal: options?.signal });
-        if (!job.result?.asset_id) return { status: "failed", error: "视频任务没有返回受保护的资产结果" };
-        return { status: "completed", result: { url: assetUrl(job.result.asset_id), mimeType: job.result.mime_type } };
+        return { status: "completed", result: { url: protectedResultUrl(job) } };
     } catch (error) { return { status: "failed", error: error instanceof Error ? error.message : "视频任务失败" }; }
 }
 export async function requestVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationResult> {

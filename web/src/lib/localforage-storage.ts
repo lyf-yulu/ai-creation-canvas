@@ -1,34 +1,33 @@
-import localforage from "localforage";
 import type { StateStorage } from "zustand/middleware";
-
-localforage.config({
-    name: "infinite-canvas",
-    storeName: "app_state",
-});
+import { currentStorageScopeVersion, isCurrentStorageScopeVersion, scopedStore } from "@/storage/scope";
 
 export const localForageStorage: StateStorage = {
     getItem: async (name) => {
         if (typeof window === "undefined") return null;
+        const version = currentStorageScopeVersion();
+        const store = scopedStore("app_state");
+        if (!store) return null;
         try {
-            return (await localforage.getItem<string>(name)) || null;
+            const value = (await store.getItem<string>(name)) || null;
+            return isCurrentStorageScopeVersion(version) ? value : null;
         } catch {
-            return window.localStorage.getItem(name);
+            return null;
         }
     },
     setItem: async (name, value) => {
         if (typeof window === "undefined") return;
+        const store = scopedStore("app_state");
+        if (!store) return;
         try {
-            await localforage.setItem(name, value);
-        } catch {
-            window.localStorage.setItem(name, value);
-        }
+            await store.setItem(name, value);
+        } catch { /* Do not fall back to an unscoped browser store. */ }
     },
     removeItem: async (name) => {
         if (typeof window === "undefined") return;
+        const store = scopedStore("app_state");
+        if (!store) return;
         try {
-            await localforage.removeItem(name);
-        } catch {
-            window.localStorage.removeItem(name);
-        }
+            await store.removeItem(name);
+        } catch { /* Do not fall back to an unscoped browser store. */ }
     },
 };

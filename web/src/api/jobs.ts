@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, safeApiPath } from "./client";
 import type { JobRequest, JobState } from "./contracts";
 
 export const createJob = (job: JobRequest) => apiFetch<JobState>("/api/v1/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(job) });
@@ -21,9 +21,17 @@ export async function waitForJob(id: string, options: WaitOptions = {}): Promise
         if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
         const job = await getJob(id);
         if (job.status === "succeeded") return job;
-        if (job.status === "failed" || job.status === "cancelled") throw new Error(job.error || `Job ${job.status}`);
+        if (job.status === "failed" || (job as { status: string }).status === "cancelled") {
+            const error = job.error;
+            throw new Error(typeof error === "string" ? error : error?.message || `Job ${job.status}`);
+        }
         if (elapsed + pollIntervalMs > maxWaitMs) break;
         await sleep(pollIntervalMs);
     }
     throw new Error(`Job ${id} timed out`);
+}
+
+export function protectedResultUrl(job: JobState) {
+    if (!job.result_url) throw new Error("Job did not return a protected result URL");
+    return safeApiPath(job.result_url);
 }

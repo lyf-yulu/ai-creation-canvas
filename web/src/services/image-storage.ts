@@ -1,7 +1,6 @@
-import localforage from "localforage";
-
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
+import { onStorageScopeCleared, scopedStore } from "@/storage/scope";
 
 export type UploadedImage = {
     url: string;
@@ -12,13 +11,23 @@ export type UploadedImage = {
     mimeType: string;
 };
 
-const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
+
+function store() {
+    const instance = scopedStore("image_files");
+    if (!instance) throw new Error("A Portal session is required before accessing image storage");
+    return instance;
+}
+
+onStorageScopeCleared(() => {
+    objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    objectUrls.clear();
+});
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const storageKey = `image:${nanoid()}`;
-    await store.setItem(storageKey, blob);
+    await store().setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     const meta = await readImageMeta(url);
@@ -29,7 +38,7 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
-    const blob = await store.getItem<Blob>(storageKey);
+    const blob = await store().getItem<Blob>(storageKey);
     if (!blob) return fallback;
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
@@ -37,11 +46,11 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
 }
 
 export async function getImageBlob(storageKey: string) {
-    return store.getItem<Blob>(storageKey);
+    return store().getItem<Blob>(storageKey);
 }
 
 export async function setImageBlob(storageKey: string, blob: Blob) {
-    await store.setItem(storageKey, blob);
+    await store().setItem(storageKey, blob);
     const url = URL.createObjectURL(blob);
     objectUrls.set(storageKey, url);
     return url;
@@ -59,7 +68,7 @@ export async function deleteStoredImages(keys: Iterable<string>) {
             const url = objectUrls.get(key);
             if (url) URL.revokeObjectURL(url);
             objectUrls.delete(key);
-            await store.removeItem(key);
+            await store().removeItem(key);
         }),
     );
 }
@@ -67,7 +76,7 @@ export async function deleteStoredImages(keys: Iterable<string>) {
 export async function cleanupUnusedImages(usedData: unknown) {
     const usedKeys = collectImageStorageKeys(usedData);
     const unused: string[] = [];
-    await store.iterate((_value, key) => {
+    await store().iterate<unknown, void>((_value: unknown, key: string) => {
         if (!usedKeys.has(key)) unused.push(key);
     });
     await deleteStoredImages(unused);
