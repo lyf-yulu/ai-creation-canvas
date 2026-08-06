@@ -58,6 +58,8 @@ React 页面不实现 Portal 协议；API 客户端不操作节点；Python 路�
 
 ### Task 1: 导入固定上游并建立来源证明
 
+**Boundary:** 此任务的原样上游快照只用于来源证明，且不可部署、不可运行。它保留的浏览器密钥、远程插件和动态脚本路径将在 Task 2 删除；Task 2 是首个可运行的安全门禁版本。
+
 **Files:**
 - Create: `scripts/import-upstream.sh`
 - Create: `UPSTREAM.md`, `LICENSE`, `CHANGELOG.md`, `VERSION`, `web/**`
@@ -104,12 +106,12 @@ cp "$source_dir/CHANGELOG.md" CHANGELOG.md
 cp "$source_dir/VERSION" VERSION
 ```
 
-`UPSTREAM.md` 写明 URL、提交、导入范围，以及本分支禁用浏览器密钥、远程插件和动态脚本。
+`UPSTREAM.md` 写明 URL、提交、导入范围和 AGPL-3.0 来源；明确原样快照不可部署、不可运行，以及 Task 2 删除浏览器密钥、远程插件和动态脚本后才形成首个可运行安全版本。
 
 - [ ] **Step 4: 验证并提交**
 
-Run: `python3 -m unittest discover -s tests/repo -p 'test_*.py' -v && npm ci --prefix web && npm run typecheck --prefix web && npm run build --prefix web`
-Expected: 测试、类型检查和构建通过。
+Run: `python3 -m unittest discover -s tests/repo -p 'test_*.py' -v && npm install --prefix web --legacy-peer-deps --package-lock=false && npm run typecheck --prefix web && npm run build --prefix web`
+Expected: 来源测试、兼容安装、类型检查和构建通过，且 `git status --short` 无受跟踪文件改动。Task 1 不使用 `npm ci`：原样上游 lockfile 在 npm 11 下不兼容，且本任务不得修改该 lockfile。
 
 ```bash
 git add LICENSE UPSTREAM.md CHANGELOG.md VERSION web scripts/import-upstream.sh tests/repo .gitignore
@@ -119,6 +121,8 @@ git commit -m "chore: import pinned infinite canvas source"
 ---
 
 ### Task 2: 建立前端测试门禁并切换安全同源 API
+
+**Runnable security gate:** Task 2 is the first deployable and runnable frontend version. Before its commit, it must remove every browser key path, remote plugin facility, and dynamic-script entry point inherited from Task 1; it must regenerate the frontend lockfile and pass `npm ci`, the security scan, type checking, and production build.
 
 **Files:**
 - Modify: `web/package.json`, `web/package-lock.json`, `web/vite.config.ts`, `web/src/router.tsx`
@@ -147,8 +151,8 @@ git commit -m "chore: import pinned infinite canvas source"
 
 - [ ] **Step 1: 安装并锁定测试依赖**
 
-Run: `npm install --prefix web --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom`
-Expected: `package-lock.json` 锁定解析版本，`package.json` 增加 `test: "vitest run"`。
+Run: `npm install --prefix web --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom --legacy-peer-deps && npm ci --prefix web`
+Expected: `package-lock.json` 重新生成并锁定兼容解析版本，`package.json` 增加 `test: "vitest run"`，并且全新 `npm ci` 成功。
 
 - [ ] **Step 2: 写失败测试并运行**
 
@@ -192,8 +196,8 @@ set -euo pipefail
 ! rg -n 'new Function|VITE_PLUGIN_REGISTRY_URL|runModelPlugin|apiKey:\s*string|Authorization:\s*`Bearer' web/src
 ```
 
-Run: `npm test --prefix web && npm run typecheck --prefix web && bash scripts/security-scan.sh`
-Expected: 全部通过。
+Run: `npm ci --prefix web && npm test --prefix web && npm run typecheck --prefix web && npm run build --prefix web && bash scripts/security-scan.sh`
+Expected: 全部通过；这是首个可运行版本的依赖、测试、类型、构建和浏览器安全门禁。
 
 - [ ] **Step 5: 提交**
 

@@ -12,6 +12,10 @@ and copyright notices are retained in this repository.
 The import is reproducible with `scripts/import-upstream.sh`, which verifies
 the source checkout's exact HEAD before replacing the snapshot.
 
-This branch prohibits browser-held API keys, remote plugins, and dynamically
-loaded scripts. Subsequent security adaptations enforce those restrictions on
-top of this preserved upstream baseline.
+This snapshot is a provenance-only source baseline. It is **not deployable or
+runnable**: the unmodified upstream source contains browser key paths, remote
+plugin facilities, and dynamically loaded scripts that conflict with this
+repository's security requirements. Do not serve or release this snapshot.
+Task 2 is the first runnable version and removes those facilities, enforces the
+same-origin API boundary, regenerates a compatible dependency lockfile, and
+adds its security scan as a required gate.

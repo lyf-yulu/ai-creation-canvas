@@ -28,6 +28,7 @@ node_modules/
 dist/
 build/
 web/dist/
+web/tsconfig.tsbuildinfo
 coverage/
 .pytest_cache/
 __pycache__/
