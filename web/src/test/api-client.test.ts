@@ -45,3 +45,13 @@ it("does not expose filesystem and exception details in 4xx messages", async () 
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "ENOENT /srv/private.py" }), { status: 403, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
 });
+
+it.each(["OSError ('/srv/private.py')", "failed (C:/private.txt)", "file:///srv/private", "at foo (/srv/x.ts:12:3)", "bad\u0007message"])("rejects unsafe 4xx detail %s", async (message) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message }), { status: 403, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
+});
+
+it("keeps a short single-line user-facing 4xx message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "This item is not available." }), { status: 403, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "This item is not available." });
+});
