@@ -53,8 +53,10 @@ def _safe_path(value: str) -> str:
 
 
 def _base_url(value: str, *, allow_loopback_http: bool = False) -> str:
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value or any(ord(char) <= 32 or 127 <= ord(char) <= 159 for char in value):
         raise ValueError("Portal base URL must be a string")
+    if type(allow_loopback_http) is not bool:
+        raise ValueError("allow_loopback_http must be a bool")
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Portal base URL must have an http(s) scheme and host")
@@ -106,7 +108,7 @@ class PortalClient:
             raise ValueError("allowed_methods contains unsupported methods")
         self._allowed_methods = methods
         self._transport = transport
-        if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool) or not 1 <= max_concurrency <= 128:
+        if type(max_concurrency) is not int or not 1 <= max_concurrency <= 128:
             raise ValueError("max_concurrency must be a finite positive integer")
         self._semaphore = asyncio.Semaphore(max_concurrency)
 

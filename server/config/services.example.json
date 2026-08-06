@@ -3,19 +3,19 @@
     {
       "service_id": "image-service",
       "mount": "/image-service",
-      "capability": "image_generation",
+      "service_type": "image",
       "operations": ["image.generate", "image.edit"]
     },
     {
       "service_id": "video-service",
       "mount": "/video-service",
-      "capability": "video_generation",
+      "service_type": "video",
       "operations": ["video.generate", "video.image_to_video"]
     },
     {
       "service_id": "portrait-assets",
       "mount": "/portrait-assets",
-      "capability": "portrait_asset",
+      "service_type": "portrait_asset",
       "operations": ["video.image_to_video"]
     }
   ]

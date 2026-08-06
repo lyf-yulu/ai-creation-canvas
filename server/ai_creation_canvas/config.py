@@ -47,6 +47,10 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
         declarations.append(declaration)
     if len({item.service_id for item in declarations}) != len(declarations):
         raise ValueError("services configuration has duplicate service_id")
+    if len({item.mount for item in declarations}) != len(declarations):
+        raise ValueError("services configuration has duplicate mount")
+    if any(len(item.operations) != len(set(item.operations)) for item in declarations):
+        raise ValueError("services configuration has duplicate operation")
     return tuple(declarations)
 
 
@@ -97,6 +101,10 @@ class Settings:
             raise ValueError("signature_ttl_seconds must be positive")
         object.__setattr__(self, "data_dir", data_dir)
         object.__setattr__(self, "portal_internal_token", _validate_token(self.portal_internal_token))
+        if type(self.portal_allow_loopback_http) is not bool:
+            raise ValueError("portal_allow_loopback_http must be a bool")
+        if type(self.portal_max_concurrency) is not int or self.portal_max_concurrency < 1:
+            raise ValueError("portal_max_concurrency must be a positive integer")
         if self.services_config_path is not None:
             if not self.portal_base_url or self.services_config_root is None:
                 raise ValueError("services configuration requires a Portal base URL and trusted root")
