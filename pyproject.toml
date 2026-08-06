@@ -24,5 +24,6 @@ packages = ["server/ai_creation_canvas"]
 pythonpath = ["server"]
 testpaths = ["tests"]
 filterwarnings = [
+  "error",
   'ignore:Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead\.:starlette.exceptions.StarletteDeprecationWarning:starlette.testclient',
 ]

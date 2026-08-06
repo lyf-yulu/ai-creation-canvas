@@ -39,6 +39,8 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
             raise ValueError("services configuration is invalid")
         if service_type not in {"image", "video", "portrait_asset"} or not isinstance(operations, list):
             raise ValueError("services configuration is invalid")
+        if not isinstance(mount, str) or not mount.startswith("/") or any(part in {"", ".", ".."} for part in mount.split("/")[1:]) or any(ord(char) < 32 for char in mount):
+            raise ValueError("services configuration is invalid")
         try:
             parsed = tuple(ModelOperation(value) for value in operations)
             declaration = ServiceDeclaration(service_id, mount, service_type, parsed)
@@ -46,11 +48,11 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
             raise ValueError("services configuration is invalid") from error
         declarations.append(declaration)
     if len({item.service_id for item in declarations}) != len(declarations):
-        raise ValueError("services configuration has duplicate service_id")
+        raise ValueError("services configuration is invalid")
     if len({item.mount for item in declarations}) != len(declarations):
-        raise ValueError("services configuration has duplicate mount")
+        raise ValueError("services configuration is invalid")
     if any(len(item.operations) != len(set(item.operations)) for item in declarations):
-        raise ValueError("services configuration has duplicate operation")
+        raise ValueError("services configuration is invalid")
     return tuple(declarations)
 
 

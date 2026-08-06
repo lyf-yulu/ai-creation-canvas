@@ -28,12 +28,19 @@ def test_repository_service_example_loads():
     assert len(load_service_declarations(root / "services.example.json", root)) == 3
 
 
-def test_loader_rejects_duplicate_mount_and_operation(tmp_path):
-    payload = {"services": [
-        {"service_id": "one", "mount": "/same", "service_type": "image", "operations": ["image.generate", "image.generate"]},
-        {"service_id": "two", "mount": "/same", "service_type": "video", "operations": ["video.generate"]},
-    ]}
+@pytest.mark.parametrize("payload", [
+    {"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":["image.generate"]},{"service_id":"a","mount":"/b","service_type":"video","operations":["video.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":["image.generate"]},{"service_id":"b","mount":"/a","service_type":"video","operations":["video.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":["image.generate","image.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":["image.generate"],"url":"x"}]},
+    {"services":[{"service_id":"bad!","mount":"/a","service_type":"image","operations":["image.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/../a","service_type":"image","operations":["image.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/a","service_type":"bad","operations":["image.generate"]}]},
+    {"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":[]}]},
+    {"services":"bad"}, [], {"services":["bad"]}, {"services":[{"service_id":"a"}]},
+])
+def test_loader_rejects_each_invalid_rule_independently(tmp_path, payload):
     path = tmp_path / "services.json"
     path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="services configuration is invalid"):
         load_service_declarations(path, tmp_path)
