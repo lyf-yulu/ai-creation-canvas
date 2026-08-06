@@ -1,12 +1,11 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { act, createElement } from "react";
 
-import { bootstrapBuiltinNode, listNodes, createNodeRegistry } from "@/features/nodes/registry";
-import { bootstrapBuiltinWorkflow, createWorkflowRegistry, getWorkflow } from "@/features/workflows/registry";
-import { registerBuiltinNodes } from "@/features/nodes/builtins";
+import { listNodes, createNodeRegistry, nodeRegistry } from "@/features/nodes/registry";
+import { createWorkflowRegistry, getWorkflow, workflowRegistry } from "@/features/workflows/registry";
 import { ConnectionCreateMenu, NodeCreateMenu } from "@/components/canvas/canvas-create-menus";
-import { portraitVideoWorkflow, registerBuiltinWorkflows } from "@/features/workflows/portrait-video";
+import { portraitVideoWorkflow } from "@/features/workflows/portrait-video";
 
 it("adds a node and workflow only through isolated registration", () => {
     const nodes = createNodeRegistry();
@@ -54,23 +53,32 @@ it("defensively freezes nested node data instead of retaining caller-owned objec
     expect(nodes.listNodes()[0]?.defaultSize).toEqual({ width: 320, height: 200 });
 });
 
-it("accepts only identical built-in bootstrap definitions and rejects drift", () => {
+it("keeps isolated registries empty and rejects every duplicate ID", () => {
     const nodes = createNodeRegistry();
     const workflows = createWorkflowRegistry();
     const node = { id: "test.builtin", version: 1, title: "原始", inputs: ["image"], outputs: ["video"], defaultSize: { width: 320, height: 200 }, createMetadata: () => ({}), render: () => null };
     const workflow = { id: "test.builtin.workflow", version: 1, run: async () => ({ jobId: "job" }) };
-    bootstrapBuiltinNode(nodes, node, "test.owner");
-    bootstrapBuiltinNode(nodes, { ...node, defaultSize: { width: 320, height: 200 } }, "test.owner");
-    bootstrapBuiltinWorkflow(workflows, workflow, "test.owner");
-    bootstrapBuiltinWorkflow(workflows, workflow, "test.owner");
-
-    expect(() => bootstrapBuiltinNode(nodes, { ...node, title: "漂移" }, "test.owner")).toThrow("builtin definition drift");
-    expect(() => bootstrapBuiltinNode(nodes, { ...node, defaultSize: { width: 321, height: 200 } }, "test.owner")).toThrow("builtin definition drift");
-    expect(() => bootstrapBuiltinNode(nodes, { ...node, createMetadata: () => ({ content: "changed" }) }, "test.owner")).toThrow("builtin definition drift");
-    expect(() => bootstrapBuiltinNode(nodes, { ...node, render: () => "different" }, "test.owner")).toThrow("builtin definition drift");
-    expect(() => bootstrapBuiltinWorkflow(workflows, { ...workflow, run: async () => ({ jobId: "different" }) }, "test.owner")).toThrow("builtin definition drift");
+    expect(nodes.listNodes()).toEqual([]);
+    nodes.registerNode(node);
+    workflows.registerWorkflow(workflow);
+    expect(() => nodes.registerNode({ ...node })).toThrow("duplicate node: test.builtin");
     expect(() => nodes.registerNode({ ...node, title: "冲突" })).toThrow("duplicate node: test.builtin");
+    expect(() => workflows.registerWorkflow({ ...workflow })).toThrow("duplicate workflow: test.builtin.workflow");
     expect(() => workflows.registerWorkflow({ ...workflow, run: async () => ({}) })).toThrow("duplicate workflow: test.builtin.workflow");
+});
+
+it("initializes singleton registries with built-ins exactly once", () => {
+    expect(nodeRegistry.getNode("text")?.version).toBe(1);
+    expect(workflowRegistry.getWorkflow("portrait.video")?.version).toBe(1);
+    expect(nodeRegistry.listNodes().filter((node) => node.id === "text")).toHaveLength(1);
+});
+
+it("recreates singleton registries with one built-in set after module reset", async () => {
+    vi.resetModules();
+    const freshNodes = await import("@/features/nodes/registry");
+    const freshWorkflows = await import("@/features/workflows/registry");
+    expect(freshNodes.nodeRegistry.listNodes().filter((node) => node.id === "text")).toHaveLength(1);
+    expect(freshWorkflows.workflowRegistry.getWorkflow("portrait.video")?.id).toBe("portrait.video");
 });
 
 it("updates both mounted create menus after an isolated registry registration", () => {

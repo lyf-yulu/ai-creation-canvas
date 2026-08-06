@@ -1,5 +1,4 @@
 import type { AssetRef } from "@/api/contracts";
-import { bootstrapBuiltinWorkflow, workflowRegistry, type WorkflowRegistry } from "./registry";
 import type { PortraitVideoInput, PortraitVideoOutput, WorkflowDefinition } from "./types";
 
 const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
@@ -34,8 +33,3 @@ export const portraitVideoWorkflow: WorkflowDefinition<PortraitVideoInput, Portr
         return { jobId: job.jobId, assetId: asset.id };
     },
 };
-
-const BUILTIN_OWNER = "ai-creation-canvas.workflows.builtins";
-export function registerBuiltinWorkflows(registry: WorkflowRegistry = workflowRegistry) {
-    bootstrapBuiltinWorkflow(registry, portraitVideoWorkflow, BUILTIN_OWNER);
-}

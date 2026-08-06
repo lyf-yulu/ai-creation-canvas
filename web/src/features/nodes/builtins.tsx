@@ -1,8 +1,6 @@
 import { FileText, Group, Image as ImageIcon, Music2, Settings2, Video } from "lucide-react";
 
-import { NODE_SPECS } from "@/constant/canvas";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { bootstrapBuiltinNode, nodeRegistry, type NodeRegistry } from "./registry";
 import type { NodeDefinition } from "./types";
 
 const iconClass = "size-5";
@@ -16,37 +14,14 @@ function builtinResource(node: CanvasNodeData): ReturnType<NonNullable<NodeDefin
     return null;
 }
 
-const details = [
-    [CanvasNodeType.Text, "文本生成", "脚本、广告词、品牌文案", <FileText className={iconClass} />],
-    [CanvasNodeType.Image, "图片生成", undefined, <ImageIcon className={iconClass} />],
-    [CanvasNodeType.Video, "视频生成", undefined, <Video className={iconClass} />],
-    [CanvasNodeType.Audio, "音频参考", undefined, <Music2 className={iconClass} />],
-    [CanvasNodeType.Config, "配置节点", "模型、尺寸、数量和输入顺序", <Settings2 className={iconClass} />],
-    [CanvasNodeType.Group, "组", undefined, <Group className={iconClass} />],
-] as const;
+const definitions: NodeDefinition[] = [
+    { id: CanvasNodeType.Text, version: 1, title: "文本", connectionTitle: "文本生成", description: "脚本、广告词、品牌文案", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ content: "", status: "idle", fontSize: 14 }), render: BuiltinNodeRenderer, icon: <FileText className={iconClass} />, defaultSize: Object.freeze({ width: 340, height: 240 }), resource: builtinResource },
+    { id: CanvasNodeType.Image, version: 1, title: "图片", connectionTitle: "图片生成", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ content: "", status: "idle" }), render: BuiltinNodeRenderer, icon: <ImageIcon className={iconClass} />, defaultSize: Object.freeze({ width: 340, height: 240 }), minimapColor: "#10b981", keepAspectRatio: (node) => !node.metadata?.freeResize, resource: builtinResource },
+    { id: CanvasNodeType.Video, version: 1, title: "视频", connectionTitle: "视频生成", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ content: "", status: "idle" }), render: BuiltinNodeRenderer, icon: <Video className={iconClass} />, defaultSize: Object.freeze({ width: 420, height: 236 }), minimapColor: "#f97316", keepAspectRatio: () => true, resource: builtinResource },
+    { id: CanvasNodeType.Audio, version: 1, title: "音频", connectionTitle: "音频参考", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ content: "", status: "idle" }), render: BuiltinNodeRenderer, icon: <Music2 className={iconClass} />, defaultSize: Object.freeze({ width: 340, height: 120 }), minimapColor: "#a855f7", resource: builtinResource },
+    { id: CanvasNodeType.Config, version: 1, title: "生成配置", connectionTitle: "配置节点", description: "模型、尺寸、数量和输入顺序", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ content: "", status: "idle", generationMode: "image" }), render: BuiltinNodeRenderer, icon: <Settings2 className={iconClass} />, defaultSize: Object.freeze({ width: 340, height: 240 }), minimapColor: "#60a5fa", hasSourceHandle: false, resource: builtinResource },
+    { id: CanvasNodeType.Group, version: 1, title: "组", connectionTitle: "组", inputs: Object.freeze([]), outputs: Object.freeze([]), createMetadata: () => ({ status: "idle" }), render: BuiltinNodeRenderer, icon: <Group className={iconClass} />, defaultSize: Object.freeze({ width: 760, height: 480 }), minimapColor: "#94a3b8", resource: builtinResource },
+];
 
-export const builtinNodes: readonly NodeDefinition[] = details.map(([id, connectionTitle, description, icon]) => {
-    const spec = NODE_SPECS[id];
-    return {
-        id,
-        version: 1,
-        title: spec.title,
-        inputs: [],
-        outputs: [],
-        createMetadata: () => ({ ...spec.metadata }),
-        render: BuiltinNodeRenderer,
-        icon,
-        description,
-        connectionTitle,
-        defaultSize: { width: spec.width, height: spec.height },
-        minimapColor: id === CanvasNodeType.Image ? "#10b981" : id === CanvasNodeType.Video ? "#f97316" : id === CanvasNodeType.Audio ? "#a855f7" : id === CanvasNodeType.Config ? "#60a5fa" : id === CanvasNodeType.Group ? "#94a3b8" : undefined,
-        hasSourceHandle: id === CanvasNodeType.Config ? false : undefined,
-        keepAspectRatio: id === CanvasNodeType.Image ? (node) => !node.metadata?.freeResize : id === CanvasNodeType.Video ? () => true : undefined,
-        resource: builtinResource,
-    };
-});
-
-const BUILTIN_OWNER = "ai-creation-canvas.nodes.builtins";
-export function registerBuiltinNodes(registry: NodeRegistry = nodeRegistry) {
-    builtinNodes.forEach((definition) => bootstrapBuiltinNode(registry, definition, BUILTIN_OWNER));
-}
+/** Static local built-in data. Registration is performed only by the registry singleton. */
+export const builtinNodeDefinitions = Object.freeze(definitions.map((definition) => Object.freeze(definition)));

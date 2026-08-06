@@ -1,1 +1,1 @@
-export { registerBuiltinNodes } from "@/features/nodes/builtins";
+export { builtinNodeDefinitions } from "@/features/nodes/builtins";
