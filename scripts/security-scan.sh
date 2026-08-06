@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-! rg -n 'new Function|VITE_PLUGIN_REGISTRY_URL|runModelPlugin|apiKey:\s*string|Authorization:\s*`Bearer' web/src
-! rg -n 'import\(/\* @vite-ignore \*/|plugins/index\.json|VITE_(?:.*API|.*KEY|PLUGIN_REGISTRY_URL)' web/src
+# This is a defense-in-depth source tripwire, not a substitute for behavioral tests
+# of URL normalization, asset ownership, and job polling.
+! rg -n --glob '!test/**' '\beval\s*\(|\b(?:new\s+)?Function\s*\(|runModelPlugin|VITE_PLUGIN_REGISTRY_URL' web/src
+! rg -n --glob '!test/**' 'import\s*\(\s*/\*\s*@vite-ignore|plugins/index\.json|fetchOfficialPlugins|installPluginFromUrl' web/src
+! rg -n --glob '!test/**' '(?:api[_-]?key|base[_-]?url)\s*[:=]|Authorization\s*[:=].*Bearer|VITE_(?:.*API|.*KEY|PLUGIN_REGISTRY_URL)' web/src

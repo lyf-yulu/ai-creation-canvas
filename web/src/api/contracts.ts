@@ -3,5 +3,6 @@ export type PortalSession = { user_id: string; username: string; role: "admin" |
 export type ModelSpec = { id: string; service_id: string; display_name: string; operations: ModelOperation[]; input_media: ("text" | "image")[]; parameter_schema: Record<string, unknown>; requires_asset_kind?: "portrait" };
 export type AssetRef = { id: string; kind: "reference" | "portrait"; status: "processing" | "active" | "failed"; mime_type: string };
 export type JobRequest = { operation: ModelOperation; model_id: string; prompt: string; params: Record<string, unknown>; asset_ids: string[]; idempotency_key: string };
-export type JobState = { id: string; status: "queued" | "running" | "succeeded" | "failed"; result?: { url: string; mime_type: string }; error?: string };
+export type JobResult = { asset_id: string; mime_type: string };
+export type JobState = { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; result?: JobResult; error?: string };
 export type ApiError = { code: string; message: string };
