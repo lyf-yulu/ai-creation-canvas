@@ -40,3 +40,8 @@ it("uses the fixed local message for 5xx JSON responses", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "internal_error", message: "Traceback /srv/private.py: secret" }), { status: 500, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "The service failed to process the request." });
 });
+
+it("does not expose filesystem and exception details in 4xx messages", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "ENOENT /srv/private.py" }), { status: 403, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
+});

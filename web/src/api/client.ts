@@ -40,7 +40,7 @@ const defaultError = (status: number): Omit<ApiError, "request_id" | "phase"> =>
 
 const safeString = (value: unknown, fallback: string, pattern: RegExp) => typeof value === "string" && pattern.test(value) ? value : fallback;
 const safeMessage = (value: unknown, fallback: string) => {
-    if (typeof value !== "string" || value.length > 240 || /api[_ -]?key|authorization|bearer|secret|token|traceback|stack/i.test(value)) return fallback;
+    if (typeof value !== "string" || value.length > 160 || /[\r\n\t\u0000-\u001f]|(?:^|\s)\/[\w./-]+|[A-Za-z]:\\|\b\w[\w.-]*\.(?:ts|js|py|java|go|sql):\d+\b|api[_ -]?key|authorization|bearer|secret|token|traceback|stack|exception|error:|enoent|sqlite|postgres|mysql|internal\s+(?:server|database|error)/i.test(value)) return fallback;
     return value;
 };
 
