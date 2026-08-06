@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import re
 import time
 import unicodedata
@@ -70,7 +71,7 @@ def verify_portal_identity(
 ) -> PortalUser:
     """Return a verified identity, never exposing which check failed to callers."""
     _validate_token(secret)
-    if not isinstance(max_age_seconds, int) or max_age_seconds < 1:
+    if not isinstance(max_age_seconds, int) or isinstance(max_age_seconds, bool) or max_age_seconds < 1:
         raise ValueError("max_age_seconds must be positive")
     values = _normalise_headers(headers)
     version = values.get("x-portal-sig-version", "")
@@ -89,7 +90,12 @@ def verify_portal_identity(
     ):
         raise AuthRequired()
     current_time = time.time() if now is None else now
-    if not isinstance(current_time, (int, float)) or isinstance(current_time, bool) or abs(current_time - int(timestamp)) > max_age_seconds:
+    if (
+        not isinstance(current_time, (int, float))
+        or isinstance(current_time, bool)
+        or not math.isfinite(current_time)
+        or abs(current_time - int(timestamp)) > max_age_seconds
+    ):
         raise AuthRequired()
     expected = hmac.new(secret.encode("utf-8"), _signature_payload(timestamp, user_id, role, username), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):

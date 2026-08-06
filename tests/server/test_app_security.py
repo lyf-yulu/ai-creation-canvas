@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from ai_creation_canvas.app import _safe_static_file, create_app
 from ai_creation_canvas.config import Settings
+from ai_creation_canvas.errors import ApiError, DomainError
 
 
 def signed_headers() -> dict[str, str]:
@@ -27,7 +28,7 @@ def signed_headers() -> dict[str, str]:
 
 def make_client(tmp_path) -> TestClient:
     static_dir = tmp_path / "dist"
-    static_dir.mkdir()
+    static_dir.mkdir(exist_ok=True)
     (static_dir / "index.html").write_text("<html>canvas</html>")
     (static_dir / "app.js").write_text("console.log('canvas')")
     settings = Settings(environment="test", port=8992, data_dir=tmp_path / "data", portal_internal_token="test-secret")
@@ -71,6 +72,19 @@ def test_options_and_head_api_identity_policy_is_explicit(tmp_path):
     assert client.head("/api/v1/session", headers=signed_headers()).status_code == 405
 
 
+def test_api_root_namespace_authenticates_before_its_json_not_found_response(tmp_path):
+    client = make_client(tmp_path)
+    for method in (client.get, client.head, client.options):
+        assert method("/api/v1").status_code == 401
+        assert method("/api/v1/").status_code == 401
+        authenticated_root = method("/api/v1", headers=signed_headers())
+        assert authenticated_root.status_code == 404
+        assert authenticated_root.headers["content-type"].startswith("application/json")
+        authenticated_slash = method("/api/v1/", headers=signed_headers())
+        assert authenticated_slash.status_code == 404
+        assert authenticated_slash.headers["content-type"].startswith("application/json")
+
+
 def test_spa_fallback_requires_html_get_and_does_not_hide_missing_assets(tmp_path):
     client = make_client(tmp_path)
     fallback = client.get("/canvas/board", headers={"accept": "text/html"})
@@ -80,6 +94,28 @@ def test_spa_fallback_requires_html_get_and_does_not_hide_missing_assets(tmp_pat
     assert client.get("/canvas/board", headers={"accept": "application/json"}).status_code == 404
     assert client.get("/missing.js", headers={"accept": "text/html"}).status_code == 404
     assert _safe_static_file(tmp_path / "dist", "../../etc/passwd") is None
+
+
+def test_outside_or_symlinked_static_paths_are_rejected_without_spa_fallback(tmp_path):
+    static_dir = tmp_path / "dist"
+    static_dir.mkdir()
+    external_dir = tmp_path / "external"
+    external_dir.mkdir()
+    (external_dir / "route").write_text("outside")
+    (static_dir / "outside-route").symlink_to(external_dir / "route")
+    (static_dir / "nested").symlink_to(external_dir, target_is_directory=True)
+    client = make_client(tmp_path)
+    for path in ("/outside-route", "/nested/route"):
+        response = client.get(path, headers={"accept": "text/html"})
+        assert response.status_code == 404
+        assert response.text != "<html>canvas</html>"
+
+
+def test_safe_missing_extensionless_route_can_use_spa_fallback(tmp_path):
+    client = make_client(tmp_path)
+    response = client.get("/missing-client-route", headers={"accept": "text/html"})
+    assert response.status_code == 200
+    assert response.text == "<html>canvas</html>"
 
 
 def test_domain_and_unhandled_errors_use_safe_uniform_contract(tmp_path):
@@ -92,3 +128,22 @@ def test_domain_and_unhandled_errors_use_safe_uniform_contract(tmp_path):
     invalid_request_id = client.get("/api/v1/session", headers={**signed_headers(), "X-Request-Id": "x" * 129})
     assert invalid_request_id.status_code == 200
     assert invalid_request_id.headers["x-request-id"] != "x" * 129
+
+
+def test_domain_error_response_uses_current_safe_request_id_not_exception_value(tmp_path):
+    app = create_app(
+        Settings(environment="test", port=8992, data_dir=tmp_path / "data", portal_internal_token="test-secret"),
+        static_dir=tmp_path / "dist",
+    )
+
+    @app.get("/api/v1/test-domain-error")
+    async def raise_domain_error():
+        raise DomainError(ApiError("REQUEST_REJECTED", "Request rejected.", False, "secret\nrequest-id", "request"))
+
+    app.router.routes.insert(0, app.router.routes.pop())
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/api/v1/test-domain-error", headers={**signed_headers(), "X-Request-Id": "safe-id"})
+    assert response.status_code == 400
+    assert response.json()["request_id"] == "safe-id"
+    assert "secret" not in response.text

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from enum import StrEnum
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -23,17 +24,51 @@ def _request_id(value: str | None) -> str:
     return value if value and _REQUEST_ID.fullmatch(value) else uuid.uuid4().hex
 
 
-def _error_response(error: DomainError) -> JSONResponse:
-    return JSONResponse(status_code=401 if error.api_error.code == "AUTH_REQUIRED" else 400, content=error.api_error.to_dict())
+class StaticPathState(StrEnum):
+    LEGIT_FILE = "legit_file"
+    NOT_FOUND = "not_found"
+    REJECTED = "rejected"
+
+
+def _is_api_v1_path(path: str) -> bool:
+    return path == "/api/v1" or path.startswith("/api/v1/")
+
+
+def _error_response(error: DomainError, request_id: str) -> JSONResponse:
+    public_error = ApiError(
+        code=error.api_error.code,
+        message=error.api_error.message,
+        retryable=error.api_error.retryable,
+        request_id=request_id,
+        phase=error.api_error.phase,
+    )
+    return JSONResponse(status_code=401 if public_error.code == "AUTH_REQUIRED" else 400, content=public_error.to_dict())
+
+
+def _static_path_state(static_dir: Path, path: str) -> tuple[StaticPathState, Path | None]:
+    if not isinstance(path, str) or "\x00" in path:
+        return StaticPathState.REJECTED, None
+    try:
+        root = static_dir.resolve(strict=False)
+        candidate = root / path.lstrip("/")
+        resolved = candidate.resolve(strict=False)
+    except (OSError, ValueError):
+        return StaticPathState.REJECTED, None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return StaticPathState.REJECTED, None
+    if not candidate.exists():
+        return StaticPathState.NOT_FOUND, None
+    if not resolved.is_file():
+        return StaticPathState.REJECTED, None
+    return StaticPathState.LEGIT_FILE, resolved
 
 
 def _safe_static_file(static_dir: Path, path: str) -> Path | None:
-    candidate = (static_dir / path.lstrip("/")).resolve(strict=False)
-    try:
-        candidate.relative_to(static_dir)
-    except ValueError:
-        return None
-    return candidate if candidate.is_file() else None
+    """Compatibility helper; callers needing fallback must use the explicit state."""
+    state, candidate = _static_path_state(static_dir, path)
+    return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
 def create_app(settings: Settings, *, static_dir: Path | str | None = None) -> FastAPI:
@@ -46,7 +81,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None) -> F
     async def security_boundary(request: Request, call_next):
         request.state.request_id = _request_id(request.headers.get("x-request-id"))
         try:
-            if request.url.path.startswith("/api/v1/"):
+            if _is_api_v1_path(request.url.path):
                 request.state.portal_user = verify_portal_identity(
                     request.headers,
                     settings.portal_internal_token,
@@ -54,10 +89,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None) -> F
                 )
             response = await call_next(request)
         except DomainError as error:
-            error.api_error.request_id  # preserve type-checker visibility; errors carry no secret.
-            if error.api_error.request_id == "identity":
-                error = AuthRequired(request.state.request_id)
-            response = _error_response(error)
+            response = _error_response(error, request.state.request_id)
         except Exception:
             response = JSONResponse(
                 status_code=500,
@@ -77,23 +109,30 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None) -> F
 
     @app.exception_handler(DomainError)
     async def domain_error_handler(request: Request, error: DomainError) -> JSONResponse:
-        return _error_response(error)
+        return _error_response(error, _request_id(getattr(request.state, "request_id", None)))
 
     app.include_router(session_router)
+
+    @app.api_route("/api/v1", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)
+    @app.api_route("/api/v1/", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)
+    async def api_namespace_not_found() -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
     @app.get("/{requested_path:path}", include_in_schema=False)
     async def static_or_spa(request: Request, requested_path: str) -> Response:
         if request.method != "GET":
             return Response(status_code=405)
         if requested_path:
-            asset = _safe_static_file(build_dir, requested_path)
-            if asset is not None:
+            state, asset = _static_path_state(build_dir, requested_path)
+            if state is StaticPathState.LEGIT_FILE:
+                assert asset is not None
                 return FileResponse(asset)
-            if Path(requested_path).suffix:
+            if state is StaticPathState.REJECTED or Path(requested_path).suffix:
                 return Response(status_code=404)
         accepts_html = "text/html" in request.headers.get("accept", "").lower()
-        index = _safe_static_file(build_dir, "index.html")
-        if accepts_html and index is not None:
+        index_state, index = _static_path_state(build_dir, "index.html")
+        if accepts_html and index_state is StaticPathState.LEGIT_FILE:
+            assert index is not None
             return FileResponse(index, media_type="text/html")
         return Response(status_code=404)
 

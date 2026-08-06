@@ -44,7 +44,11 @@ class Settings:
             raise ValueError("test environment cannot use a production port")
         if self.environment == "test" and _is_within(data_dir, production_repo):
             raise ValueError("test environment cannot use the production repository")
-        if not isinstance(self.signature_ttl_seconds, int) or self.signature_ttl_seconds < 1:
+        if (
+            not isinstance(self.signature_ttl_seconds, int)
+            or isinstance(self.signature_ttl_seconds, bool)
+            or self.signature_ttl_seconds < 1
+        ):
             raise ValueError("signature_ttl_seconds must be positive")
         object.__setattr__(self, "data_dir", data_dir)
         object.__setattr__(self, "portal_internal_token", _validate_token(self.portal_internal_token))

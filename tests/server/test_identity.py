@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import MutableMapping
+import math
 from urllib.parse import quote
 
 import pytest
@@ -108,3 +108,21 @@ def test_test_mode_rejects_production_port_and_production_data_directory(tmp_pat
 def test_production_also_rejects_empty_portal_token(tmp_path):
     with pytest.raises(ValueError, match="PORTAL_INTERNAL_TOKEN"):
         Settings(environment="production", port=8991, data_dir=tmp_path, portal_internal_token="")
+
+
+@pytest.mark.parametrize("ttl", [True, False, 0, -1, 1.5, "60"])
+def test_settings_rejects_non_integer_or_boolean_signature_ttl(tmp_path, ttl):
+    with pytest.raises(ValueError, match="signature_ttl_seconds"):
+        Settings(environment="test", port=8992, data_dir=tmp_path, portal_internal_token="test-secret", signature_ttl_seconds=ttl)
+
+
+@pytest.mark.parametrize("ttl", [True, False, 0, -1, 1.5, "60"])
+def test_verify_rejects_non_integer_or_boolean_signature_ttl(ttl):
+    with pytest.raises(ValueError, match="max_age_seconds"):
+        verify_portal_identity(signed_headers(), "test-secret", now=1000, max_age_seconds=ttl)
+
+
+@pytest.mark.parametrize("now", [True, False, math.nan, math.inf, -math.inf, "1000"])
+def test_verify_rejects_nonfinite_or_non_numeric_clock(now):
+    with pytest.raises(AuthRequired):
+        verify_portal_identity(signed_headers(), "test-secret", now=now)
