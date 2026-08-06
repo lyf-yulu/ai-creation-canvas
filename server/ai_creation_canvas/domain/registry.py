@@ -35,6 +35,10 @@ class AdapterRegistry:
     def generation(self, service_id: str) -> GenerationPort:
         return self._get(self._generation, service_id, "generation")
 
+    def generation_adapters(self) -> tuple[GenerationPort, ...]:
+        """Return trusted generation adapters in a stable order."""
+        return tuple(self._generation[service_id] for service_id in sorted(self._generation))
+
     def asset(self, service_id: str) -> AssetPort:
         return self._get(self._assets, service_id, "asset")
 

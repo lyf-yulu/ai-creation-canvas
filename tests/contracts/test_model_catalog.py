@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+import pytest
+
+import httpx
+
+from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsAdapter, ServiceDeclaration
+from ai_creation_canvas.adapters.portal.client import PortalClient
+from ai_creation_canvas.domain.models import ModelSpec, PortalUser, RequestContext
+from ai_creation_canvas.domain.registry import AdapterRegistry
+
+
+def context_for() -> RequestContext:
+    return RequestContext(PortalUser("u-a", "Alice", "user"), "request-1", "trace-1")
+
+
+class FakeAdapter:
+    def __init__(self, service_id: str, models: tuple[ModelSpec, ...] = (), error: Exception | None = None) -> None:
+        self.service_id, self.models, self.error = service_id, models, error
+
+    async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]:
+        if self.error:
+            raise self.error
+        return self.models
+
+    async def submit(self, context, request): raise NotImplementedError
+    async def poll(self, context, upstream_job_id): raise NotImplementedError
+
+
+def model(service_id: str, model_id: str) -> ModelSpec:
+    return ModelSpec(model_id, service_id, model_id.upper(), ("image.generate",), input_media=("text",))
+
+
+@pytest.mark.anyio
+async def test_catalog_merges_models_deterministically_and_reports_partial_failures():
+    registry = AdapterRegistry()
+    registry.register_generation(FakeAdapter("video-service", (model("video-service", "c"),)))
+    registry.register_generation(FakeAdapter("broken-service", error=RuntimeError("cookie=secret")))
+    registry.register_generation(FakeAdapter("image-service", (model("image-service", "b"), model("image-service", "a"))))
+
+    result = await ModelCatalog(registry).list_models(context_for())
+    assert [item.model_id for item in result.models] == ["a", "b", "c"]
+    assert result.diagnostics == ({"service_id": "broken-service", "code": "MODEL_CATALOG_UNAVAILABLE"},)
+
+
+@pytest.mark.anyio
+async def test_catalog_rejects_duplicate_model_ids_across_services():
+    registry = AdapterRegistry()
+    registry.register_generation(FakeAdapter("one", (model("one", "same"),)))
+    registry.register_generation(FakeAdapter("two", (model("two", "same"),)))
+    result = await ModelCatalog(registry).list_models(context_for())
+    assert result.models == ()
+    assert result.diagnostics == ({"service_id": "one", "code": "DUPLICATE_MODEL_ID"}, {"service_id": "two", "code": "DUPLICATE_MODEL_ID"})
+
+
+@pytest.mark.anyio
+async def test_portal_adapter_ignores_dangerous_unknown_fields_and_rejects_unsupported_operations():
+    client = PortalClient(
+        "https://portal.test", allowed_mounts=("/image-service",),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "models": [{
+                "id": "image-a", "display_name": "Image A", "operations": ["image.generate"],
+                "script": "alert(1)", "upstream_url": "https://example.invalid", "parameter_schema": {},
+            }]
+        })),
+    )
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    assert [model.model_id for model in await adapter.list_models(context_for(), cookie_header="current=a")] == ["image-a"]
+
+
+@pytest.mark.anyio
+async def test_portal_adapter_rejects_an_unbounded_parameter_schema():
+    nested: dict[str, object] = {"leaf": "value"}
+    for _ in range(10):
+        nested = {"nested": nested}
+    client = PortalClient(
+        "https://portal.test", allowed_mounts=("/image-service",),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={
+            "models": [{"id": "image-a", "display_name": "Image A", "operations": ["image.generate"], "parameter_schema": nested}]
+        })),
+    )
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    with pytest.raises(ValueError, match="configuration is invalid"):
+        await adapter.list_models(context_for())
