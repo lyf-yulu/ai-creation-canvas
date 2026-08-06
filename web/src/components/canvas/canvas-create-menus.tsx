@@ -1,10 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { listNodes } from "@/features/nodes/registry";
-import { useNodeRegistryVersion } from "@/lib/canvas/node-registry";
+import { nodeRegistry, type NodeRegistry } from "@/features/nodes/registry";
 import type { ConnectionHandle, Position } from "@/types/canvas";
 
 export type PendingConnectionCreate = {
@@ -12,17 +11,25 @@ export type PendingConnectionCreate = {
     position: Position;
 };
 
+function useMenuNodes(registry: NodeRegistry) {
+    const [, setVersion] = useState(0);
+    useEffect(() => registry.subscribe(() => setVersion((version) => version + 1)), [registry]);
+    return registry.listNodes().filter((node) => node.showInCreateMenu !== false);
+}
+
 export function ConnectionCreateMenu({
     pending,
     onCreate,
     onClose,
+    registry = nodeRegistry,
 }: {
     pending: PendingConnectionCreate;
     onCreate: (type: string) => void;
     onClose: () => void;
+    registry?: NodeRegistry;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    useNodeRegistryVersion();
+    const definitions = useMenuNodes(registry);
     return (
         <div
             className="absolute z-[120] w-[300px] rounded-[18px] border p-3 shadow-2xl backdrop-blur"
@@ -39,7 +46,7 @@ export function ConnectionCreateMenu({
                     ×
                 </button>
             </div>
-            <div className="grid gap-1">{listNodes().filter((node) => node.showInCreateMenu !== false).map((node) => <ConnectionCreateOption key={node.id} theme={theme} icon={node.icon} title={node.connectionTitle || node.title} description={node.description} onClick={() => onCreate(node.id)} />)}</div>
+            <div className="grid gap-1">{definitions.map((node) => <ConnectionCreateOption key={node.id} theme={theme} icon={node.icon} title={node.connectionTitle || node.title} description={node.description} onClick={() => onCreate(node.id)} />)}</div>
         </div>
     );
 }
@@ -69,11 +76,10 @@ export function ConnectionCreateOption({ theme, icon, title, description, onClic
     );
 }
 
-export function NodeCreateMenu({ position, onCreate, onClose }: { position: Position; onCreate: (type: string) => void; onClose: () => void }) {
+export function NodeCreateMenu({ position, onCreate, onClose, registry = nodeRegistry }: { position: Position; onCreate: (type: string) => void; onClose: () => void; registry?: NodeRegistry }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    useNodeRegistryVersion();
     const menuRef = useRef<HTMLDivElement>(null);
-    const definitions = listNodes().filter((def) => def.showInCreateMenu !== false);
+    const definitions = useMenuNodes(registry);
     // 点击菜单外的空白处自动关闭
     useEffect(() => {
         const handlePointerDown = (event: PointerEvent) => {

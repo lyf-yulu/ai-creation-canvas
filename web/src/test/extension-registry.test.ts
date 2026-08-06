@@ -1,9 +1,9 @@
 import { expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { createElement } from "react";
+import { act, createElement } from "react";
 
-import { listNodes, createNodeRegistry } from "@/features/nodes/registry";
-import { createWorkflowRegistry, getWorkflow } from "@/features/workflows/registry";
+import { bootstrapBuiltinNode, listNodes, createNodeRegistry } from "@/features/nodes/registry";
+import { bootstrapBuiltinWorkflow, createWorkflowRegistry, getWorkflow } from "@/features/workflows/registry";
 import { registerBuiltinNodes } from "@/features/nodes/builtins";
 import { ConnectionCreateMenu, NodeCreateMenu } from "@/components/canvas/canvas-create-menus";
 import { portraitVideoWorkflow, registerBuiltinWorkflows } from "@/features/workflows/portrait-video";
@@ -54,29 +54,35 @@ it("defensively freezes nested node data instead of retaining caller-owned objec
     expect(nodes.listNodes()[0]?.defaultSize).toEqual({ width: 320, height: 200 });
 });
 
-it("makes built-in bootstrap idempotent without weakening normal duplicate rejection", () => {
+it("accepts only identical built-in bootstrap definitions and rejects drift", () => {
     const nodes = createNodeRegistry();
     const workflows = createWorkflowRegistry();
-    registerBuiltinNodes(nodes);
-    const nodeCount = nodes.listNodes().length;
-    registerBuiltinNodes(nodes);
-    registerBuiltinWorkflows(workflows);
-    registerBuiltinWorkflows(workflows);
+    const node = { id: "test.builtin", version: 1, title: "原始", inputs: ["image"], outputs: ["video"], defaultSize: { width: 320, height: 200 }, createMetadata: () => ({}), render: () => null };
+    const workflow = { id: "test.builtin.workflow", version: 1, run: async () => ({ jobId: "job" }) };
+    bootstrapBuiltinNode(nodes, node, "test.owner");
+    bootstrapBuiltinNode(nodes, { ...node, defaultSize: { width: 320, height: 200 } }, "test.owner");
+    bootstrapBuiltinWorkflow(workflows, workflow, "test.owner");
+    bootstrapBuiltinWorkflow(workflows, workflow, "test.owner");
 
-    expect(nodes.listNodes()).toHaveLength(nodeCount);
-    expect(workflows.getWorkflow("portrait.video")?.id).toBe("portrait.video");
-    expect(() => nodes.registerNode({ id: "text", version: 1, title: "冲突", inputs: [], outputs: [], createMetadata: () => ({}), render: () => null })).toThrow("duplicate node: text");
-    expect(() => workflows.registerWorkflow({ id: "portrait.video", version: 1, run: async () => ({}) })).toThrow("duplicate workflow: portrait.video");
+    expect(() => bootstrapBuiltinNode(nodes, { ...node, title: "漂移" }, "test.owner")).toThrow("builtin definition drift");
+    expect(() => bootstrapBuiltinNode(nodes, { ...node, defaultSize: { width: 321, height: 200 } }, "test.owner")).toThrow("builtin definition drift");
+    expect(() => bootstrapBuiltinNode(nodes, { ...node, createMetadata: () => ({ content: "changed" }) }, "test.owner")).toThrow("builtin definition drift");
+    expect(() => bootstrapBuiltinNode(nodes, { ...node, render: () => "different" }, "test.owner")).toThrow("builtin definition drift");
+    expect(() => bootstrapBuiltinWorkflow(workflows, { ...workflow, run: async () => ({ jobId: "different" }) }, "test.owner")).toThrow("builtin definition drift");
+    expect(() => nodes.registerNode({ ...node, title: "冲突" })).toThrow("duplicate node: test.builtin");
+    expect(() => workflows.registerWorkflow({ ...workflow, run: async () => ({}) })).toThrow("duplicate workflow: test.builtin.workflow");
 });
 
-it("renders both create menus from the subscribed registry catalogue", () => {
-    registerBuiltinNodes();
+it("updates both mounted create menus after an isolated registry registration", () => {
+    const registry = createNodeRegistry();
     const props = { onCreate: () => undefined, onClose: () => undefined };
-    const { unmount } = render(createElement(ConnectionCreateMenu, { ...props, pending: { connection: { nodeId: "n", handleType: "source" }, position: { x: 0, y: 0 } } }));
-    expect(screen.getByText("文本生成")).toBeInTheDocument();
-    unmount();
-    render(createElement(NodeCreateMenu, { ...props, position: { x: 0, y: 0 } }));
-    expect(screen.getByText("生成配置")).toBeInTheDocument();
+    render(createElement("div", undefined,
+        createElement(ConnectionCreateMenu, { ...props, registry, pending: { connection: { nodeId: "n", handleType: "source" }, position: { x: 0, y: 0 } } }),
+        createElement(NodeCreateMenu, { ...props, registry, position: { x: 0, y: 0 } }),
+    ));
+    act(() => registry.registerNode({ id: "test.live", version: 1, title: "实时节点", connectionTitle: "实时生成", inputs: [], outputs: [], createMetadata: () => ({}), render: () => null }));
+    expect(screen.getByText("实时生成")).toBeInTheDocument();
+    expect(screen.getByText("实时节点")).toBeInTheDocument();
 });
 
 it("runs portrait video as upload, active asset, then generic image-to-video submission", async () => {

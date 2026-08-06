@@ -2,7 +2,7 @@ import { FileText, Group, Image as ImageIcon, Music2, Settings2, Video } from "l
 
 import { NODE_SPECS } from "@/constant/canvas";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { nodeRegistry, type NodeRegistry } from "./registry";
+import { bootstrapBuiltinNode, nodeRegistry, type NodeRegistry } from "./registry";
 import type { NodeDefinition } from "./types";
 
 const iconClass = "size-5";
@@ -48,5 +48,5 @@ export const builtinNodes: readonly NodeDefinition[] = details.map(([id, connect
 
 const BUILTIN_OWNER = "ai-creation-canvas.nodes.builtins";
 export function registerBuiltinNodes(registry: NodeRegistry = nodeRegistry) {
-    builtinNodes.forEach((definition) => registry.ensureNode(definition, BUILTIN_OWNER));
+    builtinNodes.forEach((definition) => bootstrapBuiltinNode(registry, definition, BUILTIN_OWNER));
 }
