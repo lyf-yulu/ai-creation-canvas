@@ -1,0 +1,39 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime and user data
+state/
+outputs/
+archives/
+uploads/
+logs/
+workspaces/
+requests/
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+
+# Build and dependency caches
+node_modules/
+.bun/
+.cache/
+dist/
+build/
+coverage/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Local operating-system and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
