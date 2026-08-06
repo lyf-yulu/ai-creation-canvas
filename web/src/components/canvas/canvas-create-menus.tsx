@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
-import { ImageIcon, List, Music2, Settings2, Video, X } from "lucide-react";
+import { X } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
-import { CanvasNodeType, type ConnectionHandle, type Position } from "@/types/canvas";
+import { listNodes } from "@/features/nodes/registry";
+import { useNodeRegistryVersion } from "@/lib/canvas/node-registry";
+import type { ConnectionHandle, Position } from "@/types/canvas";
 
 export type PendingConnectionCreate = {
     connection: ConnectionHandle;
@@ -17,7 +18,7 @@ export function ConnectionCreateMenu({
     onClose,
 }: {
     pending: PendingConnectionCreate;
-    onCreate: (type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Config | CanvasNodeType.Video | CanvasNodeType.Audio) => void;
+    onCreate: (type: string) => void;
     onClose: () => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -37,13 +38,7 @@ export function ConnectionCreateMenu({
                     ×
                 </button>
             </div>
-            <div className="grid gap-1">
-                <ConnectionCreateOption theme={theme} icon={<List className="size-5" />} title="文本生成" description="脚本、广告词、品牌文案" onClick={() => onCreate(CanvasNodeType.Text)} />
-                <ConnectionCreateOption theme={theme} icon={<ImageIcon className="size-5" />} title="图片生成" onClick={() => onCreate(CanvasNodeType.Image)} />
-                <ConnectionCreateOption theme={theme} icon={<Video className="size-5" />} title="视频生成" onClick={() => onCreate(CanvasNodeType.Video)} />
-                <ConnectionCreateOption theme={theme} icon={<Music2 className="size-5" />} title="音频参考" onClick={() => onCreate(CanvasNodeType.Audio)} />
-                <ConnectionCreateOption theme={theme} icon={<Settings2 className="size-5" />} title="配置节点" description="模型、尺寸、数量和输入顺序" onClick={() => onCreate(CanvasNodeType.Config)} />
-            </div>
+            <div className="grid gap-1">{listNodes().filter((node) => node.showInCreateMenu !== false).map((node) => <ConnectionCreateOption key={node.id} theme={theme} icon={node.icon} title={node.connectionTitle || node.title} description={node.description} onClick={() => onCreate(node.id)} />)}</div>
         </div>
     );
 }
@@ -77,7 +72,7 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     useNodeRegistryVersion();
     const menuRef = useRef<HTMLDivElement>(null);
-    const definitions = listNodeDefinitions().filter((def) => def.showInCreateMenu !== false);
+    const definitions = listNodes().filter((def) => def.showInCreateMenu !== false);
     // 点击菜单外的空白处自动关闭
     useEffect(() => {
         const handlePointerDown = (event: PointerEvent) => {
@@ -104,7 +99,7 @@ export function NodeCreateMenu({ position, onCreate, onClose }: { position: Posi
             </div>
             <div className="grid gap-1">
                 {definitions.map((def) => (
-                    <ConnectionCreateOption key={def.type} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.type)} />
+                    <ConnectionCreateOption key={def.id} theme={theme} icon={def.icon} title={def.title} description={def.description} onClick={() => onCreate(def.id)} />
                 ))}
             </div>
         </div>

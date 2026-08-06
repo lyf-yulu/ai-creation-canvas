@@ -6,10 +6,14 @@ import "./styles/globals.css";
 import { RouterProvider } from "react-router-dom";
 
 import { AppProviders } from "@/components/layout/app-providers";
+import { registerBuiltinNodes } from "@/features/nodes/builtins";
+import { registerBuiltinWorkflows } from "@/features/workflows/portrait-video";
 import { initAnalytics } from "@/lib/analytics";
 import { router } from "@/router";
 
 initAnalytics();
+registerBuiltinNodes();
+registerBuiltinWorkflows();
 
 document.body.style.fontFamily = '"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif';
 
