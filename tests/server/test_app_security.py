@@ -111,6 +111,26 @@ def test_outside_or_symlinked_static_paths_are_rejected_without_spa_fallback(tmp
         assert response.text != "<html>canvas</html>"
 
 
+def test_all_static_symlinks_are_rejected_before_resolution_or_spa_fallback(tmp_path):
+    static_dir = tmp_path / "dist"
+    static_dir.mkdir()
+    (static_dir / "inside").write_text("inside")
+    (static_dir / "inside-link").symlink_to("inside")
+    real_directory = static_dir / "real-directory"
+    real_directory.mkdir()
+    (real_directory / "route").write_text("inside nested")
+    (static_dir / "directory-link").symlink_to("real-directory", target_is_directory=True)
+    (static_dir / "broken-link").symlink_to("not-present")
+    (static_dir / "loop-one").symlink_to("loop-two")
+    (static_dir / "loop-two").symlink_to("loop-one")
+
+    client = make_client(tmp_path)
+    for path in ("/inside-link", "/directory-link/route", "/broken-link", "/loop-one"):
+        response = client.get(path, headers={"accept": "text/html"})
+        assert response.status_code == 404
+        assert response.text != "<html>canvas</html>"
+
+
 def test_safe_missing_extensionless_route_can_use_spa_fallback(tmp_path):
     client = make_client(tmp_path)
     response = client.get("/missing-client-route", headers={"accept": "text/html"})

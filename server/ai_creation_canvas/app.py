@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import uuid
 from enum import StrEnum
 from pathlib import Path
@@ -46,21 +47,33 @@ def _error_response(error: DomainError, request_id: str) -> JSONResponse:
 
 
 def _static_path_state(static_dir: Path, path: str) -> tuple[StaticPathState, Path | None]:
-    if not isinstance(path, str) or "\x00" in path:
+    if not isinstance(path, str) or "\x00" in path or path.startswith(("/", "\\")) or "\\" in path:
         return StaticPathState.REJECTED, None
     try:
         root = static_dir.resolve(strict=False)
-        candidate = root / path.lstrip("/")
+        components = path.split("/")
+        if not components or any(component in {"", ".", ".."} for component in components):
+            return StaticPathState.REJECTED, None
+        candidate = root
+        for component in components:
+            candidate = candidate / component
+            try:
+                candidate_info = candidate.lstat()
+            except FileNotFoundError:
+                return StaticPathState.NOT_FOUND, None
+            if stat.S_ISLNK(candidate_info.st_mode):
+                return StaticPathState.REJECTED, None
         resolved = candidate.resolve(strict=False)
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
         return StaticPathState.REJECTED, None
     try:
         resolved.relative_to(root)
     except ValueError:
         return StaticPathState.REJECTED, None
-    if not candidate.exists():
-        return StaticPathState.NOT_FOUND, None
-    if not resolved.is_file():
+    try:
+        if not stat.S_ISREG(resolved.stat().st_mode):
+            return StaticPathState.REJECTED, None
+    except (OSError, RuntimeError, ValueError):
         return StaticPathState.REJECTED, None
     return StaticPathState.LEGIT_FILE, resolved
 
