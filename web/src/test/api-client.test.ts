@@ -61,7 +61,7 @@ it.each(["path=%2Fprivate.py", "path=%5Cprivate.py", "path=%252Fprivate.py", "pa
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
 });
 
-it.each(["mailto:ops@example.com", "https:evil.example", "ssh://host/path", "git://host/repo", "blob:https://example", "vscode://x", "urn:isbn:123"])("rejects explicit URI scheme %s", async (message) => {
+it.each(["mailto:ops@example.com", "https:evil.example", "ssh://host/path", "git://host/repo", "blob:https://example", "vscode://x", "urn:isbn:123", "Details: [mailto:ops@example.com]", "note,urn:isbn:123", "x=SSH://host"])("rejects explicit URI scheme %s", async (message) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message }), { status: 403, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
 });

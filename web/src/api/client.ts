@@ -42,7 +42,7 @@ const safeString = (value: unknown, fallback: string, pattern: RegExp) => typeof
 const safeMessage = (value: unknown, fallback: string) => {
     if (typeof value !== "string" || value.length > 160) return fallback;
     if (value.includes("%")) return fallback;
-    if (/[\\/]|[\r\n\t\u0000-\u001f]|(?:^|[\s'"(])(?:[a-z][a-z0-9+.-]*:)(?=\S)|\b\w[\w.-]*\.(?:ts|js|py|java|go|sql):\d+\b|api[_ -]?key|authorization|bearer|secret|token|traceback|stack|exception|error:|enoent|sqlite|postgres|mysql|internal\s+(?:server|database|error)/i.test(value)) return fallback;
+    if (/[\\/]|[\r\n\t\u0000-\u001f]|(?:^|[^A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:(?=\S)|\b\w[\w.-]*\.(?:ts|js|py|java|go|sql):\d+\b|api[_ -]?key|authorization|bearer|secret|token|traceback|stack|exception|error:|enoent|sqlite|postgres|mysql|internal\s+(?:server|database|error)/i.test(value)) return fallback;
     return value;
 };
 
