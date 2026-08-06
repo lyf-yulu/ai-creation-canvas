@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-creation-canvas"
+version = "0.1.0"
+description = "Backend domain contracts for AI Creation Canvas"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.135.2",
+  "httpx==0.28.1",
+  "python-multipart==0.0.22",
+  "uvicorn==0.42.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.0.2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["server/ai_creation_canvas"]
+
+[tool.pytest.ini_options]
+pythonpath = ["server"]
+testpaths = ["tests"]

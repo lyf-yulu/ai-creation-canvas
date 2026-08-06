@@ -42,3 +42,4 @@ __pycache__/
 
 # Local isolated implementation worktrees
 .worktrees/
+.venv/

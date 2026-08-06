@@ -1,0 +1,1 @@
+"""Stable backend domain contracts."""
