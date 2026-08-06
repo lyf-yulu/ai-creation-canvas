@@ -1,18 +1,22 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import pytest
+from fastapi.encoders import jsonable_encoder
 
 from ai_creation_canvas.domain.models import (
     AssetRef,
     AssetStatus,
     JobRequest,
+    JobState,
+    JobStatus,
     ModelOperation,
     ModelSpec,
     PortalUser,
     RequestContext,
+    UpstreamJob,
 )
 from ai_creation_canvas.domain.registry import AdapterRegistry
-from ai_creation_canvas.errors import AdapterNotFoundError, AdapterRegistrationError
+from ai_creation_canvas.errors import ApiError, AdapterNotFoundError, AdapterRegistrationError
 
 
 @dataclass
@@ -168,3 +172,189 @@ def test_domain_collections_are_snapshotted_from_mutable_inputs():
     assert model.input_media == ("text", "image")
     assert request.asset_ids == ("asset-1",)
     assert dict(model.parameter_schema) == {"width": 1024}
+
+
+def test_domain_parameter_values_are_deeply_immutable_and_json_encodable():
+    schema = {"limits": {"sizes": [512, 1024]}}
+    params = {"style": {"palette": ["warm"]}}
+    model = ModelSpec(
+        model_id="model-1",
+        service_id="image-service",
+        display_name="Image",
+        operations=["image.generate"],
+        parameter_schema=schema,
+    )
+    request = JobRequest(
+        operation="image.generate",
+        model_id="model-1",
+        prompt="hello",
+        idempotency_key="idem-1",
+        params=params,
+    )
+    schema["limits"]["sizes"].append(2048)
+    params["style"]["palette"].append("cool")
+
+    with pytest.raises((AttributeError, TypeError)):
+        model.parameter_schema["limits"]["sizes"].append(4096)  # type: ignore[attr-defined]
+    assert jsonable_encoder(model) == {
+        "model_id": "model-1",
+        "service_id": "image-service",
+        "display_name": "Image",
+        "operations": ["image.generate"],
+        "input_media": [],
+        "parameter_schema": {"limits": {"sizes": [512, 1024]}},
+        "requires_asset_kind": None,
+    }
+    assert jsonable_encoder(request)["params"] == {"style": {"palette": ["warm"]}}
+    assert asdict(model)["parameter_schema"] == {"limits": {"sizes": [512, 1024]}}
+
+
+def _result() -> AssetRef:
+    return AssetRef("result-1", "reference", "active", "image/png")
+
+
+def _error() -> ApiError:
+    return ApiError("TASK_FAILED", "Task failed.", False, "request-1", "polling")
+
+
+@pytest.mark.parametrize(
+    ("status", "result", "error", "match"),
+    [
+        (JobStatus.SUCCEEDED, None, None, "succeeded jobs require a result"),
+        (JobStatus.SUCCEEDED, _result(), _error(), "succeeded jobs cannot include an error"),
+        (JobStatus.FAILED, None, None, "failed jobs require an error"),
+        (JobStatus.FAILED, _result(), _error(), "failed jobs cannot include a result"),
+        (JobStatus.UPLOADING, _result(), None, "in-progress jobs cannot include a result or error"),
+        (JobStatus.SUBMITTING, None, _error(), "in-progress jobs cannot include a result or error"),
+        (JobStatus.QUEUED, _result(), None, "in-progress jobs cannot include a result or error"),
+        (JobStatus.RUNNING, None, _error(), "in-progress jobs cannot include a result or error"),
+    ],
+)
+def test_job_state_rejects_illegal_status_field_combinations(status, result, error, match):
+    with pytest.raises(ValueError, match=match):
+        JobState("job-1", status, result=result, error=error)
+
+
+def test_job_state_rejects_non_api_error_and_empty_string_result():
+    with pytest.raises(ValueError, match="error must be an ApiError"):
+        JobState("job-1", "failed", error="not-an-error")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="result must be an AssetRef"):
+        JobState("job-1", "succeeded", result="")  # type: ignore[arg-type]
+
+
+def test_upstream_job_carries_only_a_validated_job_state():
+    state = JobState("job-1", "succeeded", result=_result())
+    job = UpstreamJob("image-service", "upstream-1", state)
+
+    assert job.state is state
+
+
+async def _wrong_asset_get(self):
+    return None
+
+
+async def _wrong_usage_record(self, context):
+    return None
+
+
+@pytest.mark.parametrize(
+    ("register", "adapter", "method"),
+    [
+        (
+            lambda registry, adapter: registry.register_generation(adapter),
+            type(
+                "SyncGeneration",
+                (),
+                {
+                    "service_id": "sync-generation",
+                    "list_models": lambda self, context: (),
+                    "submit": FakeGenerationAdapter.submit,
+                    "poll": FakeGenerationAdapter.poll,
+                },
+            )(),
+            "list_models",
+        ),
+        (
+            lambda registry, adapter: registry.register_asset(adapter),
+            type(
+                "WrongAssetSignature",
+                (),
+                {
+                    "service_id": "wrong-asset",
+                    "upload": FakeAssetAdapter.upload,
+                    "get": _wrong_asset_get,
+                },
+            )(),
+            "get",
+        ),
+        (
+            lambda registry, adapter: registry.register_usage(adapter),
+            type(
+                "WrongUsageSignature",
+                (),
+                {"service_id": "wrong-usage", "record": _wrong_usage_record},
+            )(),
+            "record",
+        ),
+    ],
+)
+def test_registry_rejects_sync_or_wrong_signature_port_methods(register, adapter, method):
+    with pytest.raises(AdapterRegistrationError, match=method):
+        register(AdapterRegistry(), adapter)
+
+
+def test_registry_hides_exception_raised_by_service_id_property():
+    class RaisingServiceId:
+        @property
+        def service_id(self):
+            raise RuntimeError("secret service-id getter failure")
+
+    with pytest.raises(AdapterRegistrationError) as raised:
+        AdapterRegistry().register_generation(RaisingServiceId())
+
+    assert "secret" not in str(raised.value)
+    assert "secret" not in repr(raised.value)
+
+
+def test_registry_hides_exception_raised_by_required_method_property():
+    class RaisingMethod:
+        service_id = "raising-method"
+
+        async def list_models(self, context):
+            return ()
+
+        @property
+        def submit(self):
+            raise RuntimeError("secret submit getter failure")
+
+        async def poll(self, context, upstream_job_id):
+            raise NotImplementedError
+
+    with pytest.raises(AdapterRegistrationError) as raised:
+        AdapterRegistry().register_generation(RaisingMethod())
+
+    assert "secret" not in str(raised.value)
+    assert "secret" not in repr(raised.value)
+
+
+def test_registry_does_not_render_a_non_callable_method_value():
+    class SecretRepresentation:
+        def __repr__(self):
+            return "secret non-callable value"
+
+    class NonCallableMethod:
+        service_id = "non-callable"
+
+        async def list_models(self, context):
+            return ()
+
+        submit = SecretRepresentation()
+
+        async def poll(self, context, upstream_job_id):
+            raise NotImplementedError
+
+    with pytest.raises(AdapterRegistrationError) as raised:
+        AdapterRegistry().register_generation(NonCallableMethod())
+
+    assert "secret" not in str(raised.value)
+    assert "secret" not in repr(raised.value)

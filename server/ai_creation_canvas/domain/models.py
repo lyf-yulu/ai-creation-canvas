@@ -5,11 +5,56 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping
+from typing import Mapping
 
-if TYPE_CHECKING:
-    from ai_creation_canvas.errors import ApiError
+from ai_creation_canvas.errors import ApiError
+
+
+class FrozenDict(Mapping[str, object]):
+    """A recursively immutable JSON object with a safe deepcopy representation."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Mapping[str, object]) -> None:
+        self._values = {key: _freeze_json_value(value) for key, value in values.items()}
+
+    def __getitem__(self, key: str) -> object:
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"FrozenDict({self._values!r})"
+
+    def __deepcopy__(self, memo: dict[int, object]) -> dict[str, object]:
+        result = _thaw_json_value(self)
+        assert isinstance(result, dict)
+        memo[id(self)] = result
+        return result
+
+
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("JSON object keys must be strings")
+        return FrozenDict(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(item) for item in value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ValueError("parameter values must be JSON-compatible")
+
+
+def _thaw_json_value(value: object) -> object:
+    if isinstance(value, FrozenDict):
+        return {key: _thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json_value(item) for item in value]
+    return value
 
 
 def _stable_id(value: str, field_name: str) -> str:
@@ -121,7 +166,7 @@ class ModelSpec:
                 object.__setattr__(self, "requires_asset_kind", AssetKind(self.requires_asset_kind))
             except ValueError as error:
                 raise ValueError("requires_asset_kind must be a supported AssetKind") from error
-        object.__setattr__(self, "parameter_schema", MappingProxyType(dict(self.parameter_schema)))
+        object.__setattr__(self, "parameter_schema", FrozenDict(self.parameter_schema))
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +209,7 @@ class JobRequest:
         object.__setattr__(self, "asset_ids", tuple(self.asset_ids))
         if any(not isinstance(asset_id, str) or not asset_id.strip() for asset_id in self.asset_ids):
             raise ValueError("asset_ids must contain non-empty stable identifiers")
-        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+        object.__setattr__(self, "params", FrozenDict(self.params))
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +228,20 @@ class JobState:
             raise ValueError("status must be a supported JobStatus") from error
         if self.result is not None and not isinstance(self.result, AssetRef):
             raise ValueError("result must be an AssetRef")
-        if self.status is JobStatus.SUCCEEDED and self.result is None:
-            raise ValueError("succeeded jobs require a result")
-        if self.status is JobStatus.FAILED and self.error is None:
-            raise ValueError("failed jobs require an error")
+        if self.error is not None and not isinstance(self.error, ApiError):
+            raise ValueError("error must be an ApiError")
+        if self.status is JobStatus.SUCCEEDED:
+            if self.result is None:
+                raise ValueError("succeeded jobs require a result")
+            if self.error is not None:
+                raise ValueError("succeeded jobs cannot include an error")
+        elif self.status is JobStatus.FAILED:
+            if self.result is not None:
+                raise ValueError("failed jobs cannot include a result")
+            if self.error is None:
+                raise ValueError("failed jobs require an error")
+        elif self.result is not None or self.error is not None:
+            raise ValueError("in-progress jobs cannot include a result or error")
         object.__setattr__(self, "updated_at", _utc_timestamp(self.updated_at, "updated_at"))
 
 
