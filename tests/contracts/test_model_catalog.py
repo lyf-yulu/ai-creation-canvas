@@ -82,3 +82,20 @@ async def test_portal_adapter_rejects_an_unbounded_parameter_schema():
     adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
     with pytest.raises(ValueError, match="configuration is invalid"):
         await adapter.list_models(context_for())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("content_type", [None, "text/html", "application/problem+json"])
+async def test_portal_adapter_rejects_non_json_content_type_without_parsing_body(content_type):
+    headers = {} if content_type is None else {"content-type": content_type}
+    client = PortalClient("https://portal.test", allowed_mounts=("/image-service",), transport=httpx.MockTransport(lambda r: httpx.Response(200, headers=headers, content=b'{"models": []}')))
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    with pytest.raises(ValueError, match="configuration is invalid"):
+        await adapter.list_models(context_for())
+
+
+@pytest.mark.anyio
+async def test_portal_adapter_accepts_case_insensitive_json_content_type():
+    client = PortalClient("https://portal.test", allowed_mounts=("/image-service",), transport=httpx.MockTransport(lambda r: httpx.Response(200, headers={"content-type": "Application/JSON; charset=utf-8"}, json={"models": []})))
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    assert await adapter.list_models(context_for()) == ()

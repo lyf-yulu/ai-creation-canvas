@@ -41,3 +41,19 @@ async def test_catalog_runs_adapters_concurrently_and_propagates_cancel():
         async def poll(self,c,i): pass
     r=AdapterRegistry();r.register_generation(A('b'));r.register_generation(A('a')); task=asyncio.create_task(ModelCatalog(r).list_models(RequestContext(PortalUser('u','A','user'),'r','t')))
     await asyncio.wait_for(started.wait(),1); release.set(); assert [x.model_id for x in (await task).models]==['a','b']
+
+@pytest.mark.anyio
+async def test_catalog_cancellation_propagates_and_cancels_adapter():
+    started=asyncio.Event(); cancelled=asyncio.Event()
+    class A:
+        service_id='a'
+        async def list_models(self,c):
+            started.set()
+            try: await asyncio.Event().wait()
+            finally: cancelled.set()
+        async def submit(self,c,r): pass
+        async def poll(self,c,i): pass
+    r=AdapterRegistry();r.register_generation(A()); task=asyncio.create_task(ModelCatalog(r).list_models(RequestContext(PortalUser('u','A','user'),'r','t')))
+    await started.wait(); task.cancel()
+    with pytest.raises(asyncio.CancelledError): await task
+    assert cancelled.is_set()
