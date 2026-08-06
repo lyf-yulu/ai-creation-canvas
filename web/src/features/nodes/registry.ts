@@ -2,6 +2,7 @@ import type { NodeDefinition } from "./types";
 
 export type NodeRegistry = {
     registerNode: (definition: NodeDefinition) => void;
+    ensureNode: (definition: NodeDefinition, owner: string) => boolean;
     listNodes: () => readonly NodeDefinition[];
     getNode: (id: string) => NodeDefinition | undefined;
 };
@@ -16,37 +17,48 @@ function validate(definition: NodeDefinition) {
     if (!definition.id || !Number.isInteger(definition.version) || definition.version < 1) throw new Error("node definition requires a stable id and positive integer version");
 }
 
-export function createNodeRegistry(): NodeRegistry {
-    const nodes = new Map<string, NodeDefinition>();
+function freezeData<T>(value: T): T {
+    if (Array.isArray(value)) return Object.freeze(value.map(freezeData)) as T;
+    if (!value || typeof value !== "object" || "$$typeof" in value || Object.getPrototypeOf(value) !== Object.prototype) return value;
+    const copy = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, freezeData(item)]));
+    return Object.freeze(copy) as T;
+}
+
+function storeDefinition(definition: NodeDefinition) {
+    return freezeData(definition);
+}
+
+function createRegistry(nodes: Map<string, NodeDefinition>, owners: Map<string, string>, onRegister?: () => void): NodeRegistry {
+    const registerNode = (definition: NodeDefinition, owner?: string) => {
+        validate(definition);
+        if (nodes.has(definition.id)) throw new Error(`duplicate node: ${definition.id}`);
+        nodes.set(definition.id, storeDefinition(definition));
+        if (owner) owners.set(definition.id, owner);
+        onRegister?.();
+    };
     return {
-        registerNode(definition) {
-            validate(definition);
-            if (nodes.has(definition.id)) throw new Error(`duplicate node: ${definition.id}`);
-            nodes.set(definition.id, Object.freeze({ ...definition, inputs: Object.freeze([...definition.inputs]), outputs: Object.freeze([...definition.outputs]) }));
+        registerNode,
+        ensureNode(definition, owner) {
+            const existing = nodes.get(definition.id);
+            if (existing && owners.get(definition.id) === owner && existing.version === definition.version) return false;
+            registerNode(definition, owner);
+            return true;
         },
         listNodes: () => Object.freeze([...nodes.values()]),
         getNode: (id) => nodes.get(id),
     };
 }
 
-const registryNodes = new Map<string, NodeDefinition>();
-function createProductionNodeRegistry(): NodeRegistry {
-    return {
-        registerNode(definition) {
-            validate(definition);
-            if (registryNodes.has(definition.id)) throw new Error(`duplicate node: ${definition.id}`);
-            registryNodes.set(definition.id, Object.freeze({ ...definition, inputs: Object.freeze([...definition.inputs]), outputs: Object.freeze([...definition.outputs]) }));
-            notifyListeners();
-        },
-        listNodes: () => Object.freeze([...registryNodes.values()]),
-        getNode: (id) => registryNodes.get(id),
-    };
+export function createNodeRegistry(): NodeRegistry {
+    const nodes = new Map<string, NodeDefinition>();
+    return createRegistry(nodes, new Map());
 }
 
-const registry = createProductionNodeRegistry();
-export const registerNode = registry.registerNode;
-export const listNodes = registry.listNodes;
-export const getNode = registry.getNode;
+const registryNodes = new Map<string, NodeDefinition>();
+export const nodeRegistry = createRegistry(registryNodes, new Map(), notifyListeners);
+export const registerNode = nodeRegistry.registerNode;
+export const listNodes = nodeRegistry.listNodes;
+export const getNode = nodeRegistry.getNode;
 export const subscribeToNodeRegistry = (listener: NodeRegistryListener) => {
     listeners.add(listener);
     return () => listeners.delete(listener);

@@ -22,6 +22,7 @@ export function ConnectionCreateMenu({
     onClose: () => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    useNodeRegistryVersion();
     return (
         <div
             className="absolute z-[120] w-[300px] rounded-[18px] border p-3 shadow-2xl backdrop-blur"

@@ -1,8 +1,12 @@
 import { expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { createElement } from "react";
 
 import { listNodes, createNodeRegistry } from "@/features/nodes/registry";
 import { createWorkflowRegistry, getWorkflow } from "@/features/workflows/registry";
-import { portraitVideoWorkflow } from "@/features/workflows/portrait-video";
+import { registerBuiltinNodes } from "@/features/nodes/builtins";
+import { ConnectionCreateMenu, NodeCreateMenu } from "@/components/canvas/canvas-create-menus";
+import { portraitVideoWorkflow, registerBuiltinWorkflows } from "@/features/workflows/portrait-video";
 
 it("adds a node and workflow only through isolated registration", () => {
     const nodes = createNodeRegistry();
@@ -36,6 +40,43 @@ it("does not expose mutable registry collections and returns undefined for unkno
 
     expect(nodes.listNodes()).toHaveLength(1);
     expect(getWorkflow("unknown.workflow")).toBeUndefined();
+});
+
+it("defensively freezes nested node data instead of retaining caller-owned objects", () => {
+    const nodes = createNodeRegistry();
+    const size = { width: 320, height: 200 };
+    nodes.registerNode({ id: "test.sized", version: 1, title: "测试", inputs: ["image"], outputs: ["video"], defaultSize: size, createMetadata: () => ({}), render: () => null });
+    size.width = 999;
+    const stored = nodes.getNode("test.sized");
+    try { (stored?.defaultSize as { width: number }).width = 888; } catch { /* frozen definitions may throw in strict mode */ }
+
+    expect(nodes.getNode("test.sized")?.defaultSize).toEqual({ width: 320, height: 200 });
+    expect(nodes.listNodes()[0]?.defaultSize).toEqual({ width: 320, height: 200 });
+});
+
+it("makes built-in bootstrap idempotent without weakening normal duplicate rejection", () => {
+    const nodes = createNodeRegistry();
+    const workflows = createWorkflowRegistry();
+    registerBuiltinNodes(nodes);
+    const nodeCount = nodes.listNodes().length;
+    registerBuiltinNodes(nodes);
+    registerBuiltinWorkflows(workflows);
+    registerBuiltinWorkflows(workflows);
+
+    expect(nodes.listNodes()).toHaveLength(nodeCount);
+    expect(workflows.getWorkflow("portrait.video")?.id).toBe("portrait.video");
+    expect(() => nodes.registerNode({ id: "text", version: 1, title: "冲突", inputs: [], outputs: [], createMetadata: () => ({}), render: () => null })).toThrow("duplicate node: text");
+    expect(() => workflows.registerWorkflow({ id: "portrait.video", version: 1, run: async () => ({}) })).toThrow("duplicate workflow: portrait.video");
+});
+
+it("renders both create menus from the subscribed registry catalogue", () => {
+    registerBuiltinNodes();
+    const props = { onCreate: () => undefined, onClose: () => undefined };
+    const { unmount } = render(createElement(ConnectionCreateMenu, { ...props, pending: { connection: { nodeId: "n", handleType: "source" }, position: { x: 0, y: 0 } } }));
+    expect(screen.getByText("文本生成")).toBeInTheDocument();
+    unmount();
+    render(createElement(NodeCreateMenu, { ...props, position: { x: 0, y: 0 } }));
+    expect(screen.getByText("生成配置")).toBeInTheDocument();
 });
 
 it("runs portrait video as upload, active asset, then generic image-to-video submission", async () => {
@@ -81,4 +122,31 @@ it("stops portrait workflow when the asset fails or remains pending past its tim
     };
     await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "failed", mime_type: "image/png" }) })).rejects.toThrow("asset asset-1 failed");
     await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "processing", mime_type: "image/png" }), pollIntervalMs: 1, maxWaitMs: 1 })).rejects.toThrow("asset asset-1 timed out");
+});
+
+it("rejects invalid portrait polling limits before upload or sleep", async () => {
+    const uploadAsset = async () => { throw new Error("upload should not run"); };
+    const input = {
+        file: new File(["image"], "portrait.png", { type: "image/png" }), modelId: "video-model-a", prompt: "walk", params: {}, idempotencyKey: "portrait-1",
+        uploadAsset, fetchAsset: async () => ({ id: "asset", kind: "portrait" as const, status: "processing" as const, mime_type: "image/png" }), submitJob: async () => ({ jobId: "job" }), sleep: async () => { throw new Error("sleep should not run"); },
+    };
+    for (const pollIntervalMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(portraitVideoWorkflow.run({ ...input, pollIntervalMs })).rejects.toThrow("pollIntervalMs must be a finite positive number");
+    }
+    for (const maxWaitMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(portraitVideoWorkflow.run({ ...input, maxWaitMs })).rejects.toThrow("maxWaitMs must be a finite positive number");
+    }
+});
+
+it("bounds portrait polling when the maximum wait is shorter than the interval", async () => {
+    let sleeps = 0;
+    let assetReads = 0;
+    await expect(portraitVideoWorkflow.run({
+        file: new File(["image"], "portrait.png", { type: "image/png" }), modelId: "video-model-a", prompt: "walk", params: {}, idempotencyKey: "portrait-1",
+        uploadAsset: async () => ({ id: "asset", kind: "portrait", status: "processing", mime_type: "image/png" }),
+        fetchAsset: async () => { assetReads += 1; return { id: "asset", kind: "portrait" as const, status: "processing" as const, mime_type: "image/png" }; },
+        submitJob: async () => ({ jobId: "job" }), sleep: async () => { sleeps += 1; }, pollIntervalMs: 10, maxWaitMs: 1,
+    })).rejects.toThrow("asset asset timed out");
+    expect(assetReads).toBe(0);
+    expect(sleeps).toBe(0);
 });
