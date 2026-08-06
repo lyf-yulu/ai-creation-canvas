@@ -1,6 +1,6 @@
 """Registry for trusted, provider-neutral adapter capabilities."""
 
-from inspect import iscoroutinefunction, signature
+from inspect import Parameter, iscoroutinefunction, signature
 from typing import TypeVar
 
 from ai_creation_canvas.domain.ports import AssetPort, GenerationPort, UsagePort
@@ -58,10 +58,22 @@ class AdapterRegistry:
             if not AdapterRegistry._is_async_callable(method):
                 raise AdapterRegistrationError(f"{category} adapter {service_id!r} requires async callable {method_name}")
             try:
-                signature(method).bind(*([object()] * argument_count))
+                method_signature = signature(method)
+                explicit_positional = tuple(
+                    parameter
+                    for parameter in method_signature.parameters.values()
+                    if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
+                )
+                if len(explicit_positional) < argument_count:
+                    raise TypeError("insufficient explicit positional parameters")
+                method_signature.bind(*([object()] * argument_count))
             except (TypeError, ValueError):
                 raise AdapterRegistrationError(
                     f"{category} adapter {service_id!r} has incompatible signature for {method_name}"
+                ) from None
+            except Exception:
+                raise AdapterRegistrationError(
+                    f"{category} adapter {service_id!r} has inaccessible signature for {method_name}"
                 ) from None
         if service_id in adapters:
             raise AdapterRegistrationError(f"duplicate service_id for {category}: {service_id}")

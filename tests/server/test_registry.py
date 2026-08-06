@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass
+import math
 
 import pytest
 from fastapi.encoders import jsonable_encoder
@@ -209,6 +210,55 @@ def test_domain_parameter_values_are_deeply_immutable_and_json_encodable():
     assert asdict(model)["parameter_schema"] == {"limits": {"sizes": [512, 1024]}}
 
 
+@pytest.mark.parametrize("non_finite", (math.nan, math.inf, -math.inf))
+@pytest.mark.parametrize(
+    ("domain_factory", "payload"),
+    [
+        (
+            lambda payload: ModelSpec("model-1", "image-service", "Image", ("image.generate",), parameter_schema=payload),
+            lambda value: {"value": value},
+        ),
+        (
+            lambda payload: ModelSpec("model-1", "image-service", "Image", ("image.generate",), parameter_schema=payload),
+            lambda value: {"values": [value]},
+        ),
+        (
+            lambda payload: ModelSpec("model-1", "image-service", "Image", ("image.generate",), parameter_schema=payload),
+            lambda value: {"nested": {"value": value}},
+        ),
+        (
+            lambda payload: JobRequest("image.generate", "model-1", "hello", "idem-1", params=payload),
+            lambda value: {"value": value},
+        ),
+        (
+            lambda payload: JobRequest("image.generate", "model-1", "hello", "idem-1", params=payload),
+            lambda value: {"values": [value]},
+        ),
+        (
+            lambda payload: JobRequest("image.generate", "model-1", "hello", "idem-1", params=payload),
+            lambda value: {"nested": {"value": value}},
+        ),
+    ],
+)
+def test_domain_parameter_values_reject_non_finite_floats_without_echoing_them(domain_factory, payload, non_finite):
+    with pytest.raises(ValueError, match="finite") as raised:
+        domain_factory(payload(non_finite))
+
+    assert str(non_finite) not in str(raised.value)
+
+
+def test_domain_parameter_values_preserve_finite_json_scalars():
+    request = JobRequest(
+        "image.generate",
+        "model-1",
+        "hello",
+        "idem-1",
+        params={"integer": 1, "boolean": True, "empty": None, "finite": 1.5},
+    )
+
+    assert asdict(request)["params"] == {"integer": 1, "boolean": True, "empty": None, "finite": 1.5}
+
+
 def _result() -> AssetRef:
     return AssetRef("result-1", "reference", "active", "image/png")
 
@@ -358,3 +408,98 @@ def test_registry_does_not_render_a_non_callable_method_value():
 
     assert "secret" not in str(raised.value)
     assert "secret" not in repr(raised.value)
+
+
+async def _only_varargs(self, *args):
+    return None
+
+
+@pytest.mark.parametrize(
+    ("register", "adapter", "method"),
+    [
+        (
+            lambda registry, adapter: registry.register_generation(adapter),
+            type(
+                "VarArgsGeneration",
+                (),
+                {
+                    "service_id": "varargs-generation",
+                    "list_models": _only_varargs,
+                    "submit": FakeGenerationAdapter.submit,
+                    "poll": FakeGenerationAdapter.poll,
+                },
+            )(),
+            "list_models",
+        ),
+        (
+            lambda registry, adapter: registry.register_asset(adapter),
+            type(
+                "VarArgsAsset",
+                (),
+                {"service_id": "varargs-asset", "upload": _only_varargs, "get": FakeAssetAdapter.get},
+            )(),
+            "upload",
+        ),
+        (
+            lambda registry, adapter: registry.register_usage(adapter),
+            type("VarArgsUsage", (), {"service_id": "varargs-usage", "record": _only_varargs})(),
+            "record",
+        ),
+    ],
+)
+def test_registry_rejects_varargs_in_place_of_explicit_port_parameters(register, adapter, method):
+    with pytest.raises(AdapterRegistrationError, match=method):
+        register(AdapterRegistry(), adapter)
+
+
+def test_registry_rejects_signature_inspection_errors_without_leaking_details():
+    class SignatureRaises:
+        async def __call__(self, context):
+            return ()
+
+        @property
+        def __signature__(self):
+            raise RuntimeError("secret signature failure")
+
+    class Adapter:
+        service_id = "signature-raises"
+        list_models = SignatureRaises()
+        submit = FakeGenerationAdapter.submit
+        poll = FakeGenerationAdapter.poll
+
+    with pytest.raises(AdapterRegistrationError) as raised:
+        AdapterRegistry().register_generation(Adapter())
+
+    assert "secret" not in str(raised.value)
+    assert "secret" not in repr(raised.value)
+
+
+def test_registry_rejects_extra_required_positional_arguments():
+    class Adapter:
+        service_id = "extra-required"
+
+        async def list_models(self, context, required):
+            return ()
+
+        submit = FakeGenerationAdapter.submit
+        poll = FakeGenerationAdapter.poll
+
+    with pytest.raises(AdapterRegistrationError, match="list_models"):
+        AdapterRegistry().register_generation(Adapter())
+
+
+def test_registry_accepts_optional_keyword_only_extension_arguments():
+    class Adapter:
+        service_id = "optional-keyword-only"
+
+        async def list_models(self, context, *, page_size=50):
+            return ()
+
+        submit = FakeGenerationAdapter.submit
+        poll = FakeGenerationAdapter.poll
+
+    registry = AdapterRegistry()
+    adapter = Adapter()
+    registry.register_generation(adapter)
+
+    assert registry.generation(adapter.service_id) is adapter

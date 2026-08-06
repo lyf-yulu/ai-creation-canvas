@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import math
 from typing import Mapping
 
 from ai_creation_canvas.errors import ApiError
@@ -44,6 +45,8 @@ def _freeze_json_value(value: object) -> object:
         return FrozenDict(value)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json_value(item) for item in value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("parameter float values must be finite")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise ValueError("parameter values must be JSON-compatible")
