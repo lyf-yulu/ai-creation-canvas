@@ -3,7 +3,8 @@ import { FileText, Group, Image as ImageIcon, Music2, Settings2, Video } from "l
 import { NODE_SPECS } from "@/constant/canvas";
 import { registerNodeDefinitions } from "@/lib/canvas/node-registry";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import type { CanvasNodeDefinition, CanvasNodeResource } from "@/types/canvas-plugin";
+import type { CanvasNodeDefinition } from "@/features/nodes/types";
+type CanvasNodeResource = NonNullable<CanvasNodeDefinition["resource"]> extends (node: CanvasNodeData) => infer R ? R : never;
 
 // 内置节点的可扩展元数据(尺寸/初始 metadata 复用 NODE_SPECS)。
 // 渲染仍由 canvas-node 内部渲染器负责,故不提供 Content。
@@ -33,5 +34,5 @@ let registered = false;
 export function registerBuiltinNodes() {
     if (registered) return;
     registered = true;
-    registerNodeDefinitions(BUILTIN_DEFINITIONS, "builtin");
+    registerNodeDefinitions(BUILTIN_DEFINITIONS);
 }

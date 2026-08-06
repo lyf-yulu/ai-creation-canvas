@@ -17,6 +17,6 @@
             "@/*": ["./src/*"]
         }
     },
-    "include": ["vite.config.ts", "src/**/*.ts", "src/**/*.tsx"],
+    "include": ["vite.config.ts", "src/vite-env.d.ts", "src/main.tsx", "src/router.tsx", "src/api/**/*.ts", "src/constant/security-policy.ts", "src/features/nodes/types.ts", "src/test/**/*.ts", "src/pages/canvas/{index,project}.tsx", "src/pages/not-found/index.tsx", "src/components/canvas/{canvas-delete-projects-dialog,canvas-project-card,infinite-canvas}.tsx", "src/components/layout/app-providers.tsx", "src/components/layout/client-root-init.tsx", "src/lib/{zip,app-theme,analytics,utils,canvas-theme}.ts", "src/services/{file-storage,image-storage}.ts", "src/stores/{use-theme-store,use-asset-store,use-canvas-side-panel-store}.ts", "src/stores/canvas/{use-canvas-store,use-canvas-ui-store}.ts", "src/types/{canvas,canvas-export,image,media}.ts"],
     "exclude": ["node_modules"]
 }

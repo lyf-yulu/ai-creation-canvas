@@ -1,10 +1,9 @@
 import { create } from "zustand";
 
-import type { CanvasNodeDefinition } from "@/types/canvas-plugin";
+import type { CanvasNodeDefinition } from "@/features/nodes/types";
 import { CanvasNodeType } from "@/types/canvas";
 
 const definitions = new Map<string, CanvasNodeDefinition>();
-const ownerByType = new Map<string, string>(); // type -> pluginId(内置为 "builtin")
 
 // 注册表版本号,注册/卸载时自增,驱动创建菜单等 UI 重渲染
 export const useNodeRegistryVersion = create<{ version: number }>(() => ({ version: 0 }));
@@ -12,29 +11,15 @@ function bump() {
     useNodeRegistryVersion.setState((state) => ({ version: state.version + 1 }));
 }
 
-export function registerNodeDefinitions(defs: CanvasNodeDefinition[], pluginId = "builtin") {
+export function registerNodeDefinitions(defs: CanvasNodeDefinition[]) {
     defs.forEach((def) => {
         definitions.set(def.type, def);
-        ownerByType.set(def.type, pluginId);
     });
-    bump();
-}
-
-export function unregisterPluginNodes(pluginId: string) {
-    for (const [type, owner] of ownerByType) {
-        if (owner !== pluginId) continue;
-        definitions.delete(type);
-        ownerByType.delete(type);
-    }
     bump();
 }
 
 export function getNodeDefinition(type: string) {
     return definitions.get(type);
-}
-
-export function getNodePluginId(type: string) {
-    return ownerByType.get(type) || "builtin";
 }
 
 export function listNodeDefinitions() {
