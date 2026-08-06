@@ -46,7 +46,7 @@ it("does not expose filesystem and exception details in 4xx messages", async () 
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
 });
 
-it.each(["OSError ('/srv/private.py')", "failed (C:/private.txt)", "file:///srv/private", "at foo (/srv/x.ts:12:3)", "bad\u0007message"])("rejects unsafe 4xx detail %s", async (message) => {
+it.each(["OSError ('/srv/private.py')", "failed (C:/private.txt)", "/private.py", "file:///srv/private", "at foo (/srv/x.ts:12:3)", "bad\u0007message", "Visit https://example.com/help"])("rejects unsafe 4xx detail %s", async (message) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message }), { status: 403, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "You are not allowed to perform this action." });
 });

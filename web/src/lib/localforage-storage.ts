@@ -11,7 +11,8 @@ export async function setItemForLease(lease: ScopedStoreLease, name: string, val
     return isStorageLeaseActive(lease);
 }
 
-export const localForageStorage: StateStorage = {
+export function createScopedPersistStorage(): StateStorage {
+return {
     getItem: async (name) => {
         if (typeof window === "undefined") return null;
         const lease = captureAppStorageLease();
@@ -41,3 +42,6 @@ export const localForageStorage: StateStorage = {
         } catch { /* Do not fall back to an unscoped browser store. */ }
     },
 };
+}
+
+export const localForageStorage: StateStorage = createScopedPersistStorage();

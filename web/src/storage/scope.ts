@@ -6,6 +6,7 @@ let activeScope: StorageScope | null = null;
 let scopeVersion = 0;
 const instances = new Map<string, LocalForage>();
 const clearListeners = new Set<() => void>();
+let instanceFactory: (options: { name: string; storeName: string }) => LocalForage = (options) => localforage.createInstance(options);
 
 export class StorageScopeChangedError extends Error {
     constructor() {
@@ -54,10 +55,16 @@ export function scopedStore(storeName: string): LocalForage | null {
     const key = `${storageDatabaseName(activeScope)}:${storeName}`;
     let instance = instances.get(key);
     if (!instance) {
-        instance = localforage.createInstance({ name: storageDatabaseName(activeScope), storeName });
+        instance = instanceFactory({ name: storageDatabaseName(activeScope), storeName });
         instances.set(key, instance);
     }
     return instance;
+}
+
+/** Test-only dependency injection; production never calls this. */
+export function setScopedStoreFactoryForTest(factory?: (options: { name: string; storeName: string }) => LocalForage) {
+    instances.clear();
+    instanceFactory = factory || ((options) => localforage.createInstance(options));
 }
 
 export function captureScopedStore(storeName: string): ScopedStoreLease | null {
