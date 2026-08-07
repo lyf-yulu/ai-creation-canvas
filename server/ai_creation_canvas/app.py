@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
@@ -17,9 +18,13 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
+from ai_creation_canvas.api.assets import router as assets_router
+from ai_creation_canvas.api.jobs import router as jobs_router
+from ai_creation_canvas.api.results import router as results_router
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
+from ai_creation_canvas.storage.sqlite import CanvasStore
 
 
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -48,7 +53,7 @@ def _error_response(error: DomainError, request_id: str) -> JSONResponse:
         request_id=request_id,
         phase=error.api_error.phase,
     )
-    return JSONResponse(status_code=401 if public_error.code == "AUTH_REQUIRED" else 400, content=public_error.to_dict())
+    return JSONResponse(status_code=getattr(error, "status_code", 401 if public_error.code == "AUTH_REQUIRED" else 400), content=public_error.to_dict())
 
 
 def _static_path_state(static_dir: Path, path: str) -> tuple[StaticPathState, Path | None]:
@@ -89,11 +94,12 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, portal_transport=None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
-    if model_catalog is None:
+    if registry is None:
         registry = AdapterRegistry()
+    if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
             client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
@@ -101,6 +107,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                 registry.register_generation(PortalJobsAdapter(declaration, client))
         model_catalog = ModelCatalog(registry)
     app.state.model_catalog = model_catalog
+    app.state.adapter_registry = registry
+    app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
     build_dir = build_dir.resolve(strict=False)
 
@@ -138,8 +146,17 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     async def domain_error_handler(request: Request, error: DomainError) -> JSONResponse:
         return _error_response(error, _request_id(getattr(request.state, "request_id", None)))
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, error: RequestValidationError) -> JSONResponse:
+        del error
+        request_id = _request_id(getattr(request.state, "request_id", None))
+        return JSONResponse(status_code=400, content=ApiError("REQUEST_REJECTED", "The request was rejected.", False, request_id, "request").to_dict())
+
     app.include_router(session_router)
     app.include_router(models_router)
+    app.include_router(assets_router)
+    app.include_router(jobs_router)
+    app.include_router(results_router)
 
     @app.api_route("/api/v1", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/api/v1/", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)

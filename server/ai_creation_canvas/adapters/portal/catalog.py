@@ -7,7 +7,8 @@ import asyncio
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from ai_creation_canvas.adapters.portal.client import PortalClient
-from ai_creation_canvas.domain.models import ModelOperation, ModelSpec, RequestContext
+from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelOperation, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.errors import ApiError
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -132,11 +133,51 @@ class PortalJobsAdapter:
             models.append(ModelSpec(model_id, self.service_id, display_name, parsed_ops, tuple(input_media), schema, asset_kind))
         return tuple(models)
 
-    async def submit(self, context: RequestContext, request: object) -> object:
-        raise NotImplementedError
+    async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
+        return await self._submit(context, request, None)
 
-    async def poll(self, context: RequestContext, upstream_job_id: str) -> object:
-        raise NotImplementedError
+    async def submit_with_cookie(self, context: RequestContext, request: JobRequest, cookie_header: str) -> UpstreamJob:
+        return await self._submit(context, request, cookie_header)
+
+    async def _submit(self, context: RequestContext, request: JobRequest, cookie_header: str | None) -> UpstreamJob:
+        response = await self._client.request(context, "POST", "api/jobs", mount=self._declaration.mount, cookie_header=cookie_header, json={"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": list(request.asset_ids)})
+        if response.status_code not in {200, 201, 202}:
+            raise ValueError("generation submission failed")
+        try:
+            payload = response.json()
+            upstream_id = payload["id"]
+            status = payload.get("status", "queued")
+            if not isinstance(upstream_id, str): raise ValueError
+            state = JobState(upstream_id, status)
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError("generation submission is invalid") from error
+        return UpstreamJob(self.service_id, upstream_id, state)
+
+    async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        return await self._poll(context, upstream_job_id, None)
+
+    async def poll_with_cookie(self, context: RequestContext, upstream_job_id: str, cookie_header: str) -> JobState:
+        return await self._poll(context, upstream_job_id, cookie_header)
+
+    async def _poll(self, context: RequestContext, upstream_job_id: str, cookie_header: str | None) -> JobState:
+        response = await self._client.request(context, "GET", f"api/jobs/{upstream_job_id}", mount=self._declaration.mount, cookie_header=cookie_header)
+        if response.status_code != 200: raise ValueError("generation poll failed")
+        try:
+            payload = response.json(); status = payload["status"]
+            result = payload.get("result_ref")
+            ref = AssetRef(result, "reference", "active", "application/octet-stream") if status == "succeeded" and isinstance(result, str) else None
+            if status == "failed":
+                return JobState(upstream_job_id, status, error=ApiError("TASK_FAILED", "The generation task failed.", False, context.request_id, "generation"))
+            return JobState(upstream_job_id, status, result=ref)
+        except (ValueError, KeyError, TypeError) as error:
+            raise ValueError("generation poll is invalid") from error
+
+    async def fetch_result(self, context: RequestContext, upstream_job_id: str, result_ref: str, cookie_header: str | None = None) -> tuple[bytes, str]:
+        response = await self._client.request(context, "GET", f"api/results/{upstream_job_id}/{result_ref}", mount=self._declaration.mount, cookie_header=cookie_header)
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if response.status_code != 200 or content_type not in {"image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"}:
+            raise ValueError("generation result is unavailable")
+        return response.content, content_type
 
 
 class ModelCatalog:
