@@ -1,5 +1,6 @@
 """Protected streaming proxy for opaque provider result identifiers."""
 from __future__ import annotations
+import asyncio
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from ai_creation_canvas.api._common import context_for, problem
@@ -17,7 +18,7 @@ def parse_range_header(value: str | None) -> tuple[str, int | None, int | None] 
     left, sep, right = value[6:].partition("-")
     if not sep or (not left and not right) or (left and not left.isdecimal()) or (right and not right.isdecimal()):
         raise ValueError("invalid range")
-    if left and right and int(right) < int(left): raise ValueError("invalid range")
+    if (not left and right == "0") or (left and right and int(right) < int(left)): raise ValueError("invalid range")
     return ("suffix" if not left else "range", int(left) if left else None, int(right) if right else None)
 
 def _content_length(value: str | None) -> int:
@@ -58,6 +59,19 @@ def validate_partial_response(
     if start != requested_start or end != expected_end:
         raise ValueError("partial response does not match the requested range")
 
+
+async def _close(stream) -> None:
+    """Release an upstream stream even when validation or request cancellation interrupts us."""
+    task = asyncio.create_task(stream.aclose())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+        raise
+
 @router.api_route("/results/{job_id}", methods=["GET", "HEAD"])
 async def get_result(job_id: str, request: Request):
     context = context_for(request)
@@ -74,37 +88,45 @@ async def get_result(job_id: str, request: Request):
     try: requested_range = parse_range_header(range_header)
     except ValueError:
         raise problem(request, "RANGE_NOT_SATISFIABLE", "The requested range is invalid.", status=416)
+    stream = None
     try:
         stream = await open_result(context, str(item["result_id"]), cookie_header=request.headers.get("cookie", ""), range_header=range_header, head=request.method == "HEAD")
         length = stream.headers.get("content-length")
         if stream.status_code == 416:
             content_range = stream.headers.get("content-range", "")
-            await stream.aclose()
+            await _close(stream)
             if not content_range.startswith("bytes */") or not content_range[8:].isdigit(): raise ValueError
             return Response(status_code=416, headers={"Content-Range": content_range, "Accept-Ranges": "bytes"})
         content_type = stream.headers.get("content-type", "").split(";", 1)[0].lower()
         declared = _content_length(length)
         if content_type not in _MIME:
-            await stream.aclose(); raise ValueError
-        if range_header and stream.status_code != 206: await stream.aclose(); return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
-        if not range_header and stream.status_code != 200: await stream.aclose(); raise ValueError
+            raise ValueError
+        if stream.headers.get("content-encoding", "identity").lower() != "identity": raise ValueError
+        if range_header and stream.status_code != 206: return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
+        if not range_header and stream.status_code != 200: raise ValueError
         if stream.status_code == 206:
             assert requested_range is not None
             validate_partial_response(requested_range, stream.headers.get("content-range"), declared)
+    except asyncio.CancelledError:
+        if stream is not None: await _close(stream)
+        raise
     except Exception:
-        raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404) from None
+        if stream is not None: await _close(stream)
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
     headers = {key.title(): value for key, value in stream.headers.items() if key.lower() in {"content-length", "content-range", "accept-ranges", "etag"}}
     if request.method == "HEAD":
-        await stream.aclose(); return Response(status_code=stream.status_code, media_type=content_type, headers=headers)
+        await _close(stream); return Response(status_code=stream.status_code, media_type=content_type, headers=headers)
     iterator = stream.aiter_bytes()
     try:
         first = await anext(iterator)
         if len(first) > declared or len(first) > _MAX:
-            await stream.aclose(); raise ValueError("first chunk exceeds content length")
+            await _close(stream); raise ValueError("first chunk exceeds content length")
     except StopAsyncIteration:
-        await stream.aclose(); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
+        await _close(stream); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
+    except asyncio.CancelledError:
+        await _close(stream); raise
     except Exception:
-        await stream.aclose(); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
+        await _close(stream); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
     async def body():
         total = len(first)
         try:
@@ -114,5 +136,5 @@ async def get_result(job_id: str, request: Request):
                 if total > _MAX or total > declared: raise ResultStreamProtocolError("upstream length mismatch")
                 yield chunk
             if total != declared: raise ResultStreamProtocolError("upstream length mismatch")
-        finally: await stream.aclose()
+        finally: await _close(stream)
     return StreamingResponse(body(), status_code=stream.status_code, media_type=content_type, headers=headers)

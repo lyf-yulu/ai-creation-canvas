@@ -17,6 +17,9 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+_RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+
+
 @dataclass(frozen=True, slots=True)
 class Reservation:
     job: dict[str, object]
@@ -83,6 +86,7 @@ class CanvasStore:
             mode = db.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if str(mode).lower() != "wal":
                 raise RuntimeError("SQLite WAL could not be enabled")
+            db.execute("PRAGMA secure_delete = ON")
         with self._connection(immediate=True) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -102,7 +106,7 @@ class CanvasStore:
                 # Remove the legacy column itself.  SQLite has no portable DROP COLUMN
                 # for older supported versions; rebuild only from non-sensitive fields.
                 # Fixed canonical projection; absent legacy columns get inert defaults.
-                legacy_result = "CASE WHEN result_ref GLOB '[A-Za-z0-9_-]*' AND length(result_ref) BETWEEN 1 AND 128 THEN result_ref ELSE NULL END"
+                legacy_result = "result_ref"
                 projection = [
                     "id", "user_id", "service_id", "upstream_job_id", "operation", "status",
                     "idempotency_key", "request_hash", "error_code" if "error_code" in columns else "NULL",
@@ -126,6 +130,9 @@ class CanvasStore:
             for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
+            for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
+                if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
+                    db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -181,6 +188,14 @@ class CanvasStore:
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token: return dict(row)
             db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, updated_at=? WHERE id=?", (error_code, time.time() - 1, _now(), job_id))
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def mark_failed(self, job_id: str, error_code: str, token: str | None = None) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None: raise KeyError(job_id)
+            if token is not None and row["submission_token"] != token: return dict(row)
+            db.execute("UPDATE canvas_jobs SET status='failed', error_code=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (error_code, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None) -> dict[str, object]:

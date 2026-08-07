@@ -1,6 +1,7 @@
 """Owned generation submissions and polling."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -73,10 +74,10 @@ def _response(item: dict[str, object], request: Request) -> dict[str, object]:
 async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
     if item["status"] in {"succeeded", "failed", "submitting"} or not item.get("upstream_job_id"):
         return item
+    adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+    if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     try:
-        adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
-        if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
-            raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
         poll_with_cookie = getattr(adapter, "poll_with_cookie", None)
         if callable(poll_with_cookie):
             state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
@@ -86,7 +87,7 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
         if state.result is not None:
             result_id = state.result.asset_id
             if not _RESULT_ID.fullmatch(result_id):
-                return request.app.state.canvas_store.fail_reservation(str(item["id"]), "TASK_FAILED")
+                return request.app.state.canvas_store.mark_failed(str(item["id"]), "INVALID_UPSTREAM_RESULT")
         return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_id=result_id)
     except Exception:
         # A transient poll error is not an upstream terminal state.
@@ -96,17 +97,17 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
 @router.post("/jobs", status_code=201)
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
-    if request.app.state.model_catalog.requires_portal_cookie and not request.headers.get("cookie"):
-        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     try:
         domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids))
     except ValueError:
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.") from None
-    catalog = await request.app.state.model_catalog.list_models(context, cookie_header=request.headers.get("cookie"))
-    matches = [model for model in catalog.models if model.model_id == domain_request.model_id]
-    if len(matches) != 1 or domain_request.operation not in matches[0].operations:
+    try:
+        model = await request.app.state.model_catalog.resolve_model(context, domain_request.model_id, cookie_header=request.headers.get("cookie"))
+    except ValueError:
+        raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400) from None
+    if domain_request.operation not in model.operations:
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
-    selected_adapter = request.app.state.adapter_registry.generation(matches[0].service_id)
+    selected_adapter = request.app.state.adapter_registry.generation(model.service_id)
     if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
@@ -116,7 +117,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
         if asset is None or asset["status"] != "active" or asset["kind"] != "reference":
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
-    reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=matches[0].service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
+    reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
     if not reservation.created:
@@ -131,10 +132,14 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
     except PortalUpstreamError as error:
-        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
         if error.retryable:
+            store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
             raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
+        store.mark_failed(str(reservation.job["id"]), "REQUEST_REJECTED", str(reservation.job["submission_token"]))
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422)
+    except asyncio.CancelledError:
+        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
+        raise
     except Exception:
         store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)

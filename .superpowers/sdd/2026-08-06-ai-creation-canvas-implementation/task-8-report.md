@@ -20,6 +20,28 @@ Verification completed:
 - `./scripts/security-scan.sh`
 - `git diff --check`
 
+## Round 5 final hardening
+
+- Result streams now close for every pre-header validation failure, reject
+  non-identity content encoding, use raw wire bytes for length accounting,
+  return structured 502 for faulty upstream responses, and reject `bytes=-0`.
+- Portal submission maps 4xx/5xx and transport failures to typed errors while
+  preserving cancellation.  Non-retryable submission failures become terminal;
+  retryable failures release the lease for recovery.
+- Model selection resolves local adapters before protected adapters, so a local
+  model can run without a cookie while protected/unknown selection returns 401
+  without reserving a job.  Poll authentication no longer disappears into the
+  transient-error branch.
+- Legacy result migration now scrubs opaque IDs in Python with the shared
+  strict identifier expression and enables SQLite secure deletion.
+
+Final verification:
+
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 185 passed
+- `python3 -m compileall -q server`
+- `./scripts/security-scan.sh`
+- `git diff --check`
+
 ## Round 4 recovery checklist (exception continuation)
 
 - A. Result streaming: added a failing `Content-Range` contract test (initial
@@ -53,7 +75,7 @@ Verification completed:
   truncated PNG acceptance (201 rather than 415), and late cookie validation
   (catalog call count 1 rather than 0).  Their minimal fixes are green.
 
-Final recovery verification:
+Round 4 verification at that point:
 
 - `PYTHONPATH=server:. .venv/bin/pytest -q` — 181 passed
 - `python3 -m compileall -q server`

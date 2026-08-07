@@ -9,6 +9,7 @@ import httpx
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsAdapter, ServiceDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.domain.models import JobRequest, ModelSpec, PortalUser, RequestContext
+from ai_creation_canvas.errors import PortalUpstreamError
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -115,3 +116,13 @@ async def test_portal_submission_forwards_the_exact_idempotency_contract():
     adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
     await adapter.submit(context_for(), JobRequest("image.generate", "model-a", "paint", "stable-key", {"steps": 4}, ("asset-a",)))
     assert seen == [{"operation": "image.generate", "model_id": "model-a", "prompt": "paint", "params": {"steps": 4}, "asset_ids": ["asset-a"], "idempotency_key": "stable-key"}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("status", "retryable"), [(400, False), (429, True), (500, True)])
+async def test_portal_submission_maps_http_failures_to_typed_errors(status, retryable):
+    client = PortalClient("https://portal.test", allowed_mounts=("/image-service",), allowed_methods=("POST",), transport=httpx.MockTransport(lambda request: httpx.Response(status, text="secret upstream body")))
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    with pytest.raises(PortalUpstreamError) as raised:
+        await adapter.submit(context_for(), JobRequest("image.generate", "model-a", "paint", "stable-key"))
+    assert raised.value.retryable is retryable

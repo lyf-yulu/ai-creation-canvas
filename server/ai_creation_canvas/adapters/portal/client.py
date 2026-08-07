@@ -28,7 +28,7 @@ class PortalStream:
     @property
     def headers(self): return self.response.headers
     async def aiter_bytes(self):
-        async for chunk in self.response.aiter_bytes(): yield chunk
+        async for chunk in self.response.aiter_raw(): yield chunk
     async def aclose(self):
         if not self._closed:
             self._closed = True
@@ -217,6 +217,7 @@ class PortalClient:
         if verb not in self._allowed_methods: raise ValueError("method is not allowed")
         target = self._target(mount, path)
         merged = self._cookie_header(cookie_header)
+        merged["Accept-Encoding"] = "identity"
         if headers: merged.update(headers)
         await self._semaphore.acquire()
         client = httpx.AsyncClient(verify=self.verify, timeout=self._timeout, follow_redirects=False, transport=self._transport, headers={}, trust_env=False, limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))

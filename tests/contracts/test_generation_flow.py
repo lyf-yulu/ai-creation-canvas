@@ -94,8 +94,8 @@ def test_result_rejects_mismatched_upstream_content_range_before_streaming(tmp_p
 
     client = TestClient(_succeeded_result_app(tmp_path, BadRange()), raise_server_exceptions=False)
     response = client.get("/api/v1/results/job", headers={**headers(), "range": "bytes=2-4"})
-    assert response.status_code == 404
-    assert response.json()["code"] == "RESULT_EXPIRED"
+    assert response.status_code == 502
+    assert response.json()["code"] == "UPSTREAM_UNAVAILABLE"
 
 
 def test_result_head_uses_upstream_head_and_invalid_local_range_has_no_range_header(tmp_path):
@@ -134,7 +134,7 @@ def test_result_rejects_an_oversized_first_stream_chunk_and_closes_provider_stre
 def test_range_parser_accepts_single_byte_ranges(value):
     assert parse_range_header(value) is not None
 
-@pytest.mark.parametrize("value", ["bytes=", "bytes=2-1", "bytes=0-1,2-3", "items=0-1"])
+@pytest.mark.parametrize("value", ["bytes=", "bytes=-0", "bytes=2-1", "bytes=0-1,2-3", "items=0-1"])
 def test_range_parser_rejects_invalid_ranges(value):
     with pytest.raises(ValueError): parse_range_header(value)
 

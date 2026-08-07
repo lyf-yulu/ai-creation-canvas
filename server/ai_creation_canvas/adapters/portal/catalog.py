@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import httpx
 from typing import Any, Mapping, Protocol, runtime_checkable
 from urllib.parse import quote
 
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import ApiError
+from ai_creation_canvas.errors import ApiError, PortalUpstreamError
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -142,9 +143,16 @@ class PortalJobsAdapter:
         return await self._submit(context, request, cookie_header)
 
     async def _submit(self, context: RequestContext, request: JobRequest, cookie_header: str | None) -> UpstreamJob:
-        response = await self._client.request(context, "POST", "api/jobs", mount=self._declaration.mount, cookie_header=cookie_header, json={"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": list(request.asset_ids), "idempotency_key": request.idempotency_key})
+        try:
+            response = await self._client.request(context, "POST", "api/jobs", mount=self._declaration.mount, cookie_header=cookie_header, json={"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": list(request.asset_ids), "idempotency_key": request.idempotency_key})
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPError as error:
+            raise PortalUpstreamError(retryable=True) from error
         if response.status_code not in {200, 201, 202}:
-            raise ValueError("generation submission failed")
+            if 400 <= response.status_code < 500:
+                raise PortalUpstreamError(retryable=response.status_code in {408, 429}, status_code=response.status_code)
+            raise PortalUpstreamError(retryable=True, status_code=response.status_code)
         try:
             payload = response.json()
             upstream_id = payload["id"]
@@ -229,3 +237,35 @@ class ModelCatalog:
             models=tuple(sorted(models, key=lambda item: (item.model_id, item.service_id))),
             diagnostics=tuple(sorted(diagnostics, key=lambda item: (item["service_id"], item["code"]))),
         )
+
+    async def resolve_model(self, context: RequestContext, model_id: str, *, cookie_header: str | None = None) -> ModelSpec:
+        """Resolve local services first; only ask protected services when needed."""
+        adapters = self._registry.generation_adapters()
+        local = tuple(adapter for adapter in adapters if not getattr(adapter, "requires_portal_cookie", False))
+        protected = tuple(adapter for adapter in adapters if getattr(adapter, "requires_portal_cookie", False))
+
+        async def models_for(items, cookie):
+            result: list[ModelSpec] = []
+            for adapter in items:
+                try:
+                    if cookie is not None and isinstance(adapter, PortalCookieGenerationPort):
+                        models = await adapter.list_models_with_cookie(context, cookie)
+                    else:
+                        models = await adapter.list_models(context)
+                    result.extend(model for model in models if model.service_id == adapter.service_id)
+                except Exception:
+                    continue
+            return [model for model in result if model.model_id == model_id]
+
+        matches = await models_for(local, None)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError("model is ambiguous")
+        if protected and not cookie_header:
+            from ai_creation_canvas.adapters.portal.identity import AuthRequired
+            raise AuthRequired(context.request_id)
+        matches = await models_for(protected, cookie_header)
+        if len(matches) != 1:
+            raise ValueError("model is unavailable")
+        return matches[0]
