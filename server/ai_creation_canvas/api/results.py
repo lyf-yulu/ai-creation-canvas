@@ -23,23 +23,36 @@ async def get_result(job_id: str, request: Request):
         return Response(status_code=416, headers={"Content-Range": "bytes */*", "Accept-Ranges": "bytes"})
     try:
         stream = await open_result(context, str(item["result_id"]), cookie_header=request.headers.get("cookie", ""), range_header=range_header, head=request.method == "HEAD")
-        content_type = stream.headers.get("content-type", "").split(";", 1)[0].lower()
         length = stream.headers.get("content-length")
-        if content_type not in _MIME or (length and (not length.isdigit() or int(length) > _MAX)):
+        if stream.status_code == 416:
+            content_range = stream.headers.get("content-range", "")
+            await stream.aclose()
+            if not content_range.startswith("bytes */") or not content_range[8:].isdigit(): raise ValueError
+            return Response(status_code=416, headers={"Content-Range": content_range, "Accept-Ranges": "bytes"})
+        content_type = stream.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type not in _MIME or not length or not length.isdigit() or int(length) > _MAX:
             await stream.aclose(); raise ValueError
-        if range_header and stream.status_code not in {206, 416}: await stream.aclose(); return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
+        if range_header and stream.status_code != 206: await stream.aclose(); return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
         if not range_header and stream.status_code != 200: await stream.aclose(); raise ValueError
     except Exception:
         raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404) from None
     headers = {key.title(): value for key, value in stream.headers.items() if key.lower() in {"content-length", "content-range", "accept-ranges", "etag"}}
     if request.method == "HEAD":
         await stream.aclose(); return Response(status_code=stream.status_code, media_type=content_type, headers=headers)
+    iterator = stream.aiter_bytes()
+    try:
+        first = await anext(iterator)
+    except StopAsyncIteration:
+        await stream.aclose(); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
+    except Exception:
+        await stream.aclose(); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
     async def body():
-        total = 0
+        total = len(first)
         try:
-            async for chunk in stream.aiter_bytes():
+            yield first
+            async for chunk in iterator:
                 total += len(chunk)
-                if total > _MAX: break
+                if total > _MAX: raise RuntimeError("upstream length exceeded")
                 yield chunk
         finally: await stream.aclose()
     return StreamingResponse(body(), status_code=stream.status_code, media_type=content_type, headers=headers)

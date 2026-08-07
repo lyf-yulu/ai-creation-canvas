@@ -184,7 +184,7 @@ class PortalJobsAdapter:
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         if not cookie_header: raise ValueError("Cookie header is required")
         headers = {"Range": range_header} if range_header else None
-        return await self._client.open_stream(context, "GET", f"api/results/{quote(result_id, safe='')}", mount=self._declaration.mount, cookie_header=cookie_header, headers=headers)
+        return await self._client.open_stream(context, "HEAD" if head else "GET", f"api/results/{quote(result_id, safe='')}", mount=self._declaration.mount, cookie_header=cookie_header, headers=headers)
 
 
 class ModelCatalog:

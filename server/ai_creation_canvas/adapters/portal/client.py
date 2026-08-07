@@ -34,7 +34,10 @@ class PortalStream:
             self._closed = True
             try: await self.response.aclose()
             finally:
-                await self._client.aclose(); self._release()
+                try:
+                    await self._client.aclose()
+                finally:
+                    self._release()
 
 
 def _decoded(value: str) -> str:
@@ -122,7 +125,7 @@ class PortalClient:
             raise ValueError("timeout_seconds must be between 0 and 60")
         self._timeout = httpx.Timeout(float(timeout_seconds))
         methods = frozenset(method.upper() for method in allowed_methods if isinstance(method, str))
-        if not methods or methods - {"GET", "POST"}:
+        if not methods or methods - {"GET", "POST", "HEAD"}:
             raise ValueError("allowed_methods contains unsupported methods")
         self._allowed_methods = methods
         self._transport = transport
