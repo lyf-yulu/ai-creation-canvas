@@ -191,6 +191,10 @@ class ModelCatalog:
     def __init__(self, registry: AdapterRegistry) -> None:
         self._registry = registry
 
+    @property
+    def requires_portal_cookie(self) -> bool:
+        return any(getattr(adapter, "requires_portal_cookie", False) for adapter in self._registry.generation_adapters())
+
     async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> CatalogResult:
         models: list[ModelSpec] = []
         diagnostics: list[dict[str, str]] = []

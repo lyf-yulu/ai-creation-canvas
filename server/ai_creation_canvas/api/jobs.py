@@ -75,6 +75,8 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
         return item
     try:
         adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+        if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+            raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
         poll_with_cookie = getattr(adapter, "poll_with_cookie", None)
         if callable(poll_with_cookie):
             state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))

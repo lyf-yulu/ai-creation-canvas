@@ -35,6 +35,8 @@ async def get_result(job_id: str, request: Request):
     if item is None or item["status"] != "succeeded" or not item.get("result_id") or not item.get("upstream_job_id"):
         raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
     adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+    if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     open_result = getattr(adapter, "open_result", None)
     if not callable(open_result): raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404)
     range_header = request.headers.get("range")
