@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import JobRequest, JobStatus
+from ai_creation_canvas.errors import PortalUpstreamError
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -125,9 +126,14 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             upstream = await adapter.submit(context, domain_request)
         item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
+    except PortalUpstreamError as error:
+        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
+        if error.retryable:
+            raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422)
     except Exception:
-        item = store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
-        return _response(item, request)
+        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
 
 
 @router.get("/jobs/{job_id}")

@@ -53,6 +53,11 @@ class DomainError(Exception):
 class AdapterRegistrationError(ValueError):
     """Raised when a trusted adapter does not satisfy a port contract."""
 
+class PortalUpstreamError(Exception):
+    def __init__(self, code: str = "UPSTREAM_UNAVAILABLE", *, retryable: bool, status_code: int = 502) -> None:
+        self.code, self.retryable, self.status_code = code, retryable, status_code
+        super().__init__(code)
+
 
 class AdapterNotFoundError(DomainError):
     """Raised for a requested adapter that has not been registered."""

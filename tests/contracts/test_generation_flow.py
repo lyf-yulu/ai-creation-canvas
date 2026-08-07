@@ -8,6 +8,8 @@ from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.domain.models import JobState, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
+from ai_creation_canvas.api.results import parse_range_header
+import pytest
 
 
 class FakeGeneration:
@@ -62,3 +64,11 @@ def test_protected_result_supports_one_valid_range(tmp_path):
     assert client.get("/api/v1/results/job", headers={**headers(), "range":"bytes=0-"}).content == b"abcdef"
     assert client.get("/api/v1/results/job", headers={**headers(), "range":"bytes=-2"}).content == b"ef"
     assert client.get("/api/v1/results/job", headers={**headers(), "range":"bytes=0-1,3-4"}).status_code == 416
+
+@pytest.mark.parametrize("value", ["bytes=0-", "bytes=-2", "bytes=0-3"])
+def test_range_parser_accepts_single_byte_ranges(value):
+    assert parse_range_header(value) is not None
+
+@pytest.mark.parametrize("value", ["bytes=", "bytes=2-1", "bytes=0-1,2-3", "items=0-1"])
+def test_range_parser_rejects_invalid_ranges(value):
+    with pytest.raises(ValueError): parse_range_header(value)

@@ -8,6 +8,25 @@ router = APIRouter(prefix="/api/v1")
 _MAX = 64 * 1024 * 1024
 _MIME = {"image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"}
 
+class ResultStreamProtocolError(RuntimeError): pass
+
+def parse_range_header(value: str | None) -> tuple[str, int | None, int | None] | None:
+    """Validate the single-byte-range grammar before contacting the provider."""
+    if value is None: return None
+    if not value.startswith("bytes=") or "," in value: raise ValueError("invalid range")
+    left, sep, right = value[6:].partition("-")
+    if not sep or (not left and not right) or (left and not left.isdecimal()) or (right and not right.isdecimal()):
+        raise ValueError("invalid range")
+    if left and right and int(right) < int(left): raise ValueError("invalid range")
+    return ("suffix" if not left else "range", int(left) if left else None, int(right) if right else None)
+
+def _content_length(value: str | None) -> int:
+    if value is None or not value.isascii() or not value.isdecimal() or (len(value) > 1 and value.startswith("0")):
+        raise ValueError("invalid content length")
+    result = int(value)
+    if result > _MAX: raise ValueError("content length exceeds maximum")
+    return result
+
 @router.api_route("/results/{job_id}", methods=["GET", "HEAD"])
 async def get_result(job_id: str, request: Request):
     context = context_for(request)
@@ -19,8 +38,9 @@ async def get_result(job_id: str, request: Request):
     open_result = getattr(adapter, "open_result", None)
     if not callable(open_result): raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404)
     range_header = request.headers.get("range")
-    if range_header and (not range_header.startswith("bytes=") or "," in range_header):
-        return Response(status_code=416, headers={"Content-Range": "bytes */*", "Accept-Ranges": "bytes"})
+    try: parse_range_header(range_header)
+    except ValueError:
+        raise problem(request, "RANGE_NOT_SATISFIABLE", "The requested range is invalid.", status=416)
     try:
         stream = await open_result(context, str(item["result_id"]), cookie_header=request.headers.get("cookie", ""), range_header=range_header, head=request.method == "HEAD")
         length = stream.headers.get("content-length")
@@ -30,7 +50,8 @@ async def get_result(job_id: str, request: Request):
             if not content_range.startswith("bytes */") or not content_range[8:].isdigit(): raise ValueError
             return Response(status_code=416, headers={"Content-Range": content_range, "Accept-Ranges": "bytes"})
         content_type = stream.headers.get("content-type", "").split(";", 1)[0].lower()
-        if content_type not in _MIME or not length or not length.isdigit() or int(length) > _MAX:
+        declared = _content_length(length)
+        if content_type not in _MIME:
             await stream.aclose(); raise ValueError
         if range_header and stream.status_code != 206: await stream.aclose(); return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
         if not range_header and stream.status_code != 200: await stream.aclose(); raise ValueError
@@ -42,6 +63,8 @@ async def get_result(job_id: str, request: Request):
     iterator = stream.aiter_bytes()
     try:
         first = await anext(iterator)
+        if len(first) > declared or len(first) > _MAX:
+            await stream.aclose(); raise ValueError("first chunk exceeds content length")
     except StopAsyncIteration:
         await stream.aclose(); raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation result is unavailable.", status=502, retryable=True) from None
     except Exception:
@@ -52,7 +75,8 @@ async def get_result(job_id: str, request: Request):
             yield first
             async for chunk in iterator:
                 total += len(chunk)
-                if total > _MAX: raise RuntimeError("upstream length exceeded")
+                if total > _MAX or total > declared: raise ResultStreamProtocolError("upstream length mismatch")
                 yield chunk
+            if total != declared: raise ResultStreamProtocolError("upstream length mismatch")
         finally: await stream.aclose()
     return StreamingResponse(body(), status_code=stream.status_code, media_type=content_type, headers=headers)

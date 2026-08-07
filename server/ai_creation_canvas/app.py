@@ -102,7 +102,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
-            client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
+            client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
             for declaration in declarations:
                 registry.register_generation(PortalJobsAdapter(declaration, client))
         model_catalog = ModelCatalog(registry)
