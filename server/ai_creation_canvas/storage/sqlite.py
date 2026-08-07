@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import threading
 import time
+import re
 from typing import Iterator
 
 
@@ -96,6 +97,10 @@ class CanvasStore:
                 UNIQUE(user_id, idempotency_key)
             )""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
+            if "result_ref" in columns:
+                # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
+                db.execute("UPDATE canvas_jobs SET result_id=result_ref WHERE (result_id IS NULL OR result_id='') AND result_ref GLOB '[A-Za-z0-9_-]*' AND length(result_ref) BETWEEN 1 AND 128")
+                db.execute("UPDATE canvas_jobs SET result_ref=NULL")
             # Migration is intentionally additive; old data has no sensitive payload.
             for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
                 if name not in columns:
