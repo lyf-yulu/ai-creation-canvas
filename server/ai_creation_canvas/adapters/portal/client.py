@@ -19,6 +19,24 @@ _MAX_RESPONSE_BYTES = 1_048_576
 _DEFAULT_TIMEOUT = 10.0
 
 
+class PortalStream:
+    """An owned streaming response; closing it also releases the client permit."""
+    def __init__(self, response: httpx.Response, client: httpx.AsyncClient, release) -> None:
+        self.response, self._client, self._release, self._closed = response, client, release, False
+    @property
+    def status_code(self): return self.response.status_code
+    @property
+    def headers(self): return self.response.headers
+    async def aiter_bytes(self):
+        async for chunk in self.response.aiter_bytes(): yield chunk
+    async def aclose(self):
+        if not self._closed:
+            self._closed = True
+            try: await self.response.aclose()
+            finally:
+                await self._client.aclose(); self._release()
+
+
 def _decoded(value: str) -> str:
     previous = value
     for _ in range(3):
@@ -189,3 +207,18 @@ class PortalClient:
                     await response.aclose()
                     raise ValueError("Portal response exceeds the maximum size")
             return httpx.Response(response.status_code, headers=response.headers, content=bytes(body), request=request)
+
+    async def open_stream(self, context: RequestContext, method: str, path: str, *, mount: str, cookie_header: str | None = None, headers: Mapping[str, str] | None = None) -> PortalStream:
+        if not isinstance(context, RequestContext): raise ValueError("context must be a RequestContext")
+        verb = method.upper() if isinstance(method, str) else ""
+        if verb not in self._allowed_methods: raise ValueError("method is not allowed")
+        target = self._target(mount, path)
+        merged = self._cookie_header(cookie_header)
+        if headers: merged.update(headers)
+        await self._semaphore.acquire()
+        client = httpx.AsyncClient(verify=self.verify, timeout=self._timeout, follow_redirects=False, transport=self._transport, headers={}, trust_env=False, limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
+        try:
+            response = await client.send(client.build_request(verb, target, headers=merged), stream=True)
+            return PortalStream(response, client, self._semaphore.release)
+        except Exception:
+            await client.aclose(); self._semaphore.release(); raise

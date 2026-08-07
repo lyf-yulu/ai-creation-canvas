@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 from typing import Any, Mapping, Protocol, runtime_checkable
+from urllib.parse import quote
 
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelOperation, ModelSpec, RequestContext, UpstreamJob
@@ -77,6 +78,7 @@ class PortalJobsAdapter:
         self.service_id = declaration.service_id
         self._declaration = declaration
         self._client = client
+        self.requires_portal_cookie = True
 
     async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> tuple[ModelSpec, ...]:
         if cookie_header is None:
@@ -178,6 +180,11 @@ class PortalJobsAdapter:
         if response.status_code != 200 or content_type not in {"image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"}:
             raise ValueError("generation result is unavailable")
         return response.content, content_type
+
+    async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
+        if not cookie_header: raise ValueError("Cookie header is required")
+        headers = {"Range": range_header} if range_header else None
+        return await self._client.open_stream(context, "GET", f"api/results/{quote(result_id, safe='')}", mount=self._declaration.mount, cookie_header=cookie_header, headers=headers)
 
 
 class ModelCatalog:

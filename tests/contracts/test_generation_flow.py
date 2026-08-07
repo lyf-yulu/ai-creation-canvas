@@ -20,6 +20,15 @@ class FakeGeneration:
         return UpstreamJob(self.service_id, "upstream-1", JobState("upstream-1", "queued"))
     async def poll(self, context, upstream_job_id): return JobState(upstream_job_id, "queued")
     async def fetch_result(self, context, upstream_job_id, result_ref): return (b"abcdef", "image/png")
+    async def open_result(self, context, result_id, *, cookie_header, range_header=None, head=False):
+        data = b"abcdef"
+        if range_header == "bytes=-2": data = b"ef"
+        class Stream:
+            status_code = 206 if range_header else 200
+            headers = {"content-type":"image/png", "content-length":str(len(data)), "accept-ranges":"bytes"}
+            async def aiter_bytes(self): yield data
+            async def aclose(self): pass
+        return Stream()
 
 
 def headers(user="u-a"):

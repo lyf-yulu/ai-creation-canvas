@@ -93,8 +93,6 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
 @router.post("/jobs", status_code=201)
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
-    if not request.headers.get("cookie") and any(hasattr(adapter, "submit_with_cookie") for adapter in request.app.state.adapter_registry.generation_adapters()):
-        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     try:
         domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids))
     except ValueError:
@@ -103,6 +101,9 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     matches = [model for model in catalog.models if model.model_id == domain_request.model_id]
     if len(matches) != 1 or domain_request.operation not in matches[0].operations:
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
+    selected_adapter = request.app.state.adapter_registry.generation(matches[0].service_id)
+    if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
     for asset_id in domain_request.asset_ids:
         asset, forbidden = store.asset_for_owner(asset_id, context.user.user_id)
@@ -116,7 +117,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     if not reservation.created:
         return _response(reservation.job, request)
     try:
-        adapter = request.app.state.adapter_registry.generation(matches[0].service_id)
+        adapter = selected_adapter
         submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
         if callable(submit_with_cookie):
             upstream = await submit_with_cookie(context, domain_request, request.headers.get("cookie", ""))
