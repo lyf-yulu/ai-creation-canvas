@@ -66,3 +66,13 @@ def test_loader_rejects_symlink_directory_oversize_json_and_utf8(tmp_path):
     bad=tmp_path/'bad'; bad.write_bytes(b'\xff')
     for path in (big,bad):
         with pytest.raises(ValueError,match="^services configuration is invalid$"): load_service_declarations(path,tmp_path)
+
+def test_loader_rejects_malformed_json_with_fixed_safe_error(tmp_path):
+    path=tmp_path/'bad.json'; path.write_text('{"services": [}', encoding='utf-8')
+    with pytest.raises(ValueError) as error: load_service_declarations(path,tmp_path)
+    assert str(error.value) == 'services configuration is invalid'
+
+def test_loader_rejects_benign_unknown_entry_field_with_fixed_safe_error(tmp_path):
+    path=tmp_path/'unknown.json'; path.write_text(json.dumps({"services":[{"service_id":"a","mount":"/a","service_type":"image","operations":["image.generate"],"description":"safe"}]}))
+    with pytest.raises(ValueError) as error: load_service_declarations(path,tmp_path)
+    assert str(error.value) == 'services configuration is invalid'
