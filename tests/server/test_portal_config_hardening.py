@@ -44,3 +44,25 @@ def test_loader_rejects_each_invalid_rule_independently(tmp_path, payload):
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="services configuration is invalid"):
         load_service_declarations(path, tmp_path)
+
+
+@pytest.mark.parametrize("value", ["", 1, "é", "bad!", "a" * 65])
+def test_loader_rejects_each_invalid_service_id(tmp_path, value):
+    path=tmp_path/'x.json'; path.write_text(json.dumps({"services":[{"service_id":value,"mount":"/a","service_type":"image","operations":["image.generate"]}]}))
+    with pytest.raises(ValueError, match="^services configuration is invalid$"): load_service_declarations(path,tmp_path)
+
+
+@pytest.mark.parametrize("value", [None, "a", "/../a", "/a\n", "/%2e%2e/a"])
+def test_loader_rejects_each_invalid_mount(tmp_path, value):
+    path=tmp_path/'x.json'; path.write_text(json.dumps({"services":[{"service_id":"a","mount":value,"service_type":"image","operations":["image.generate"]}]}))
+    with pytest.raises(ValueError, match="^services configuration is invalid$"): load_service_declarations(path,tmp_path)
+
+
+def test_loader_rejects_symlink_directory_oversize_json_and_utf8(tmp_path):
+    target=tmp_path/'target'; target.write_text('{}'); link=tmp_path/'link'; link.symlink_to(target)
+    for path in (link, tmp_path):
+        with pytest.raises(ValueError,match="^services configuration is invalid$"): load_service_declarations(path,tmp_path)
+    big=tmp_path/'big'; big.write_bytes(b'x'*65537)
+    bad=tmp_path/'bad'; bad.write_bytes(b'\xff')
+    for path in (big,bad):
+        with pytest.raises(ValueError,match="^services configuration is invalid$"): load_service_declarations(path,tmp_path)

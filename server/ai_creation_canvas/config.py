@@ -32,14 +32,14 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
         raise ValueError("services configuration is invalid")
     declarations = []
     for item in payload["services"]:
-        if not isinstance(item, dict) or set(item) != {"service_id", "mount", "service_type", "operations"} or _DANGEROUS_FIELDS & set(item):
+        if not isinstance(item, dict) or _DANGEROUS_FIELDS & set(item) or set(item) != {"service_id", "mount", "service_type", "operations"}:
             raise ValueError("services configuration is invalid")
         service_id, mount, service_type, operations = item.values()
         if not isinstance(service_id, str) or not service_id.isascii() or not service_id.replace("-", "").replace("_", "").isalnum() or len(service_id) > 64:
             raise ValueError("services configuration is invalid")
         if service_type not in {"image", "video", "portrait_asset"} or not isinstance(operations, list):
             raise ValueError("services configuration is invalid")
-        if not isinstance(mount, str) or not mount.startswith("/") or any(part in {"", ".", ".."} for part in mount.split("/")[1:]) or any(ord(char) < 32 for char in mount):
+        if not isinstance(mount, str) or not mount.startswith("/") or "%" in mount or any(part in {"", ".", ".."} for part in mount.split("/")[1:]) or any(ord(char) < 32 for char in mount):
             raise ValueError("services configuration is invalid")
         try:
             parsed = tuple(ModelOperation(value) for value in operations)
