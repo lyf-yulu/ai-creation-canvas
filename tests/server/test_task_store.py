@@ -21,3 +21,14 @@ def test_store_uses_wal_and_reclaims_expired_lease(tmp_path):
     time.sleep(0.11)
     recovered = store.reserve_job(user_id="u", job_id="other", service_id="s", operation="image.generate", idempotency_key="k", request_hash="a" * 64)
     assert recovered.created and recovered.job["id"] == "j" and recovered.job["submission_token"] != first.job["submission_token"]
+
+def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    db = sqlite3.connect(data / "canvas.sqlite3")
+    db.execute("CREATE TABLE canvas_jobs (id TEXT PRIMARY KEY,user_id TEXT,service_id TEXT,upstream_job_id TEXT,operation TEXT,status TEXT,idempotency_key TEXT,request_hash TEXT,error_code TEXT,result_ref TEXT,created_at TEXT,updated_at TEXT)")
+    db.execute("INSERT INTO canvas_jobs VALUES ('j','u','s','up','op','succeeded','k','h',NULL,'opaque_id','t','t')")
+    db.commit(); db.close()
+    store = CanvasStore(data)
+    row, _ = store.job_for_owner("j", "u")
+    assert row and row["result_id"] == "opaque_id"
+    assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}

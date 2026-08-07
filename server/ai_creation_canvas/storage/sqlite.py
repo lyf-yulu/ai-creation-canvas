@@ -99,8 +99,29 @@ class CanvasStore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             if "result_ref" in columns:
                 # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
-                db.execute("UPDATE canvas_jobs SET result_id=result_ref WHERE (result_id IS NULL OR result_id='') AND result_ref GLOB '[A-Za-z0-9_-]*' AND length(result_ref) BETWEEN 1 AND 128")
-                db.execute("UPDATE canvas_jobs SET result_ref=NULL")
+                # Remove the legacy column itself.  SQLite has no portable DROP COLUMN
+                # for older supported versions; rebuild only from non-sensitive fields.
+                # Fixed canonical projection; absent legacy columns get inert defaults.
+                legacy_result = "CASE WHEN result_ref GLOB '[A-Za-z0-9_-]*' AND length(result_ref) BETWEEN 1 AND 128 THEN result_ref ELSE NULL END"
+                projection = [
+                    "id", "user_id", "service_id", "upstream_job_id", "operation", "status",
+                    "idempotency_key", "request_hash", "error_code" if "error_code" in columns else "NULL",
+                    "result_id" if "result_id" in columns else legacy_result,
+                    "submission_token" if "submission_token" in columns else "NULL",
+                    "lease_until" if "lease_until" in columns else "NULL",
+                    "attempt" if "attempt" in columns else "0", "created_at", "updated_at",
+                ]
+                db.execute("ALTER TABLE canvas_jobs RENAME TO canvas_jobs_legacy")
+                db.execute("""CREATE TABLE canvas_jobs (
+                    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
+                    upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, error_code TEXT,
+                    result_id TEXT, submission_token TEXT, lease_until REAL,
+                    attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    UNIQUE(user_id,idempotency_key))""")
+                db.execute("INSERT INTO canvas_jobs SELECT " + ",".join(projection) + " FROM canvas_jobs_legacy")
+                db.execute("DROP TABLE canvas_jobs_legacy")
+                columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
             for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
                 if name not in columns:
