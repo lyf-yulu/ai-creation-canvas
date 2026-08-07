@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import re
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -15,6 +16,7 @@ from ai_creation_canvas.domain.models import JobRequest, JobStatus
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 64
+_RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _bounded(value: object, depth: int = 0) -> bool:
@@ -77,17 +79,22 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
             state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
         else:
             state = await adapter.poll(context, str(item["upstream_job_id"]))
-        result_ref = None
+        result_id = None
         if state.result is not None:
-            result_ref = state.result.asset_id
-        return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_ref=result_ref)
+            result_id = state.result.asset_id
+            if not _RESULT_ID.fullmatch(result_id):
+                return request.app.state.canvas_store.fail_reservation(str(item["id"]), "TASK_FAILED")
+        return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_id=result_id)
     except Exception:
-        return request.app.state.canvas_store.fail_reservation(str(item["id"]), "TASK_FAILED")
+        # A transient poll error is not an upstream terminal state.
+        return item
 
 
 @router.post("/jobs", status_code=201)
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
+    if not request.headers.get("cookie") and any(hasattr(adapter, "submit_with_cookie") for adapter in request.app.state.adapter_registry.generation_adapters()):
+        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     try:
         domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids))
     except ValueError:
@@ -115,10 +122,10 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             upstream = await submit_with_cookie(context, domain_request, request.headers.get("cookie", ""))
         else:
             upstream = await adapter.submit(context, domain_request)
-        item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value)
+        item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
     except Exception:
-        item = store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED")
+        item = store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
         return _response(item, request)
 
 

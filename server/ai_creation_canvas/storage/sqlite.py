@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+import time
 from typing import Iterator
 
 
@@ -40,6 +41,12 @@ class CanvasStore:
         self._init()
 
     def _prepare_root(self) -> None:
+        # Do this before resolve(): resolve would hide a lexical symlink component.
+        cursor = Path(self.data_dir.anchor) if self.data_dir.is_absolute() else Path(".")
+        for component in self.data_dir.parts[1 if self.data_dir.is_absolute() else 0:]:
+            cursor = cursor / component
+            if cursor.exists() and cursor.is_symlink():
+                raise ValueError("data root must not contain symlinks")
         if self.data_dir.exists() and self.data_dir.is_symlink():
             raise ValueError("data root must not be a symlink")
         self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -70,8 +77,12 @@ class CanvasStore:
                 connection.close()
 
     def _init(self) -> None:
+        # journal_mode changes the database file and must not be run inside a txn.
+        with self._connection() as db:
+            mode = db.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            if str(mode).lower() != "wal":
+                raise RuntimeError("SQLite WAL could not be enabled")
         with self._connection(immediate=True) as db:
-            db.execute("PRAGMA journal_mode = WAL")
             db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
                 mime_type TEXT NOT NULL, status TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
@@ -81,9 +92,14 @@ class CanvasStore:
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-                error_code TEXT, result_ref TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
+            # Migration is intentionally additive; old data has no sensitive payload.
+            for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -103,25 +119,45 @@ class CanvasStore:
         item = self._row(row)
         return (item, bool(item and item["user_id"] != user_id))
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0) -> Reservation:
         now = _now()
+        token = os.urandom(16).hex()
+        lease_until = time.time() + lease_seconds
         with self._connection(immediate=True) as db:
             existing = db.execute("SELECT * FROM canvas_jobs WHERE user_id = ? AND idempotency_key = ?", (user_id, idempotency_key)).fetchone()
             if existing is not None:
                 item = dict(existing)
-                return Reservation(item, False, item["request_hash"] != request_hash)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, now, now))
+                if item["request_hash"] != request_hash:
+                    return Reservation(item, False, True)
+                if item["status"] == "submitting" and float(item.get("lease_until") or 0) <= time.time():
+                    db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, updated_at=? WHERE id=? AND submission_token IS ?", (token, lease_until, now, item["id"], item.get("submission_token")))
+                    item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
+                    return Reservation(item, True)
+                return Reservation(item, False)
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)
 
-    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str) -> dict[str, object]:
-        return self._update(job_id, status=status, upstream_job_id=upstream_job_id)
+    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str, token: str | None = None) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None: raise KeyError(job_id)
+            if token is not None and row["submission_token"] != token:
+                return dict(row)
+            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, _now(), job_id))
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
-    def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED") -> dict[str, object]:
-        return self._update(job_id, status="failed", error_code=error_code)
+    def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:
+        # Retain a short-lived reservation that can be reclaimed, without losing the key.
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None: raise KeyError(job_id)
+            if token is not None and row["submission_token"] != token: return dict(row)
+            db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, updated_at=? WHERE id=?", (error_code, time.time() - 1, _now(), job_id))
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
-    def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_ref: str | None = None) -> dict[str, object]:
+    def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -131,7 +167,8 @@ class CanvasStore:
             if old["status"] in {"succeeded", "failed"} or ranks.get(status, -1) < ranks.get(str(old["status"]), 0):
                 return old
             now = _now()
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=COALESCE(?, upstream_job_id), error_code=COALESCE(?, error_code), result_ref=COALESCE(?, result_ref), updated_at=? WHERE id=?", (status, upstream_job_id, error_code, result_ref, now, job_id))
+            result_id = result_id if result_id is not None else result_ref
+            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=COALESCE(?, upstream_job_id), error_code=COALESCE(?, error_code), result_id=COALESCE(?, result_id), updated_at=? WHERE id=?", (status, upstream_job_id, error_code, result_id, now, job_id))
             updated = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert updated is not None
         return dict(updated)

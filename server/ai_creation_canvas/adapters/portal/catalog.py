@@ -140,7 +140,7 @@ class PortalJobsAdapter:
         return await self._submit(context, request, cookie_header)
 
     async def _submit(self, context: RequestContext, request: JobRequest, cookie_header: str | None) -> UpstreamJob:
-        response = await self._client.request(context, "POST", "api/jobs", mount=self._declaration.mount, cookie_header=cookie_header, json={"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": list(request.asset_ids)})
+        response = await self._client.request(context, "POST", "api/jobs", mount=self._declaration.mount, cookie_header=cookie_header, json={"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": list(request.asset_ids), "idempotency_key": request.idempotency_key})
         if response.status_code not in {200, 201, 202}:
             raise ValueError("generation submission failed")
         try:

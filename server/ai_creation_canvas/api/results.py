@@ -39,15 +39,15 @@ async def get_result(job_id: str, request: Request) -> Response:
         raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
     if item is None:
         raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
-    if item["status"] != "succeeded" or not item.get("upstream_job_id") or not item.get("result_ref"):
+    if item["status"] != "succeeded" or not item.get("upstream_job_id") or not item.get("result_id"):
         raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
     try:
         adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
         fetch = getattr(adapter, "fetch_result")
         try:
-            fetched = await fetch(context, str(item["upstream_job_id"]), str(item["result_ref"]), request.headers.get("cookie", ""))
+            fetched = await fetch(context, str(item["upstream_job_id"]), str(item["result_id"]), request.headers.get("cookie", ""))
         except TypeError:
-            fetched = await fetch(context, str(item["upstream_job_id"]), str(item["result_ref"]))
+            fetched = await fetch(context, str(item["upstream_job_id"]), str(item["result_id"]))
         if not isinstance(fetched, tuple) or len(fetched) != 2 or not isinstance(fetched[0], (bytes, bytearray)) or fetched[1] not in _MIME:
             raise ValueError
         body, mime = bytes(fetched[0]), fetched[1]

@@ -43,6 +43,7 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
     target = store.data_dir / relative
     temporary = store.assets_dir / f".{secrets.token_hex(20)}.upload"
     size = 0
+    header = bytearray()
     try:
         with temporary.open("xb") as output:
             while True:
@@ -53,8 +54,9 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
                 if size > _MAX_UPLOAD:
                     raise problem(request, "ASSET_TOO_LARGE", "The upload is too large.", status=413)
                 output.write(chunk)
-        data = temporary.read_bytes()
-        if not _is_valid(mime, data):
+                if len(header) < 16:
+                    header.extend(chunk[: 16 - len(header)])
+        if not _is_valid(mime, bytes(header)):
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415)
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)
