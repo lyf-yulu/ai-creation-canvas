@@ -32,3 +32,19 @@ def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
     row, _ = store.job_for_owner("j", "u")
     assert row and row["result_id"] == "opaque_id"
     assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}
+
+def test_stale_reservation_token_cannot_overwrite_reclaimed_job(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    first = store.reserve_job(user_id="u", job_id="j", service_id="s", operation="op", idempotency_key="k", request_hash="h", lease_seconds=0.001)
+    time.sleep(0.01)
+    second = store.reserve_job(user_id="u", job_id="other", service_id="s", operation="op", idempotency_key="k", request_hash="h")
+    stale = store.mark_submitted("j", "old", "queued", first.job["submission_token"])
+    assert stale["upstream_job_id"] is None
+    fresh = store.mark_submitted("j", "new", "queued", second.job["submission_token"])
+    assert fresh["upstream_job_id"] == "new"
+
+def test_active_lease_and_reopened_store_preserve_one_reservation(tmp_path):
+    path = tmp_path / "data"
+    first = CanvasStore(path).reserve_job(user_id="u", job_id="j", service_id="s", operation="op", idempotency_key="k", request_hash="h")
+    reopened = CanvasStore(path).reserve_job(user_id="u", job_id="other", service_id="s", operation="op", idempotency_key="k", request_hash="h")
+    assert first.created and not reopened.created and reopened.job["id"] == "j"

@@ -6,6 +6,7 @@ from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, Mod
 
 
 class GenerationPort(Protocol):
+    """submit MUST honor JobRequest.idempotency_key at the upstream boundary."""
     service_id: str
 
     async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]: ...

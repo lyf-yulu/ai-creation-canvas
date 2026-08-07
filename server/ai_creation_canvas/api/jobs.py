@@ -96,6 +96,8 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
 @router.post("/jobs", status_code=201)
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
+    if request.app.state.model_catalog.requires_portal_cookie and not request.headers.get("cookie"):
+        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     try:
         domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids))
     except ValueError:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import httpx
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsAdapter, ServiceDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
-from ai_creation_canvas.domain.models import ModelSpec, PortalUser, RequestContext
+from ai_creation_canvas.domain.models import JobRequest, ModelSpec, PortalUser, RequestContext
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -99,3 +101,17 @@ async def test_portal_adapter_accepts_case_insensitive_json_content_type():
     client = PortalClient("https://portal.test", allowed_mounts=("/image-service",), transport=httpx.MockTransport(lambda r: httpx.Response(200, headers={"content-type": "Application/JSON; charset=utf-8"}, json={"models": []})))
     adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
     assert await adapter.list_models(context_for()) == ()
+
+
+@pytest.mark.anyio
+async def test_portal_submission_forwards_the_exact_idempotency_contract():
+    seen: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(202, json={"id": "upstream-1", "status": "queued"})
+
+    client = PortalClient("https://portal.test", allowed_mounts=("/image-service",), allowed_methods=("GET", "POST"), transport=httpx.MockTransport(handler))
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), client)
+    await adapter.submit(context_for(), JobRequest("image.generate", "model-a", "paint", "stable-key", {"steps": 4}, ("asset-a",)))
+    assert seen == [{"operation": "image.generate", "model_id": "model-a", "prompt": "paint", "params": {"steps": 4}, "asset_ids": ["asset-a"], "idempotency_key": "stable-key"}]

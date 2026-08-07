@@ -16,10 +16,17 @@ _TYPES = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff", "ima
 _EXTENSIONS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 
 
-def _is_valid(mime_type: str, data: bytes) -> bool:
+def _is_valid(mime_type: str, data: bytes, tail: bytes, size: int) -> bool:
+    """Perform cheap format framing checks while preserving streaming uploads."""
+    if size <= 0:
+        return False
+    if mime_type == "image/png":
+        return data.startswith(_TYPES[mime_type]) and tail.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    if mime_type == "image/jpeg":
+        return data.startswith(_TYPES[mime_type]) and tail.endswith(b"\xff\xd9")
     if mime_type == "image/webp":
-        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-    return len(data) >= len(_TYPES.get(mime_type, b"")) and data.startswith(_TYPES.get(mime_type, b""))
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP" and int.from_bytes(data[4:8], "little") + 8 == size
+    return False
 
 
 def _asset(item: dict[str, object]) -> dict[str, object]:
@@ -44,6 +51,7 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
     temporary = store.assets_dir / f".{secrets.token_hex(20)}.upload"
     size = 0
     header = bytearray()
+    tail = bytearray()
     try:
         with temporary.open("xb") as output:
             while True:
@@ -56,7 +64,10 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
                 output.write(chunk)
                 if len(header) < 16:
                     header.extend(chunk[: 16 - len(header)])
-        if not _is_valid(mime, bytes(header)):
+                tail.extend(chunk)
+                if len(tail) > 16:
+                    del tail[:-16]
+        if not _is_valid(mime, bytes(header), bytes(tail), size):
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415)
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)

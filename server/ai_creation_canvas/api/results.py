@@ -27,6 +27,37 @@ def _content_length(value: str | None) -> int:
     if result > _MAX: raise ValueError("content length exceeds maximum")
     return result
 
+
+def validate_partial_response(
+    requested: tuple[str, int | None, int | None], content_range: str | None, declared_length: int
+) -> None:
+    """Ensure a 206 response represents precisely the range requested by the client."""
+    if not isinstance(content_range, str) or not content_range.startswith("bytes "):
+        raise ValueError("partial response has an invalid Content-Range")
+    interval, slash, total_text = content_range[6:].partition("/")
+    start_text, dash, end_text = interval.partition("-")
+    if (
+        not slash
+        or not dash
+        or not start_text.isdecimal()
+        or not end_text.isdecimal()
+        or not total_text.isdecimal()
+    ):
+        raise ValueError("partial response has an invalid Content-Range")
+    start, end, total = int(start_text), int(end_text), int(total_text)
+    if total <= 0 or start > end or end >= total or end - start + 1 != declared_length:
+        raise ValueError("partial response does not match its declared length")
+    kind, requested_start, requested_end = requested
+    if kind == "suffix":
+        assert requested_start is None and requested_end is not None
+        if end != total - 1 or start != max(0, total - requested_end):
+            raise ValueError("partial response does not match the requested range")
+        return
+    assert requested_start is not None
+    expected_end = min(requested_end if requested_end is not None else total - 1, total - 1)
+    if start != requested_start or end != expected_end:
+        raise ValueError("partial response does not match the requested range")
+
 @router.api_route("/results/{job_id}", methods=["GET", "HEAD"])
 async def get_result(job_id: str, request: Request):
     context = context_for(request)
@@ -40,7 +71,7 @@ async def get_result(job_id: str, request: Request):
     open_result = getattr(adapter, "open_result", None)
     if not callable(open_result): raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404)
     range_header = request.headers.get("range")
-    try: parse_range_header(range_header)
+    try: requested_range = parse_range_header(range_header)
     except ValueError:
         raise problem(request, "RANGE_NOT_SATISFIABLE", "The requested range is invalid.", status=416)
     try:
@@ -57,6 +88,9 @@ async def get_result(job_id: str, request: Request):
             await stream.aclose(); raise ValueError
         if range_header and stream.status_code != 206: await stream.aclose(); return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
         if not range_header and stream.status_code != 200: await stream.aclose(); raise ValueError
+        if stream.status_code == 206:
+            assert requested_range is not None
+            validate_partial_response(requested_range, stream.headers.get("content-range"), declared)
     except Exception:
         raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404) from None
     headers = {key.title(): value for key, value in stream.headers.items() if key.lower() in {"content-length", "content-range", "accept-ranges", "etag"}}
