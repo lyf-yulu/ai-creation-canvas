@@ -12,7 +12,10 @@ range result responses.
 
 Verification completed:
 
-- `PYTHONPATH=server:. .venv/bin/pytest -q` — 159 passed
+- Round-one RED/GREEN: storage tests first exposed missing WAL/lease behavior;
+  implementation then made those tests pass. The final focused storage suite
+  collected 2 tests successfully.
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 160 passed
 - `python3 -m compileall -q server`
 - `./scripts/security-scan.sh`
 - `git diff --check`
