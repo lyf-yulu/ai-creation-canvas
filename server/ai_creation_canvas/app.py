@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
@@ -152,6 +153,14 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         request_id = _request_id(getattr(request.state, "request_id", None))
         return JSONResponse(status_code=400, content=ApiError("REQUEST_REJECTED", "The request was rejected.", False, request_id, "request").to_dict())
 
+    @app.exception_handler(StarletteHTTPException)
+    async def api_http_error_handler(request: Request, error: StarletteHTTPException):
+        if _is_api_v1_path(request.url.path):
+            request_id = _request_id(getattr(request.state, "request_id", None))
+            code = "API_NOT_FOUND" if error.status_code == 404 else "REQUEST_REJECTED"
+            return JSONResponse(status_code=error.status_code, content=ApiError(code, "The request could not be completed.", False, request_id, "request").to_dict())
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(assets_router)
@@ -160,8 +169,9 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
 
     @app.api_route("/api/v1", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)
     @app.api_route("/api/v1/", methods=["GET", "HEAD", "OPTIONS"], include_in_schema=False)
-    async def api_namespace_not_found() -> JSONResponse:
-        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    async def api_namespace_not_found(request: Request) -> JSONResponse:
+        request_id = _request_id(getattr(request.state, "request_id", None))
+        return JSONResponse(status_code=404, content=ApiError("API_NOT_FOUND", "The requested API resource was not found.", False, request_id, "request").to_dict())
 
     @app.get("/{requested_path:path}", include_in_schema=False)
     async def static_or_spa(request: Request, requested_path: str) -> Response:
