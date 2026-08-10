@@ -6,6 +6,7 @@ let activeScope: StorageScope | null = null;
 let scopeVersion = 0;
 const instances = new Map<string, LocalForage>();
 const clearListeners = new Set<() => void>();
+const scopeListeners = new Set<() => void>();
 let instanceFactory: (options: { name: string; storeName: string }) => LocalForage = (options) => localforage.createInstance(options);
 
 export class StorageScopeChangedError extends Error {
@@ -41,6 +42,7 @@ export async function setStorageScope(scope: StorageScope) {
     if (!scope.environment || !scope.userId) throw new Error("A Portal session and environment are required before opening browser storage");
     clearStorageScope();
     activeScope = { environment: scope.environment, userId: scope.userId };
+    scopeListeners.forEach((listener) => listener());
 }
 
 export function clearStorageScope() {
@@ -85,3 +87,4 @@ export function onStorageScopeCleared(listener: () => void) {
     clearListeners.add(listener);
     return () => clearListeners.delete(listener);
 }
+export function onStorageScopeChanged(listener: () => void) { scopeListeners.add(listener); return () => scopeListeners.delete(listener); }

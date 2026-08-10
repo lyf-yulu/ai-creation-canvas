@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createJob, fetchJob } from "@/api/jobs";
 import type { JobRequest, JobState } from "@/api/contracts";
-import { captureScopedStore, isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
+import { captureScopedStore, isStorageLeaseActive, onStorageScopeChanged, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import { generationErrorMessage, safeFailureMetadata } from "./error-message";
 import { ApiRequestError } from "@/api/client";
 
@@ -86,12 +86,8 @@ export function useGenerationJob(options: Options = {}) {
         const captured = lease.current = captureScopedStore(REFS_KEY);
         await restore(captured);
         const { sourceNodeId, ...jobInput } = input;
-        const matching = [...refs.current.values()].find((item) => {
-            const { idempotency_key: _key, ...pendingInput } = item.request;
-            return !item.jobId && JSON.stringify(pendingInput) === JSON.stringify(jobInput);
-        });
-        const request = matching?.request ?? { ...jobInput, idempotency_key: optionsRef.current.idempotencyKey?.() ?? crypto.randomUUID() };
-        refs.current.set(request.idempotency_key, { request, sourceNodeId: matching?.sourceNodeId ?? sourceNodeId }); await persist(); publish({ status: "submitting" }, captured);
+        const request = { ...jobInput, idempotency_key: optionsRef.current.idempotencyKey?.() ?? crypto.randomUUID() };
+        refs.current.set(request.idempotency_key, { request, sourceNodeId }); await persist(); publish({ status: "submitting" }, captured);
         try {
             const submitController = new AbortController(); controllers.current.set(request.idempotency_key, submitController);
             const job = await apiRef.current.create(request, submitController.signal);
@@ -107,7 +103,18 @@ export function useGenerationJob(options: Options = {}) {
             throw error;
         }
     }, [persist, poll, publish, restore]);
+    const retry = useCallback(async (retryToken: string) => {
+        const captured = lease.current = captureScopedStore(REFS_KEY); await restore(captured);
+        const ref = refs.current.get(retryToken);
+        if (!ref || ref.jobId) throw new Error("This generation cannot be retried");
+        const request = ref.request;
+        try {
+            const submitController = new AbortController(); controllers.current.set(request.idempotency_key, submitController);
+            const job = await apiRef.current.create(request, submitController.signal);
+            controllers.current.delete(request.idempotency_key); refs.current.delete(retryToken); refs.current.set(job.id, { ...ref, jobId: job.id }); await persist(); await poll(job.id, captured);
+        } catch (error) { controllers.current.delete(request.idempotency_key); throw error; }
+    }, [persist, poll, restore]);
     const resume = useCallback(async (jobId: string) => { const captured = lease.current = captureScopedStore(REFS_KEY); await poll(jobId, captured); }, [poll]);
-    useEffect(() => { active.current = true; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); const unsubscribe = onStorageScopeCleared(stop); return () => { active.current = false; unsubscribe(); stop(); }; }, [poll, restore, stop]);
-    return { state, submit, resume, cancel: stop, failureMetadata: safeFailureMetadata };
+    useEffect(() => { active.current = true; const activate = () => { stop(); refs.current.clear(); completed.current.clear(); restoredVersion.current = null; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); }; activate(); const unsubscribe = onStorageScopeCleared(stop); const unsubscribeScope = onStorageScopeChanged(activate); return () => { active.current = false; unsubscribe(); unsubscribeScope(); stop(); }; }, [poll, restore, stop]);
+    return { state, submit, retry, resume, cancel: stop, failureMetadata: safeFailureMetadata };
 }

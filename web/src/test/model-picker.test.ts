@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { modelSupportsOperation, parameterControls } from "@/components/model-picker";
 
 it("derives capabilities from the catalog even when a model name is misleading", () => {
-    const model = { id: "banana-video", service_id: "s", display_name: "Definitely An Image Model", operations: ["video.image_to_video" as const], input_media: ["image" as const], requires_asset_kind: "portrait" as const, parameter_schema: {} };
+    const model = { model_id: "banana-video", service_id: "s", display_name: "Definitely An Image Model", operations: ["video.image_to_video" as const], input_media: ["image" as const], requires_asset_kind: "portrait" as const, parameter_schema: {} };
     expect(modelSupportsOperation(model, "video.image_to_video")).toBe(true);
     expect(modelSupportsOperation(model, "image.generate")).toBe(false);
 });

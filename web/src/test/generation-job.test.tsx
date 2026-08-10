@@ -63,7 +63,7 @@ it("keeps an ambiguous saved submission dormant until a manual retry reuses its 
     const api = { create: vi.fn().mockResolvedValue({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/r" }), fetch: vi.fn() };
     const { result } = renderHook(() => useGenerationJob({ api: api as any }));
     await waitFor(() => expect(api.create).not.toHaveBeenCalled());
-    await act(async () => result.current.submit({ operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [] }));
+    await act(async () => result.current.retry("accepted-key"));
     expect(api.create.mock.calls[0][0].idempotency_key).toBe("accepted-key");
 });
 
