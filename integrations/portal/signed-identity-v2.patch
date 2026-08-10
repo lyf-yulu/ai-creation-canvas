@@ -1,0 +1,74 @@
+diff --git a/app.py b/app.py
+index c9a1bd0..cc5c0cc 100644
+--- a/app.py
++++ b/app.py
+@@ -1 +1,57 @@
+-from fastapi import FastAPI
++import hashlib
++import hmac
++import os
++import time
++from urllib.parse import quote
++
++from fastapi import FastAPI, HTTPException, Request
++
++AI_CANVAS_MOUNT = "/ai-canvas"
++AI_CANVAS_ORIGIN = "http://127.0.0.1:8992"
++IDENTITY_HEADERS = frozenset({
++    "x-portal-sig-version", "x-portal-timestamp", "x-portal-user-id",
++    "x-portal-username", "x-portal-role", "x-portal-signature",
++})
++
++
++def _canvas_signature(secret: str, timestamp: str, user_id: str, role: str, username: str) -> str:
++    """Domain-separated v2 identity signature; never return the secret."""
++    encoded_username = quote(username, safe="~-._")
++    payload = f"v2\n{timestamp}\n{user_id}\n{role}\n{encoded_username}".encode("utf-8")
++    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
++
++
++def verify_canvas_signature(secret: str, timestamp: str, user_id: str, role: str, username: str, signature: str) -> bool:
++    """Use the same canonical v2 fields and a constant-time comparison."""
++    return hmac.compare_digest(
++        _canvas_signature(secret, timestamp, user_id, role, username),
++        signature,
++    )
++
++
++def canvas_identity_headers(request: Request, *, user_id: str, role: str, username: str) -> dict[str, str]:
++    """Mint identity only from the authenticated Portal session, never request headers."""
++    del request  # Browser identity headers are intentionally ignored.
++    secret = os.environ["PORTAL_INTERNAL_TOKEN"]
++    timestamp = str(int(time.time()))
++    return {
++        "X-Portal-Sig-Version": "2",
++        "X-Portal-Timestamp": timestamp,
++        "X-Portal-User-Id": user_id,
++        "X-Portal-Username": username,
++        "X-Portal-Role": role,
++        "X-Portal-Signature": _canvas_signature(secret, timestamp, user_id, role, username),
++    }
++
++
++def canvas_proxy_request(request: Request, path: str, *, user_id: str, role: str, username: str):
++    """Build the fixed upstream request; the caller performs its existing proxy I/O."""
++    if not path.startswith("/") or "//" in path or "\\\\" in path:
++        raise HTTPException(status_code=404)
++    forwarded = {
++        key: value for key, value in request.headers.items()
++        if key.lower() not in IDENTITY_HEADERS and key.lower() not in {"host", "connection"}
++    }
++    forwarded.update(canvas_identity_headers(request, user_id=user_id, role=role, username=username))
++    # The target is deliberately constant: no query/header/body can select another upstream.
++    return f"{AI_CANVAS_ORIGIN}{AI_CANVAS_MOUNT}{path}", forwarded
+@@ -5,3 +61,9 @@
+ @app.get('/healthz')
+ def healthz():
+     return {'ok': True}
++
++# Integrate this handler with the Portal's existing authenticated proxy dispatch:
++# - route only /ai-canvas/ and /ai-canvas/{path:path};
++# - obtain user_id/role/username exclusively from its authenticated session;
++# - call canvas_proxy_request(), preserving only normal Portal cookies;
++# - proxy API method, path and body to the fixed 127.0.0.1:8992 target;
++# - Canvas-owned accounting response headers are prohibited.

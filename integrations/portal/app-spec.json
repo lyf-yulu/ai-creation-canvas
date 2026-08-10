@@ -1,0 +1,10 @@
+{
+  "integration": "ai-creation-canvas",
+  "license": "AGPL-3.0-or-later",
+  "mount": "/ai-canvas/",
+  "canvas_origin": "http://127.0.0.1:8992",
+  "portal_test_port": 9190,
+  "identity_protocol": "portal-signed-v2",
+  "usage_owner": "portal-underlying-generation-service",
+  "production_application": "requires-user-approval"
+}
