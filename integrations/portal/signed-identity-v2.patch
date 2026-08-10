@@ -2,19 +2,21 @@ diff --git a/app.py b/app.py
 index 31c82b0..b9da220 100644
 --- a/app.py
 +++ b/app.py
-@@ -1 +1,83 @@
+@@ -1 +1,118 @@
 -from fastapi import FastAPI, HTTPException, Request
 +import hashlib
 +import hmac
 +import time
++from tempfile import SpooledTemporaryFile
 +from urllib.parse import quote
 +
 +import httpx
 +from fastapi import FastAPI, HTTPException, Request
-+from starlette.responses import Response
++from starlette.responses import Response, StreamingResponse
 +
 +AI_CANVAS_MOUNT = "/ai-canvas"
 +AI_CANVAS_ORIGIN = "http://127.0.0.1:8992"
++MAX_CANVAS_BODY_BYTES = 32 * 1024 * 1024
 +IDENTITY_HEADERS = frozenset({
 +    "x-portal-sig-version", "x-portal-timestamp", "x-portal-user-id",
 +    "x-portal-username", "x-portal-role", "x-portal-signature",
@@ -55,6 +57,39 @@ index 31c82b0..b9da220 100644
 +    }
 +
 +
++async def _bounded_request_body(request: Request):
++    declared = request.headers.get("content-length")
++    if declared is not None:
++        try:
++            if int(declared) < 0:
++                raise ValueError
++        except ValueError:
++            raise HTTPException(status_code=400) from None
++        if int(declared) > MAX_CANVAS_BODY_BYTES:
++            raise HTTPException(status_code=413)
++    body_file = SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
++    total = 0
++    try:
++        async for chunk in request.stream():
++            total += len(chunk)
++            if total > MAX_CANVAS_BODY_BYTES:
++                raise HTTPException(status_code=413)
++            body_file.write(chunk)
++        body_file.seek(0)
++        return body_file
++    except BaseException:
++        body_file.close()
++        raise
++
++
++async def _body_file_chunks(body_file):
++    try:
++        while chunk := body_file.read(64 * 1024):
++            yield chunk
++    finally:
++        body_file.close()
++
++
 +def _canvas_payload(timestamp: str, user_id: str, role: str, username: str) -> bytes:
 +    return f"v2\n{timestamp}\n{user_id}\n{role}\n{quote(username, safe='')}".encode("utf-8")
 +
@@ -87,7 +122,7 @@ index 31c82b0..b9da220 100644
 +        "X-Portal-Role": user["role"],
 +        "X-Portal-Signature": _canvas_signature(secret, timestamp, user["user_id"], user["role"], user["username"]),
 +    }
-@@ -20,2 +102,49 @@
+@@ -20,2 +137,63 @@
  def healthz():
      return {'ok': True}
 +
@@ -118,22 +153,36 @@ index 31c82b0..b9da220 100644
 +    user = auth_hook(request)
 +    headers = _filtered_headers(request.headers, request=True)
 +    headers.update(canvas_identity_headers(user, secret))
-+    transport = getattr(request.app.state, "canvas_transport", None)
-+    body = await request.body()
-+    async with httpx.AsyncClient(
++    body_file = await _bounded_request_body(request)
++    upstream = httpx.AsyncClient(
 +        base_url=AI_CANVAS_ORIGIN,
-+        transport=transport,
++        transport=getattr(request.app.state, "canvas_transport", None),
 +        follow_redirects=False,
 +        timeout=10.0,
-+    ) as upstream:
-+        response = await upstream.request(
-+            request.method,
-+            target_path,
-+            params=request.query_params,
-+            content=body,
-+            headers=headers,
-+        )
++    )
++    try:
++        upstream_request = upstream.build_request(request.method, target_path, params=request.query_params, content=_body_file_chunks(body_file), headers=headers)
++        response = await upstream.send(upstream_request, stream=True)
++    except BaseException:
++        body_file.close()
++        await upstream.aclose()
++        raise
 +    response_headers = _filtered_headers(response.headers, request=False)
 +    response_headers.pop("x-job-id", None)
 +    response_headers.pop("x-usage", None)
-+    return Response(content=response.content, status_code=response.status_code, headers=response_headers)
++    if request.method == "HEAD" or response.status_code in {204, 304}:
++        await response.aclose()
++        body_file.close()
++        await upstream.aclose()
++        return Response(status_code=response.status_code, headers=response_headers)
++
++    async def stream_response():
++        try:
++            async for chunk in response.aiter_bytes():
++                yield chunk
++        finally:
++            await response.aclose()
++            body_file.close()
++            await upstream.aclose()
++
++    return StreamingResponse(stream_response(), status_code=response.status_code, headers=response_headers)

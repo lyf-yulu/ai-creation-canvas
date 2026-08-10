@@ -13,7 +13,7 @@
 已运行：
 
     PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_portal_contract.py
-    9 passed
+    13 passed
 
     bash scripts/security-scan.sh
     通过
@@ -30,6 +30,11 @@ Portal 路由。第 1 轮 GREEN：补丁现已向合成固定 Portal 基线注�
 明确验证。第 2 轮 GREEN：启动阶段显式校验合成固定 Portal 的认证 hook 和
 最短签名 token；未知 X-Portal-*、Connection token 和 hop-by-hop 请求/响应
 头均被过滤；用量由模拟 Portal 既有下游记录器精确记录一次，代理不添加计量头。
+
+第 3 轮 RED：请求体会被无界读取、上游响应会被完整读取。第 3 轮 GREEN：
+请求体先按 32 MiB Content-Length 与逐块累计限额写入临时 spool，超限 413 时
+上游零调用；上游响应改为逐块 StreamingResponse 转发，保留 Range/HEAD 语义，
+并在流异常时关闭流。
 
 覆盖的行为包括：伪造全部身份头被替换、v2 签名验证的篡改/过期拒绝、两用户
 经真实 Canvas 应用的任务隔离、一次生成只产生一次底层适配器调用、mount 前缀

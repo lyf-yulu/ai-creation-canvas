@@ -143,6 +143,24 @@ def _as(client: TestClient, session: str) -> TestClient:
     return client
 
 
+class RecordedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes], *, fail_after_first: bool = False) -> None:
+        self.chunks = chunks
+        self.fail_after_first = fail_after_first
+        self.closed = False
+        self.yielded = 0
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.yielded += 1
+            yield chunk
+            if self.fail_after_first:
+                raise RuntimeError("fixture stream failure")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture
 def portal(tmp_path):
     source = tmp_path / "portal-source"
@@ -314,3 +332,53 @@ def test_proxy_rejects_missing_or_stale_session_and_patch_has_constant_time_v2_v
     stale = module.canvas_identity_headers({"user_id": "user-a", "role": "user", "username": "Alice"}, "fixture-identity-secret")
     assert not module.verify_canvas_identity(stale, "fixture-identity-secret", now=int(stale["X-Portal-Timestamp"]) + 61)
     assert json.loads((target / "ai-canvas-test.json").read_text(encoding="utf-8"))["portal_port"] == 9190
+
+
+@pytest.mark.parametrize("declared_length", ["33554433", "1"])
+def test_proxy_rejects_declared_or_actual_oversized_body_before_upstream(portal, declared_length):
+    client, _, _, module, _, _ = portal
+    calls = 0
+
+    def never_called(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    module.app.state.canvas_transport = httpx.MockTransport(never_called)
+    body = b"x" * (33 * 1024 * 1024) if declared_length == "1" else b"x"
+    response = _as(client, "session-a").post(
+        "/ai-canvas/api/v1/jobs",
+        content=body,
+        headers={"content-type": "application/octet-stream", "content-length": declared_length},
+    )
+    assert response.status_code == 413
+    assert calls == 0
+
+
+def test_proxy_streams_large_response_and_preserves_range_and_head_headers(portal):
+    client, _, _, module, _, _ = portal
+    stream = RecordedStream([b"a" * 65536, b"b" * 65536])
+
+    def streamed(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(206, headers={"content-type": "image/png", "content-length": "2", "content-range": "bytes 0-1/10"})
+        return httpx.Response(206, headers={"content-type": "image/png", "content-length": "131072", "content-range": "bytes 0-131071/131072"}, stream=stream)
+
+    module.app.state.canvas_transport = httpx.MockTransport(streamed)
+    response = _as(client, "session-a").get("/ai-canvas/api/v1/results/job", headers={"range": "bytes=0-131071"})
+    assert response.status_code == 206
+    assert response.content == b"a" * 65536 + b"b" * 65536
+    assert stream.yielded == 2 and stream.closed
+    head = client.head("/ai-canvas/api/v1/results/job", headers={"range": "bytes=0-1"})
+    assert head.status_code == 206
+    assert head.content == b""
+    assert head.headers["content-range"] == "bytes 0-1/10"
+
+
+def test_proxy_closes_upstream_stream_when_streaming_fails(portal):
+    client, _, _, module, _, _ = portal
+    stream = RecordedStream([b"first"], fail_after_first=True)
+    module.app.state.canvas_transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=stream))
+    response = _as(client, "session-a").get("/ai-canvas/api/v1/results/job")
+    assert response.status_code in {200, 500}
+    assert stream.closed
