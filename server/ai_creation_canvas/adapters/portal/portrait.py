@@ -45,6 +45,9 @@ class PortalPortraitAdapter:
 
     @staticmethod
     def _json_object(response: httpx.Response, phase: str) -> Mapping:
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            raise InvalidUpstreamResult(f"portrait {phase} response is invalid")
         try: value = response.json()
         except (ValueError, TypeError) as error: raise InvalidUpstreamResult(f"portrait {phase} response is invalid") from error
         if not isinstance(value, Mapping): raise InvalidUpstreamResult(f"portrait {phase} response is invalid")
