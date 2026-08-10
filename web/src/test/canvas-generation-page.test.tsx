@@ -29,6 +29,29 @@ it("submits canvas image generation through jobs and writes its result node", as
     expect(JSON.parse(request.body).params.steps).toBe(6);
 });
 
+it("submits canvas video generation through jobs and writes a video result node", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const projectId = useCanvasStore.getState().createProject("Canvas");
+    vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ models: [
+            { model_id: "image-model", service_id: "images", display_name: "图片模型", operations: ["image.generate"], input_media: ["text"], parameter_schema: {} },
+            { model_id: "video-model", service_id: "videos", display_name: "视频模型", operations: ["video.generate"], input_media: ["text"], parameter_schema: { duration: { type: "integer", default: 5, minimum: 3, maximum: 8 } } },
+        ] }), { headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video-job-1" }), { headers: { "content-type": "application/json" } })));
+    render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "视频生成" }));
+    fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cloud moving slowly" } });
+    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("video-model"));
+    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
+    await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "video-job-1")).toBe(true));
+    const result = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.sourceJobId === "video-job-1");
+    expect(result?.type).toBe(CanvasNodeType.Video);
+    const [, request] = (fetch as any).mock.calls[1];
+    expect(JSON.parse(request.body).operation).toBe("video.generate");
+    expect(JSON.parse(request.body).model_id).toBe("video-model");
+});
+
 it("writes a safe failure node for a rate-limited generation", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("Canvas");
