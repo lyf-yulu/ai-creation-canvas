@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Navigate, useParams } from "react-router-dom";
 import { ImagePlus, MessageSquareText } from "lucide-react";
 import { nanoid } from "nanoid";
 
@@ -25,6 +25,7 @@ export default function CanvasProjectPage() {
     const [models, setModels] = useState<ModelSpec[]>([]);
     const [inspector, setInspector] = useState<GenerationInspectorValue>({ prompt: "", modelId: "", params: {} });
     const project = useCanvasStore((state) => state.openProject(id));
+    const projectsLoaded = useCanvasStore((state) => state.projectsLoaded);
     const updateProject = useCanvasStore((state) => state.updateProject);
 
     useEffect(() => { void fetchModels().then(setModels).catch(() => setModels([])); }, []);
@@ -65,7 +66,10 @@ export default function CanvasProjectPage() {
         updateProject(id, { nodes: [...current.nodes, node] });
     };
 
-    if (!project) return <main className="flex h-full items-center justify-center bg-[#050806] text-[#829889]">画布不存在或尚未加载。</main>;
+    if (!project) {
+        if (!projectsLoaded) return <main className="flex h-full items-center justify-center bg-[#050806] text-[#829889]">正在加载画布…</main>;
+        return <Navigate to="/canvas" replace />;
+    }
 
     return <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[#050806] text-[#dceee1] lg:grid lg:grid-cols-[152px_minmax(0,1fr)_340px]">
         <aside data-testid="studio-palette" className="shrink-0 border-b border-[#1d3d28] bg-[#08100b] p-2 lg:border-b-0 lg:border-r lg:p-3"><div className="flex items-center justify-between gap-2 lg:block"><div><p className="px-2 text-xs tracking-[0.16em] text-[#58ed87] lg:pt-2">NODE PALETTE</p><h1 className="px-2 py-1 text-sm font-semibold lg:pb-4 lg:pt-2">{project.title}</h1></div><div className="flex flex-wrap gap-2 lg:block lg:space-y-2"><button type="button" onClick={addPromptNode} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] lg:w-full lg:py-2.5"><MessageSquareText className="size-4 text-[#58ed87]" />提示词节点</button><button type="button" onClick={() => document.getElementById("studio-prompt")?.focus()} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] lg:w-full lg:py-2.5"><ImagePlus className="size-4 text-[#58ed87]" />图片生成节点</button></div></div><p className="mt-5 hidden px-2 text-[11px] leading-5 text-[#688371] lg:block">更多能力将按后续切片增量开放。</p></aside>

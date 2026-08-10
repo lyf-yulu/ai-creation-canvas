@@ -1,5 +1,5 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
 import CanvasProjectPage from "@/pages/canvas/project";
@@ -7,7 +7,28 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
 
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true, projectsLoaded: false }); });
+
+function LocationProbe() {
+    return <output data-testid="location">{useLocation().pathname}</output>;
+}
+
+function renderProject(id: string) {
+    return render(<MemoryRouter initialEntries={[`/canvas/${id}`]}><Routes>
+        <Route path="/canvas" element={<><div>project library</div><LocationProbe /></>} />
+        <Route path="/canvas/:id" element={<><CanvasProjectPage /><LocationProbe /></>} />
+    </Routes></MemoryRouter>);
+}
+
+it("waits for the server project list before redirecting a missing project", async () => {
+    useCanvasStore.setState({ projects: [], projectsLoaded: false });
+
+    renderProject("server-project");
+
+    expect(screen.getByTestId("location")).toHaveTextContent("/canvas/server-project");
+    useCanvasStore.getState().setProjectsLoaded(true);
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/canvas"));
+});
 
 it("assembles the released prompt and image-generation studio around the infinite canvas", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });

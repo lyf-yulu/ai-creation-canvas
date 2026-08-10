@@ -44,6 +44,7 @@ export class ProjectSync {
         this.stop();
         const generation = this.generation;
         this.lease = lease;
+        this.store.getState().setProjectsLoaded(false);
         const localDrafts = this.store.getState().projects;
         const controller = this.controller();
         try {
@@ -59,6 +60,7 @@ export class ProjectSync {
             });
             for (const local of localDrafts) if (!this.versions.has(local.id)) merged.unshift(local);
             this.store.getState().replaceProjects(merged);
+            this.store.getState().setProjectsLoaded(true);
             this.store.getState().setSyncNotice(null);
             this.unsubscribe = this.store.subscribe((state, previous) => {
                 if (state.projects !== previous.projects) this.queue();
@@ -78,6 +80,9 @@ export class ProjectSync {
     }
 
     stop = () => {
+        const generation = this.generation;
+        const lease = this.lease;
+        if (lease && this.active(generation, lease)) this.store.getState().setProjectsLoaded(false);
         this.generation += 1;
         if (this.timer) clearTimeout(this.timer);
         this.timer = null;

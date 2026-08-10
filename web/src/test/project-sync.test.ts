@@ -51,6 +51,18 @@ it("does not let a late user-A load replace user-B projects", async () => {
     sync.stop();
 });
 
+it("marks projects loaded only after the authoritative server list arrives", async () => {
+    const pending = deferred<ProjectEnvelope[]>();
+    const sync = new ProjectSync(mockApi({ list: vi.fn(() => pending.promise) }), useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    const activation = sync.activate(captureAppStorageLease()!);
+    expect(useCanvasStore.getState().projectsLoaded).toBe(false);
+    pending.resolve([envelope(projectFor("server-project"))]);
+    await activation;
+    expect(useCanvasStore.getState().projectsLoaded).toBe(true);
+    sync.stop();
+});
+
 it("debounces a create and then saves the returned version", async () => {
     vi.useFakeTimers();
     const api = mockApi();

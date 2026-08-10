@@ -23,6 +23,7 @@ export type CanvasProject = {
 
 export type CanvasStore = {
     hydrated: boolean;
+    projectsLoaded: boolean;
     projects: CanvasProject[];
     syncNotice: string | null;
     createProject: (title?: string) => string;
@@ -31,6 +32,7 @@ export type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
+    setProjectsLoaded: (loaded: boolean) => void;
     setSyncNotice: (notice: string | null) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
 };
@@ -47,7 +49,7 @@ export function clearCanvasInMemory() {
     saveTimer = null;
     queuedPersistState = null;
     queuedLease = null;
-    useCanvasStore.setState({ projects: [], hydrated: false, syncNotice: null });
+    useCanvasStore.setState({ projects: [], hydrated: false, projectsLoaded: false, syncNotice: null });
 }
 
 const canvasStorage: PersistStorage<CanvasStore> = {
@@ -80,6 +82,7 @@ export const useCanvasStore = create<CanvasStore>()(
     persist(
         (set, get) => ({
             hydrated: false,
+            projectsLoaded: false,
             projects: [],
             syncNotice: null,
             createProject: (title = "未命名画布") => {
@@ -132,6 +135,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     return { projects };
                 }),
             replaceProjects: (projects) => set({ projects }),
+            setProjectsLoaded: (projectsLoaded) => set({ projectsLoaded }),
             setSyncNotice: (syncNotice) => set({ syncNotice }),
             updateProject: (id, patch) =>
                 set((state) => ({
