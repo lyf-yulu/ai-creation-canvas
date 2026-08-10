@@ -28,6 +28,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         initialY: 0,
         hasMoved: false,
         pointerId: null as number | null,
+        previousCursor: "",
     });
     const scaleRef = useRef(viewport.k);
     const frameRef = useRef<number | null>(null);
@@ -101,6 +102,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 initialY: viewport.y,
                 hasMoved: false,
                 pointerId: event.pointerId,
+                previousCursor: document.body.style.cursor,
             };
             document.body.style.cursor = "grabbing";
             return;
@@ -141,23 +143,23 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             });
         };
 
-        const finishPan = (deselect: boolean, pointerId?: number) => {
+        const finishPan = (deselect: boolean, pointerId?: number, flushPending = true) => {
             if (!panState.current.isPanning || (pointerId !== undefined && pointerId !== panState.current.pointerId)) return;
 
             if (frameRef.current) {
                 cancelAnimationFrame(frameRef.current);
                 frameRef.current = null;
             }
-            if (nextViewportRef.current) {
+            if (flushPending && nextViewportRef.current) {
                 onViewportChange(nextViewportRef.current);
-                nextViewportRef.current = null;
             }
+            nextViewportRef.current = null;
             if (deselect && !panState.current.hasMoved) {
                 onCanvasDeselect?.();
             }
             panState.current.isPanning = false;
             panState.current.pointerId = null;
-            document.body.style.cursor = "";
+            document.body.style.cursor = panState.current.previousCursor;
         };
 
         const handlePointerUp = (event: PointerEvent) => finishPan(true, event.pointerId);
@@ -169,6 +171,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         window.addEventListener("pointercancel", handlePointerCancel);
         window.addEventListener("blur", handleWindowBlur);
         return () => {
+            finishPan(false, undefined, false);
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointerup", handlePointerUp);
             window.removeEventListener("pointercancel", handlePointerCancel);

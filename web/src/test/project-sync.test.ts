@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ProjectSync, type ProjectApi, type ProjectEnvelope } from "@/features/projects/project-sync";
 import { captureAppStorageLease } from "@/lib/localforage-storage";
 import { clearCanvasInMemory, type CanvasProject, useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { clearStorageScope, setStorageScope } from "@/storage/scope";
+import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 
 
 function deferred<T>() {
@@ -17,6 +17,18 @@ function projectFor(id: string, title = id, updatedAt = "2026-08-10T00:00:00.000
 }
 
 function envelope(project: CanvasProject, version = 1): ProjectEnvelope { return { project, version }; }
+function canonicalJson(value: unknown): string {
+    const sort = (item: unknown): unknown => {
+        if (Array.isArray(item)) return item.map(sort);
+        if (!item || typeof item !== "object") return item;
+        return Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, sort(child)]));
+    };
+    return JSON.stringify(sort(value));
+}
+function serverBaseline(project: CanvasProject, version = 1) {
+    const { updatedAt: _clientTimestamp, ...content } = project;
+    return { source: "server" as const, version, snapshot: canonicalJson(content) };
+}
 
 function mockApi(overrides: Partial<ProjectApi> = {}): ProjectApi {
     return {
@@ -33,6 +45,7 @@ afterEach(() => {
     vi.useRealTimers();
     clearCanvasInMemory();
     clearStorageScope();
+    setScopedStoreFactoryForTest();
 });
 
 it("does not let a late user-A load replace user-B projects", async () => {
@@ -60,6 +73,117 @@ it("marks projects loaded only after the authoritative server list arrives", asy
     pending.resolve([envelope(projectFor("server-project"))]);
     await activation;
     expect(useCanvasStore.getState().projectsLoaded).toBe(true);
+    sync.stop();
+});
+
+it("keeps the remote project and creates a local conflict copy when both devices changed from the same baseline", async () => {
+    vi.useFakeTimers();
+    const base = projectFor("shared", "共同基线", "2026-08-10T00:00:00.000Z");
+    const local = projectFor("shared", "设备 A 修改", "2026-08-10T00:00:20.000Z");
+    const remote = projectFor("shared", "设备 B 修改", "2026-08-10T00:00:10.000Z");
+    const api = mockApi({ list: vi.fn(async () => [envelope(remote, 2)]) });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    useCanvasStore.setState({
+        projects: [local],
+        projectSyncMetadata: { shared: serverBaseline(base, 1) },
+    } as never);
+
+    await sync.activate(captureAppStorageLease()!);
+
+    expect(useCanvasStore.getState().openProject("shared")?.title).toBe("设备 B 修改");
+    const conflictCopy = useCanvasStore.getState().projects.find((project) => project.id !== "shared");
+    expect(conflictCopy).toMatchObject({ title: "设备 A 修改（冲突副本）" });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(api.update).not.toHaveBeenCalledWith(expect.objectContaining({ id: "shared", title: "设备 A 修改" }), expect.anything(), expect.anything());
+    expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ id: conflictCopy?.id, title: "设备 A 修改（冲突副本）" }), expect.any(AbortSignal));
+    sync.stop();
+});
+
+it("uses the authoritative remote refresh when a clean cached project has an untrustworthy newer client timestamp", async () => {
+    const base = projectFor("shared", "共同基线", "2026-08-10T00:00:00.000Z");
+    const cached = { ...base, updatedAt: "2026-08-10T00:00:30.000Z" };
+    const remote = projectFor("shared", "远端刷新", "2026-08-10T00:00:10.000Z");
+    const sync = new ProjectSync(mockApi({ list: vi.fn(async () => [envelope(remote, 2)]) }), useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    useCanvasStore.setState({
+        projects: [cached],
+        projectSyncMetadata: { shared: serverBaseline(base, 1) },
+    } as never);
+
+    await sync.activate(captureAppStorageLease()!);
+
+    expect(useCanvasStore.getState().projects).toEqual([remote]);
+    sync.stop();
+});
+
+it("treats server-sorted JSON as the same baseline and saves a local-only edit with the baseline version", async () => {
+    vi.useFakeTimers();
+    let serverProject: CanvasProject | null = null;
+    const api = mockApi({
+        list: vi.fn(async () => serverProject ? [envelope(serverProject, 1)] : []),
+        create: vi.fn(async (project) => {
+            serverProject = JSON.parse(canonicalJson(project)) as CanvasProject;
+            return envelope(serverProject, 1);
+        }),
+    });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    const lease = captureAppStorageLease()!;
+    await sync.activate(lease);
+    const id = useCanvasStore.getState().createProject("共同基线");
+    await vi.advanceTimersByTimeAsync(400);
+    useCanvasStore.getState().renameProject(id, "仅本地修改");
+
+    await sync.activate(lease);
+    expect(useCanvasStore.getState().projects).toEqual([expect.objectContaining({ id, title: "仅本地修改" })]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(api.update).toHaveBeenCalledWith(expect.objectContaining({ id, title: "仅本地修改" }), 1, expect.any(AbortSignal));
+    expect(useCanvasStore.getState().projects).toHaveLength(1);
+    sync.stop();
+});
+
+it("removes a clean previously synced cache entry missing from the authoritative list without recreating it", async () => {
+    vi.useFakeTimers();
+    const cached = projectFor("deleted-elsewhere", "已在其他设备删除");
+    const api = mockApi({ list: vi.fn(async () => []) });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    useCanvasStore.setState({
+        projects: [cached],
+        projectSyncMetadata: { [cached.id]: serverBaseline(cached, 4) },
+    } as never);
+
+    await sync.activate(captureAppStorageLease()!);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(useCanvasStore.getState().projects).toEqual([]);
+    expect(api.create).not.toHaveBeenCalled();
+    sync.stop();
+});
+
+it("migrates an old cache into an isolated recovery draft instead of reviving its original missing id", async () => {
+    vi.useFakeTimers();
+    const legacy = projectFor("legacy-id", "旧缓存草稿");
+    const stored = JSON.stringify({ state: { projects: [legacy] }, version: 0 });
+    setScopedStoreFactoryForTest(() => ({
+        getItem: async () => stored,
+        setItem: async (_key: string, value: unknown) => value,
+        removeItem: async () => undefined,
+        iterate: async () => undefined,
+    }) as never);
+    await setStorageScope({ environment: "test", userId: "legacy-user" });
+    await useCanvasStore.persist.rehydrate();
+    const api = mockApi({ list: vi.fn(async () => []) });
+    const sync = new ProjectSync(api, useCanvasStore);
+
+    await sync.activate(captureAppStorageLease()!);
+    const [recovered] = useCanvasStore.getState().projects;
+    expect(recovered).toMatchObject({ title: "旧缓存草稿（本地恢复副本）" });
+    expect(recovered.id).not.toBe("legacy-id");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ id: recovered.id }), expect.any(AbortSignal));
+    expect(api.create).not.toHaveBeenCalledWith(expect.objectContaining({ id: "legacy-id" }), expect.anything());
     sync.stop();
 });
 
@@ -119,6 +243,7 @@ it("keeps a failed viewport change and retries the latest project on the next ed
     useCanvasStore.getState().updateProject("p-1", { viewport: { x: 90, y: 40, k: 1.5 } });
     await vi.advanceTimersByTimeAsync(400);
     expect(useCanvasStore.getState().openProject("p-1")?.viewport).toEqual({ x: 90, y: 40, k: 1.5 });
+    expect(useCanvasStore.getState().syncNotice).toBe("项目暂时无法同步，当前修改仍保留在本机。");
 
     useCanvasStore.getState().renameProject("p-1", "retry save");
     await vi.advanceTimersByTimeAsync(400);
@@ -127,6 +252,57 @@ it("keeps a failed viewport change and retries the latest project on the next ed
         1,
         expect.any(AbortSignal),
     );
+    expect(useCanvasStore.getState().syncNotice).toBe("项目已恢复同步。");
+    useCanvasStore.getState().renameProject("p-1", "同步稳定");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(useCanvasStore.getState().syncNotice).toBeNull();
+    sync.stop();
+});
+
+it("isolates local work and removes the original route when PUT reports PROJECT_NOT_FOUND", async () => {
+    vi.useFakeTimers();
+    const missing = Object.assign(new Error("missing"), { code: "PROJECT_NOT_FOUND" });
+    const api = mockApi({
+        list: vi.fn(async () => [envelope(projectFor("p-1", "初始"), 1)]),
+        update: vi.fn(async () => { throw missing; }),
+    });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    await sync.activate(captureAppStorageLease()!);
+
+    useCanvasStore.getState().renameProject("p-1", "本地未保存修改");
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(useCanvasStore.getState().openProject("p-1")).toBeNull();
+    expect(useCanvasStore.getState().projects).toEqual([
+        expect.objectContaining({ title: "本地未保存修改（本地恢复副本）" }),
+    ]);
+    expect(useCanvasStore.getState().projectsLoaded).toBe(true);
+    expect(useCanvasStore.getState().syncNotice).toBe("原画布已删除或无法访问，本地修改已另存为恢复副本。");
+    sync.stop();
+});
+
+it("isolates local work and removes the original route when conflict recovery GET reports PROJECT_NOT_FOUND", async () => {
+    vi.useFakeTimers();
+    const conflict = Object.assign(new Error("conflict"), { code: "PROJECT_CONFLICT" });
+    const missing = Object.assign(new Error("missing"), { code: "PROJECT_NOT_FOUND" });
+    const api = mockApi({
+        list: vi.fn(async () => [envelope(projectFor("p-1", "初始"), 1)]),
+        update: vi.fn(async () => { throw conflict; }),
+        get: vi.fn(async () => { throw missing; }),
+    });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    await sync.activate(captureAppStorageLease()!);
+
+    useCanvasStore.getState().renameProject("p-1", "冲突期间修改");
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(useCanvasStore.getState().openProject("p-1")).toBeNull();
+    expect(useCanvasStore.getState().projects).toEqual([
+        expect.objectContaining({ title: "冲突期间修改（本地恢复副本）" }),
+    ]);
+    expect(useCanvasStore.getState().syncNotice).toBe("原画布已删除或无法访问，本地修改已另存为恢复副本。");
     sync.stop();
 });
 

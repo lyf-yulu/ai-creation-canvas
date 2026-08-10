@@ -95,3 +95,16 @@ it("does not zoom from excluded controls and delegates ordinary wheel zoom", () 
     const expected = zoomViewportAt({ x: 0, y: 0, k: 1 }, { x: 200, y: 150 }, -100);
     expect(screen.getByTestId("viewport")).toHaveTextContent(`${expected.x},${expected.y},${expected.k}`);
 });
+
+it("restores the prior global cursor when unmounted during an active pan", () => {
+    document.body.style.cursor = "crosshair";
+    const view = render(<CanvasHarness />);
+    fireEvent.pointerDown(screen.getByTestId("infinite-canvas"), { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    expect(document.body.style.cursor).toBe("grabbing");
+
+    view.unmount();
+
+    expect(document.body.style.cursor).toBe("crosshair");
+    fireEvent.pointerMove(window, { clientX: 80, clientY: 90, pointerId: 1 });
+    document.body.style.cursor = "";
+});

@@ -22,17 +22,26 @@ export type CanvasProject = {
     viewport: ViewportTransform;
 };
 
+export type ProjectSyncMetadata =
+    | { source: "draft" }
+    | { source: "legacy" }
+    | { source: "server"; version: number; snapshot: string };
+
+export type ProjectSyncMetadataMap = Record<string, ProjectSyncMetadata>;
+
 export type CanvasStore = {
     hydrated: boolean;
     projectsLoaded: boolean;
     projects: CanvasProject[];
+    projectSyncMetadata: ProjectSyncMetadataMap;
     syncNotice: string | null;
     createProject: (title?: string) => string;
     importProject: (project: Partial<CanvasProject>) => string;
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
-    replaceProjects: (projects: CanvasProject[]) => void;
+    replaceProjects: (projects: CanvasProject[], projectSyncMetadata?: ProjectSyncMetadataMap) => void;
+    setProjectSyncMetadata: (id: string, metadata: ProjectSyncMetadata | null) => void;
     setProjectsLoaded: (loaded: boolean) => void;
     setSyncNotice: (notice: string | null) => void;
     updateProject: (id: string, patch: Partial<Pick<CanvasProject, "nodes" | "connections" | "chatSessions" | "activeChatId" | "backgroundMode" | "showImageInfo" | "viewport">>) => void;
@@ -40,7 +49,7 @@ export type CanvasStore = {
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
 const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
-type PersistedCanvasState = Pick<CanvasStore, "projects">;
+type PersistedCanvasState = Pick<CanvasStore, "projects" | "projectSyncMetadata">;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let queuedLease: ScopedStoreLease | null = null;
@@ -50,20 +59,31 @@ export function clearCanvasInMemory() {
     saveTimer = null;
     queuedPersistState = null;
     queuedLease = null;
-    useCanvasStore.setState({ projects: [], hydrated: false, projectsLoaded: false, syncNotice: null });
+    useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, hydrated: false, projectsLoaded: false, syncNotice: null });
 }
 
-const canvasStorage: PersistStorage<CanvasStore> = {
+export function migrateCanvasPersistedState(persistedState: unknown, persistedVersion: number) {
+    const state = persistedState && typeof persistedState === "object" ? persistedState as Partial<PersistedCanvasState> : {};
+    const projects = Array.isArray(state.projects) ? state.projects : [];
+    if (persistedVersion >= 1 && state.projectSyncMetadata && typeof state.projectSyncMetadata === "object") {
+        return { ...state, projects, projectSyncMetadata: state.projectSyncMetadata };
+    }
+    const projectSyncMetadata: ProjectSyncMetadataMap = {};
+    for (const project of projects) projectSyncMetadata[project.id] = { source: "legacy" };
+    return { ...state, projects, projectSyncMetadata };
+}
+
+const canvasStorage: PersistStorage<PersistedCanvasState> = {
     getItem: async (name) => {
         const value = await localForageStorage.getItem(name);
         if (!value) return null;
-        const parsed = JSON.parse(value) as StorageValue<CanvasStore>;
-        queuedPersistState = parsed.state as PersistedCanvasState;
+        const parsed = JSON.parse(value) as StorageValue<PersistedCanvasState>;
+        queuedPersistState = parsed.state;
         return parsed;
     },
     setItem: (name, value) => {
         const nextState = value.state as PersistedCanvasState;
-        if (queuedPersistState && queuedPersistState.projects === nextState.projects) return;
+        if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.projectSyncMetadata === nextState.projectSyncMetadata) return;
         const lease = captureAppStorageLease();
         if (!lease) return;
         queuedPersistState = nextState;
@@ -85,6 +105,7 @@ export const useCanvasStore = create<CanvasStore>()(
             hydrated: false,
             projectsLoaded: false,
             projects: [],
+            projectSyncMetadata: {},
             syncNotice: null,
             createProject: (title = "未命名画布") => {
                 const now = new Date().toISOString();
@@ -102,7 +123,10 @@ export const useCanvasStore = create<CanvasStore>()(
                     showImageInfo: false,
                     viewport: initialViewport,
                 };
-                set((state) => ({ projects: [project, ...state.projects] }));
+                set((state) => ({
+                    projects: [project, ...state.projects],
+                    projectSyncMetadata: { ...state.projectSyncMetadata, [id]: { source: "draft" } },
+                }));
                 return id;
             },
             importProject: (source) => {
@@ -120,7 +144,10 @@ export const useCanvasStore = create<CanvasStore>()(
                     showImageInfo: source.showImageInfo || false,
                     viewport: normalizeViewport(source.viewport),
                 };
-                set((state) => ({ projects: [project, ...state.projects] }));
+                set((state) => ({
+                    projects: [project, ...state.projects],
+                    projectSyncMetadata: { ...state.projectSyncMetadata, [project.id]: { source: "draft" } },
+                }));
                 return project.id;
             },
             openProject: (id) => {
@@ -133,9 +160,19 @@ export const useCanvasStore = create<CanvasStore>()(
             deleteProjects: (ids) =>
                 set((state) => {
                     const projects = state.projects.filter((project) => !ids.includes(project.id));
-                    return { projects };
+                    const projectSyncMetadata = { ...state.projectSyncMetadata };
+                    for (const id of ids) {
+                        if (projectSyncMetadata[id]?.source !== "server") delete projectSyncMetadata[id];
+                    }
+                    return { projects, projectSyncMetadata };
                 }),
-            replaceProjects: (projects) => set({ projects }),
+            replaceProjects: (projects, projectSyncMetadata) => set(projectSyncMetadata ? { projects, projectSyncMetadata } : { projects }),
+            setProjectSyncMetadata: (id, metadata) => set((state) => {
+                const projectSyncMetadata = { ...state.projectSyncMetadata };
+                if (metadata) projectSyncMetadata[id] = metadata;
+                else delete projectSyncMetadata[id];
+                return { projectSyncMetadata };
+            }),
             setProjectsLoaded: (projectsLoaded) => set({ projectsLoaded }),
             setSyncNotice: (syncNotice) => set({ syncNotice }),
             updateProject: (id, patch) =>
@@ -146,10 +183,13 @@ export const useCanvasStore = create<CanvasStore>()(
         {
             name: CANVAS_STORE_KEY,
             storage: canvasStorage,
+            version: 1,
+            migrate: migrateCanvasPersistedState,
             partialize: (state) =>
                 ({
                     projects: state.projects,
-                }) as StorageValue<CanvasStore>["state"],
+                    projectSyncMetadata: state.projectSyncMetadata,
+                }),
             onRehydrateStorage: () => () => {
                 useCanvasStore.setState({ hydrated: true });
             },

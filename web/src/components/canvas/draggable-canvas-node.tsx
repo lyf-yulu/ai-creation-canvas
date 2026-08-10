@@ -38,15 +38,49 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
     const frameRef = useRef<number | null>(null);
     const nextPositionRef = useRef<Position | null>(null);
     const onPositionChangeRef = useRef(onPositionChange);
+    const nodeIdRef = useRef(node.id);
+    const finishDragRef = useRef<((pointerId?: number, flush?: boolean) => void) | null>(null);
     onPositionChangeRef.current = onPositionChange;
+    nodeIdRef.current = node.id;
 
     useEffect(() => {
+        return () => finishDragRef.current?.(undefined, false);
+    }, []);
+
+    const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || dragRef.current.active) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest(interactiveSelector)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        dragRef.current = {
+            active: true,
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            initial: node.position,
+            scale: normalizedScale(scale),
+            previousCursor: document.body.style.cursor,
+        };
+        document.body.style.cursor = "grabbing";
+
         const emitPendingPosition = () => {
             const nextPosition = nextPositionRef.current;
             nextPositionRef.current = null;
-            if (nextPosition) onPositionChangeRef.current(node.id, nextPosition);
+            if (nextPosition) onPositionChangeRef.current(nodeIdRef.current, nextPosition);
         };
 
+        let listening = true;
+        const detachListeners = () => {
+            if (!listening) return;
+            listening = false;
+            window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointerup", handlePointerUp);
+            window.removeEventListener("pointercancel", handlePointerCancel);
+            window.removeEventListener("blur", handleWindowBlur);
+        };
         const finishDrag = (pointerId?: number, flush = true) => {
             const drag = dragRef.current;
             if (!drag.active || (pointerId !== undefined && pointerId !== drag.pointerId)) return;
@@ -58,6 +92,8 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
             drag.active = false;
             drag.pointerId = null;
             document.body.style.cursor = drag.previousCursor;
+            detachListeners();
+            finishDragRef.current = null;
             if (flush) emitPendingPosition();
             else nextPositionRef.current = null;
         };
@@ -88,33 +124,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
         window.addEventListener("pointerup", handlePointerUp);
         window.addEventListener("pointercancel", handlePointerCancel);
         window.addEventListener("blur", handleWindowBlur);
-        return () => {
-            finishDrag(undefined, false);
-            window.removeEventListener("pointermove", handlePointerMove);
-            window.removeEventListener("pointerup", handlePointerUp);
-            window.removeEventListener("pointercancel", handlePointerCancel);
-            window.removeEventListener("blur", handleWindowBlur);
-        };
-    }, [node.id]);
-
-    const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || event.ctrlKey || event.metaKey || dragRef.current.active) return;
-        const target = event.target instanceof Element ? event.target : null;
-        if (target?.closest(interactiveSelector)) return;
-
-        event.preventDefault();
-        event.stopPropagation();
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-        dragRef.current = {
-            active: true,
-            pointerId: event.pointerId,
-            startX: event.clientX,
-            startY: event.clientY,
-            initial: node.position,
-            scale: normalizedScale(scale),
-            previousCursor: document.body.style.cursor,
-        };
-        document.body.style.cursor = "grabbing";
+        finishDragRef.current = finishDrag;
     };
 
     return (

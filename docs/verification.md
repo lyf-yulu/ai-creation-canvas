@@ -27,6 +27,20 @@
 6. 确认浏览器控制台没有未处理错误。
 7. 确认项目保存经过 400 ms 防抖，没有按每次指针移动形成请求风暴。
 
+普通开发环境不要求安装浏览器，JSDOM 回归仍使用：
+
+```bash
+npm test --prefix web
+```
+
+发布前的正式前端门禁使用：
+
+```bash
+npm run verify:release --prefix web
+```
+
+该命令依次运行 JSDOM 全量、类型检查、生产构建和 2 个真实 Chrome 响应式用例。它要求本机已安装 Google Chrome；缺少 Chrome 时会明确失败，但不影响普通测试、构建、Python 静态运行或生产启动。
+
 ## 真实服务冒烟
 
 **NOT RUN — awaiting explicit user approval.**

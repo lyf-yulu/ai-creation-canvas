@@ -7,7 +7,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScopedStoreFactoryForTest(); useCanvasStore.setState({ projects: [], hydrated: true }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScopedStoreFactoryForTest(); useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, syncNotice: null, hydrated: true }); });
 
 it("submits canvas image generation through jobs and writes its result node", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });

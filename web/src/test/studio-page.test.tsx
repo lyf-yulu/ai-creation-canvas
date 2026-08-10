@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -7,7 +7,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
 
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true, projectsLoaded: false }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); clearStorageScope(); useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, syncNotice: null, hydrated: true, projectsLoaded: false }); });
 
 function LocationProbe() {
     return <output data-testid="location">{useLocation().pathname}</output>;
@@ -79,4 +79,24 @@ it("keeps the compact navigation-control class contract", () => {
     expect(navigationControls).toHaveClass("left-4", "max-w-[calc(100%-2rem)]", "px-3", "py-2");
     expect(resetControl).toHaveClass("px-2", "py-1", "text-xs");
     expect(scaleControl).toHaveClass("w-20");
+});
+
+it("shows sync failure, conflict, and recovery notices without overlaying the canvas", () => {
+    const id = useCanvasStore.getState().createProject("Notice lifecycle");
+    const view = renderProject(id);
+
+    act(() => useCanvasStore.getState().setSyncNotice("项目暂时无法同步，当前修改仍保留在本机。"));
+    expect(screen.getByTestId("project-sync-notice")).toHaveTextContent("项目暂时无法同步");
+    expect(screen.getByTestId("project-sync-notice")).not.toBe(screen.getByTestId("studio-canvas"));
+    expect(screen.getByTestId("project-sync-notice").parentElement).toContainElement(screen.getByTestId("studio-canvas"));
+
+    act(() => useCanvasStore.getState().setSyncNotice("检测到其他位置的更新，已保留一个冲突副本。"));
+    expect(screen.getByTestId("project-sync-notice")).toHaveTextContent("冲突副本");
+
+    act(() => useCanvasStore.getState().setSyncNotice("项目已恢复同步。"));
+    expect(screen.getByTestId("project-sync-notice")).toHaveTextContent("项目已恢复同步");
+
+    act(() => useCanvasStore.getState().setSyncNotice(null));
+    expect(screen.queryByTestId("project-sync-notice")).not.toBeInTheDocument();
+    view.unmount();
 });

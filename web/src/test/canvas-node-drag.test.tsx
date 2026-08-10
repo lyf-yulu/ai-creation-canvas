@@ -205,3 +205,24 @@ it("restores the prior body cursor on pointer up, cancel, blur, and unmount", ()
     view.unmount();
     expect(document.body.style.cursor).toBe("crosshair");
 });
+
+it("registers global drag listeners only while a node owns an active pointer", () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    render(
+        <>
+            <DraggableCanvasNode node={nodeAt(10, 20)} scale={1} onPositionChange={vi.fn()}><span>first</span></DraggableCanvasNode>
+            <DraggableCanvasNode node={{ ...nodeAt(30, 40), id: "node-b" }} scale={1} onPositionChange={vi.fn()}><span>second</span></DraggableCanvasNode>
+        </>,
+    );
+    const dragEvents = new Set(["pointermove", "pointerup", "pointercancel", "blur"]);
+    const addedDragEvents = () => add.mock.calls.filter(([name]) => dragEvents.has(String(name)));
+    const removedDragEvents = () => remove.mock.calls.filter(([name]) => dragEvents.has(String(name)));
+
+    expect(addedDragEvents()).toHaveLength(0);
+    fireEvent.pointerDown(screen.getByTestId("draggable-node-node-a"), { button: 0, pointerId: 7, clientX: 10, clientY: 20 });
+    expect(addedDragEvents().map(([name]) => name)).toEqual(["pointermove", "pointerup", "pointercancel", "blur"]);
+
+    fireEvent.pointerUp(window, { pointerId: 7 });
+    expect(removedDragEvents().map(([name]) => name)).toEqual(["pointermove", "pointerup", "pointercancel", "blur"]);
+});

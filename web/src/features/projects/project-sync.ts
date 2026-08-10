@@ -4,7 +4,13 @@ import type { StoreApi } from "zustand";
 import * as projectsApi from "@/api/projects";
 import { ApiRequestError } from "@/api/client";
 import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
-import { useCanvasStore, type CanvasProject, type CanvasStore } from "@/stores/canvas/use-canvas-store";
+import {
+    useCanvasStore,
+    type CanvasProject,
+    type CanvasStore,
+    type ProjectSyncMetadata,
+    type ProjectSyncMetadataMap,
+} from "@/stores/canvas/use-canvas-store";
 
 
 export type ProjectEnvelope = projectsApi.ProjectEnvelope;
@@ -25,7 +31,33 @@ const defaultApi: ProjectApi = {
 };
 
 function serialized(project: CanvasProject) { return JSON.stringify(project); }
-function isConflict(error: unknown) { return error instanceof ApiRequestError ? error.code === "PROJECT_CONFLICT" : Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "PROJECT_CONFLICT"); }
+function canonicalJson(value: unknown): string {
+    const sort = (item: unknown): unknown => {
+        if (Array.isArray(item)) return item.map(sort);
+        if (!item || typeof item !== "object") return item;
+        const sorted: Record<string, unknown> = {};
+        for (const key of Object.keys(item).sort()) {
+            const child = sort((item as Record<string, unknown>)[key]);
+            if (child !== undefined) sorted[key] = child;
+        }
+        return sorted;
+    };
+    return JSON.stringify(sort(value));
+}
+function baselineSnapshot(project: CanvasProject) {
+    const { updatedAt: _clientTimestamp, ...content } = project;
+    return canonicalJson(content);
+}
+function hasCode(error: unknown, code: string) { return error instanceof ApiRequestError ? error.code === code : Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === code); }
+function isConflict(error: unknown) { return hasCode(error, "PROJECT_CONFLICT"); }
+function isNotFound(error: unknown) { return hasCode(error, "PROJECT_NOT_FOUND"); }
+function serverMetadata(project: CanvasProject, version: number): ProjectSyncMetadata {
+    return { source: "server", version, snapshot: baselineSnapshot(project) };
+}
+function localCopy(project: CanvasProject, suffix: "冲突副本" | "本地恢复副本") {
+    const now = new Date().toISOString();
+    return { ...project, id: nanoid(), title: `${project.title}（${suffix}）`, createdAt: now, updatedAt: now };
+}
 
 export class ProjectSync {
     private generation = 0;
@@ -37,6 +69,7 @@ export class ProjectSync {
     private controllers = new Set<AbortController>();
     private flushingGenerations = new Set<number>();
     private queuedAgain = new Set<number>();
+    private syncFailed = false;
 
     constructor(private readonly api: ProjectApi, private readonly store: Pick<StoreApi<CanvasStore>, "getState" | "subscribe">) {}
 
@@ -45,30 +78,99 @@ export class ProjectSync {
         const generation = this.generation;
         this.lease = lease;
         this.store.getState().setProjectsLoaded(false);
-        const localDrafts = this.store.getState().projects;
+        const localProjects = this.store.getState().projects;
+        const previousMetadata = this.store.getState().projectSyncMetadata;
         const controller = this.controller();
         try {
             const serverEnvelopes = await this.api.list(controller.signal);
             if (!this.active(generation, lease)) return;
             this.versions.clear();
             this.snapshots.clear();
-            const merged = serverEnvelopes.map((item) => {
+            const localById = new Map(localProjects.map((project) => [project.id, project]));
+            const nextMetadata: ProjectSyncMetadataMap = {};
+            const localFirst: CanvasProject[] = [];
+            const authoritative: CanvasProject[] = [];
+            let conflictCopies = 0;
+            let recoveryCopies = 0;
+
+            for (const item of serverEnvelopes) {
                 this.versions.set(item.project.id, item.version);
-                this.snapshots.set(item.project.id, serialized(item.project));
-                const local = localDrafts.find((draft) => draft.id === item.project.id);
-                return local && local.updatedAt > item.project.updatedAt ? local : item.project;
-            });
-            for (const local of localDrafts) if (!this.versions.has(local.id)) merged.unshift(local);
-            this.store.getState().replaceProjects(merged);
+                const serverSerialized = serialized(item.project);
+                const local = localById.get(item.project.id);
+                const metadata = previousMetadata[item.project.id];
+                localById.delete(item.project.id);
+
+                if (!local) {
+                    if (metadata?.source === "server") {
+                        // The local absence is a pending deletion. Keep its server snapshot only long enough to issue DELETE.
+                        this.snapshots.set(item.project.id, serverSerialized);
+                        nextMetadata[item.project.id] = metadata;
+                    } else {
+                        this.snapshots.set(item.project.id, serverSerialized);
+                        nextMetadata[item.project.id] = serverMetadata(item.project, item.version);
+                        authoritative.push(item.project);
+                    }
+                    continue;
+                }
+
+                const localChanged = metadata?.source === "server" && baselineSnapshot(local) !== metadata.snapshot;
+                const serverChanged = metadata?.source === "server"
+                    && (item.version !== metadata.version || baselineSnapshot(item.project) !== metadata.snapshot);
+
+                if (metadata?.source === "server" && localChanged && !serverChanged) {
+                    this.snapshots.set(item.project.id, serverSerialized);
+                    nextMetadata[item.project.id] = metadata;
+                    authoritative.push(local);
+                    continue;
+                }
+
+                if ((metadata?.source === "server" && localChanged && serverChanged)
+                    || (metadata?.source !== "server" && baselineSnapshot(local) !== baselineSnapshot(item.project))) {
+                    const copy = localCopy(local, "冲突副本");
+                    localFirst.push(copy);
+                    nextMetadata[copy.id] = { source: "draft" };
+                    conflictCopies += 1;
+                }
+
+                this.snapshots.set(item.project.id, serverSerialized);
+                nextMetadata[item.project.id] = serverMetadata(item.project, item.version);
+                authoritative.push(item.project);
+            }
+
+            for (const local of localById.values()) {
+                const metadata = previousMetadata[local.id];
+                if (metadata?.source === "draft") {
+                    localFirst.push(local);
+                    nextMetadata[local.id] = metadata;
+                    continue;
+                }
+                if (metadata?.source === "server" && baselineSnapshot(local) === metadata.snapshot) continue;
+                const copy = localCopy(local, "本地恢复副本");
+                localFirst.push(copy);
+                nextMetadata[copy.id] = { source: "draft" };
+                recoveryCopies += 1;
+            }
+
+            const merged = [...localFirst, ...authoritative];
+            this.store.getState().replaceProjects(merged, nextMetadata);
             this.store.getState().setProjectsLoaded(true);
-            this.store.getState().setSyncNotice(null);
+            this.syncFailed = false;
+            this.store.getState().setSyncNotice(
+                conflictCopies > 0
+                    ? "检测到其他位置的更新，已保留一个冲突副本。"
+                    : recoveryCopies > 0
+                        ? "原画布已删除或无法访问，本地修改已另存为恢复副本。"
+                        : null,
+            );
             this.unsubscribe = this.store.subscribe((state, previous) => {
                 if (state.projects !== previous.projects) this.queue();
             });
-            if (merged.some((project) => this.snapshots.get(project.id) !== serialized(project))) this.queue();
+            const mergedIds = new Set(merged.map((project) => project.id));
+            if (merged.some((project) => this.snapshots.get(project.id) !== serialized(project))
+                || [...this.snapshots.keys()].some((id) => !mergedIds.has(id))) this.queue();
         } catch (error) {
             if (this.active(generation, lease) && !(error instanceof DOMException && error.name === "AbortError")) {
-                this.store.getState().setSyncNotice("项目暂时无法同步，当前修改仍保留在本机。");
+                this.reportFailure();
             }
         } finally {
             this.controllers.delete(controller);
@@ -93,6 +195,7 @@ export class ProjectSync {
         this.lease = null;
         this.versions.clear();
         this.snapshots.clear();
+        this.syncFailed = false;
     };
 
     private active(generation: number, lease: ScopedStoreLease) { return this.generation === generation && this.lease === lease && isStorageLeaseActive(lease); }
@@ -131,8 +234,16 @@ export class ProjectSync {
                 if (!this.active(generation, lease)) return;
                 this.snapshots.delete(id);
                 this.versions.delete(id);
+                this.store.getState().setProjectSyncMetadata(id, null);
+                this.reportSuccess();
             } catch (error) {
-                if (this.active(generation, lease) && !(error instanceof DOMException && error.name === "AbortError")) this.store.getState().setSyncNotice("项目暂时无法同步，当前修改仍保留在本机。");
+                if (!this.active(generation, lease)) return;
+                if (isNotFound(error)) {
+                    this.snapshots.delete(id);
+                    this.versions.delete(id);
+                    this.store.getState().setProjectSyncMetadata(id, null);
+                    this.reportSuccess();
+                } else if (!(error instanceof DOMException && error.name === "AbortError")) this.reportFailure();
             } finally { this.controllers.delete(controller); }
         }
         for (const project of projects) {
@@ -144,11 +255,14 @@ export class ProjectSync {
                 if (!this.active(generation, lease)) return;
                 this.versions.set(project.id, result.version);
                 this.snapshots.set(project.id, localSnapshot);
+                this.store.getState().setProjectSyncMetadata(project.id, serverMetadata(project, result.version));
+                this.reportSuccess();
                 if (serialized(this.store.getState().projects.find((item) => item.id === project.id) || project) !== localSnapshot) this.queue();
             } catch (error) {
                 if (!this.active(generation, lease)) return;
                 if (isConflict(error)) await this.preserveConflict(project, generation, lease);
-                else if (!(error instanceof DOMException && error.name === "AbortError")) this.store.getState().setSyncNotice("项目暂时无法同步，当前修改仍保留在本机。");
+                else if (isNotFound(error)) this.preserveMissing(project);
+                else if (!(error instanceof DOMException && error.name === "AbortError")) this.reportFailure();
             } finally { this.controllers.delete(controller); }
         }
     }
@@ -159,16 +273,52 @@ export class ProjectSync {
             const server = await this.api.get(project.id, controller.signal);
             if (!this.active(generation, lease)) return;
             const latestLocal = this.store.getState().projects.find((item) => item.id === project.id) || project;
-            const now = new Date().toISOString();
-            const copy = { ...latestLocal, id: nanoid(), title: `${latestLocal.title}（冲突副本）`, createdAt: now, updatedAt: now };
-            const remaining = this.store.getState().projects.filter((item) => item.id !== project.id);
+            const copy = localCopy(latestLocal, "冲突副本");
+            const state = this.store.getState();
+            const remaining = state.projects.filter((item) => item.id !== project.id);
+            const metadata = { ...state.projectSyncMetadata, [copy.id]: { source: "draft" } as const, [server.project.id]: serverMetadata(server.project, server.version) };
             this.versions.set(server.project.id, server.version);
             this.snapshots.set(server.project.id, serialized(server.project));
-            this.store.getState().replaceProjects([copy, server.project, ...remaining]);
+            this.syncFailed = false;
+            this.store.getState().replaceProjects([copy, server.project, ...remaining], metadata);
             this.store.getState().setSyncNotice("检测到其他位置的更新，已保留一个冲突副本。");
         } catch (error) {
-            if (this.active(generation, lease) && !(error instanceof DOMException && error.name === "AbortError")) this.store.getState().setSyncNotice("项目发生版本冲突，本地修改仍保留在本机。");
+            if (!this.active(generation, lease)) return;
+            if (isNotFound(error)) this.preserveMissing(project);
+            else if (!(error instanceof DOMException && error.name === "AbortError")) {
+                this.syncFailed = true;
+                this.store.getState().setSyncNotice("项目发生版本冲突，本地修改仍保留在本机。");
+            }
         } finally { this.controllers.delete(controller); }
+    }
+
+    private preserveMissing(project: CanvasProject) {
+        const state = this.store.getState();
+        const latestLocal = state.projects.find((item) => item.id === project.id) || project;
+        const copy = localCopy(latestLocal, "本地恢复副本");
+        const remaining = state.projects.filter((item) => item.id !== project.id);
+        const metadata = { ...state.projectSyncMetadata, [copy.id]: { source: "draft" } as const };
+        delete metadata[project.id];
+        this.versions.delete(project.id);
+        this.snapshots.delete(project.id);
+        this.syncFailed = false;
+        this.store.getState().replaceProjects([copy, ...remaining], metadata);
+        this.store.getState().setProjectsLoaded(true);
+        this.store.getState().setSyncNotice("原画布已删除或无法访问，本地修改已另存为恢复副本。");
+    }
+
+    private reportFailure() {
+        this.syncFailed = true;
+        this.store.getState().setSyncNotice("项目暂时无法同步，当前修改仍保留在本机。");
+    }
+
+    private reportSuccess() {
+        if (this.syncFailed) {
+            this.syncFailed = false;
+            this.store.getState().setSyncNotice("项目已恢复同步。");
+        } else if (this.store.getState().syncNotice === "项目已恢复同步。") {
+            this.store.getState().setSyncNotice(null);
+        }
     }
 }
 
