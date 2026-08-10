@@ -318,8 +318,8 @@ def test_two_users_cannot_read_each_others_results_and_usage_is_once(portal):
     canvas_app.state.canvas_store._update(job_id, status="succeeded", result_id="opaque-result")
     assert client.get(f"/ai-canvas/api/v1/jobs/{job_id}").status_code == 200
     assert client.get(f"/ai-canvas/api/v1/results/{job_id}").content == b"png"
-    assert _as(client, "session-b").get(f"/ai-canvas/api/v1/jobs/{job_id}").status_code == 403
-    assert client.get(f"/ai-canvas/api/v1/results/{job_id}").status_code == 403
+    assert _as(client, "session-b").get(f"/ai-canvas/api/v1/jobs/{job_id}").status_code == 404
+    assert client.get(f"/ai-canvas/api/v1/results/{job_id}").status_code == 404
 
 
 def test_proxy_rejects_missing_or_stale_session_and_patch_has_constant_time_v2_verification(portal):

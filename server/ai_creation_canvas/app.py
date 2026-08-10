@@ -18,6 +18,7 @@ from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
+from ai_creation_canvas.adapters.demo import DemoGenerationAdapter
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
 from ai_creation_canvas.api.assets import router as assets_router
@@ -108,6 +109,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app = FastAPI()
     if registry is None:
         registry = AdapterRegistry()
+    if settings.identity_mode == "local" and settings.enable_demo_adapter:
+        registry.register_generation(DemoGenerationAdapter())
     if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)

@@ -169,7 +169,7 @@ async def get_job(job_id: str, request: Request) -> dict[str, object]:
     context = context_for(request)
     item, forbidden = request.app.state.canvas_store.job_for_owner(job_id, context.user.user_id)
     if forbidden:
-        raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
+        raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
     if item is None:
         raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
     return _response(await _poll(request, context, item), request)

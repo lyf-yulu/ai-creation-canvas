@@ -89,7 +89,7 @@ async def _close(stream) -> None:
 async def get_result(job_id: str, request: Request):
     context = context_for(request)
     item, forbidden = request.app.state.canvas_store.job_for_owner(job_id, context.user.user_id)
-    if forbidden: raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
+    if forbidden: raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
     if item is None or item["status"] != "succeeded" or not item.get("result_id") or not item.get("upstream_job_id"):
         raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
     adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))

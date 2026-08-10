@@ -55,7 +55,7 @@ def test_idempotency_and_job_ownership(tmp_path):
     first = client.post("/api/v1/jobs", json=data, headers=headers()); second = client.post("/api/v1/jobs", json=data, headers=headers())
     assert first.status_code == second.status_code == 201
     assert first.json()["id"] == second.json()["id"] and adapter.submit_count == 1
-    assert client.get(f"/api/v1/jobs/{first.json()['id']}", headers=headers("u-b")).status_code == 403
+    assert client.get(f"/api/v1/jobs/{first.json()['id']}", headers=headers("u-b")).status_code == 404
     data["prompt"] = "different"
     assert client.post("/api/v1/jobs", json=data, headers=headers()).status_code == 409
     assert "secret prompt" not in (tmp_path / "data" / "canvas.sqlite3").read_bytes().decode(errors="ignore")

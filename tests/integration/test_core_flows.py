@@ -147,8 +147,8 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
     response = client.post("/api/v1/jobs", json={"operation": operation, "model_id": model_id, "prompt": "integration prompt", "params": {}, "asset_ids": asset_ids, "idempotency_key": f"{operation}-{model_id}"}, headers=signed_headers("user-a"))
     assert response.status_code == 201, response.text
     job_id = response.json()["id"]
-    assert client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-b")).status_code == 403
-    assert client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-b")).status_code == 403
+    assert client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-b")).status_code == 404
+    assert client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-b")).status_code == 404
     if asset_ids:
         assert client.get(f"/api/v1/assets/{asset_ids[0]}", headers=signed_headers("user-b")).status_code == 403
     completed = client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a"))
