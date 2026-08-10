@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 import { parseChangelog } from "./src/lib/release";
 
@@ -25,5 +25,6 @@ export default defineConfig({
     test: {
         environment: "jsdom",
         setupFiles: ["./src/test/setup.ts"],
+        exclude: [...configDefaults.exclude, "**/*.browser.test.tsx"],
     },
 });

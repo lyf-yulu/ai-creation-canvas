@@ -66,8 +66,7 @@ it("uses the stored project viewport and exposes scale and reset controls", () =
     expect(useCanvasStore.getState().openProject(id)?.viewport).toEqual({ x: 0, y: 0, k: 1 });
 });
 
-it.each([415, 240])("keeps compact navigation controls inside the studio canvas at %i px", (viewportWidth) => {
-    vi.stubGlobal("innerWidth", viewportWidth);
+it("keeps the compact navigation-control class contract", () => {
     const id = useCanvasStore.getState().createProject("Narrow view");
 
     renderProject(id);
