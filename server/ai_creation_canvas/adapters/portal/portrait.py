@@ -167,7 +167,21 @@ class PortalPortraitAdapter:
     @staticmethod
     async def _read_fd_safely(fd: int, amount: int) -> bytes:
         task = asyncio.create_task(asyncio.to_thread(os.read, fd, amount))
-        try: return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            try: await asyncio.shield(task)
-            finally: raise
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError as original:
+            # Do not release the FD while its worker may still read it: a reused
+            # descriptor could otherwise expose a different file to that worker.
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if task.done():
+                try:
+                    task.result()
+                except Exception:
+                    pass
+            raise original

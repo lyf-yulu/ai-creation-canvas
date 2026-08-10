@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import os
+import threading
 
 import httpx
 import pytest
@@ -50,3 +53,22 @@ async def test_portrait_adapter_rejects_unsafe_opaque_ids_and_unknown_status():
     adapter = PortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
     with pytest.raises(InvalidUpstreamResult):
         await adapter.get_with_cookie(context(), "bad/id", "session=a")
+
+
+@pytest.mark.anyio
+async def test_fd_read_waits_for_worker_despite_multiple_cancellations(monkeypatch, tmp_path):
+    started, release = threading.Event(), threading.Event()
+    original = os.read
+    def blocked(fd, amount):
+        started.set(); release.wait(1); return original(fd, amount)
+    monkeypatch.setattr(os, "read", blocked)
+    source = tmp_path / "portrait-read.tmp"; source.write_bytes(b"x")
+    fd = os.open(source, os.O_RDONLY)
+    task = asyncio.create_task(PortalPortraitAdapter._read_fd_safely(fd, 1))
+    await asyncio.to_thread(started.wait, 1)
+    task.cancel(); task.cancel(); task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError): await task
+    os.close(fd)
