@@ -16,6 +16,7 @@ it("submits canvas image generation through jobs and writes its result node", as
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
     fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cat" } });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("real-video-looking-image"));
+    await waitFor(() => expect(screen.getByLabelText("steps")).toHaveValue("4"));
     fireEvent.change(screen.getByLabelText("steps"), { target: { value: "6" } });
     fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-1")).toBe(true));

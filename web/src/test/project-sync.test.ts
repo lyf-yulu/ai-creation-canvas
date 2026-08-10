@@ -106,6 +106,40 @@ it("saves only the final viewport after rapid viewport updates", async () => {
     sync.stop();
 });
 
+it("keeps a failed viewport change and retries the latest project on the next edit", async () => {
+    vi.useFakeTimers();
+    const api = mockApi({
+        list: vi.fn(async () => [envelope(projectFor("p-1"), 1)]),
+        update: vi.fn().mockRejectedValueOnce(new TypeError("offline")).mockImplementation(async (project, version) => envelope(project, version + 1)),
+    });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    await sync.activate(captureAppStorageLease()!);
+
+    useCanvasStore.getState().updateProject("p-1", { viewport: { x: 90, y: 40, k: 1.5 } });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(useCanvasStore.getState().openProject("p-1")?.viewport).toEqual({ x: 90, y: 40, k: 1.5 });
+
+    useCanvasStore.getState().renameProject("p-1", "retry save");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(api.update).toHaveBeenLastCalledWith(
+        expect.objectContaining({ title: "retry save", viewport: { x: 90, y: 40, k: 1.5 } }),
+        1,
+        expect.any(AbortSignal),
+    );
+    sync.stop();
+});
+
+it("normalizes hostile, incomplete, and over-500-percent imported viewports", () => {
+    const hostileId = useCanvasStore.getState().importProject({ viewport: { x: Number.NaN, y: Number.POSITIVE_INFINITY, k: -1 } });
+    const incompleteId = useCanvasStore.getState().importProject({ viewport: { x: 20 } as CanvasProject["viewport"] });
+    const oversizedId = useCanvasStore.getState().importProject({ viewport: { x: 30, y: -15, k: 9 } });
+
+    expect(useCanvasStore.getState().openProject(hostileId)?.viewport).toEqual({ x: 0, y: 0, k: 1 });
+    expect(useCanvasStore.getState().openProject(incompleteId)?.viewport).toEqual({ x: 0, y: 0, k: 1 });
+    expect(useCanvasStore.getState().openProject(oversizedId)?.viewport).toEqual({ x: 30, y: -15, k: 5 });
+});
+
 it("does not apply a completed user-A save after user-B activates", async () => {
     vi.useFakeTimers();
     const pendingCreate = deferred<ProjectEnvelope>();

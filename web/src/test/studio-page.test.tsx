@@ -7,7 +7,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
 
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true, projectsLoaded: false }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true, projectsLoaded: false }); });
 
 function LocationProbe() {
     return <output data-testid="location">{useLocation().pathname}</output>;
@@ -55,10 +55,29 @@ it("uses the stored project viewport and exposes scale and reset controls", () =
 
     renderProject(id);
 
-    expect(screen.getByTestId("canvas-world")).toHaveStyle({ transform: "translate(120px, -45px) scale(1.75)" });
-    expect(screen.getByLabelText("画布缩放")).toHaveValue("175");
+    const resetControl = screen.getByRole("button", { name: "复位画布" });
+    const scaleControl = screen.getByLabelText("画布缩放");
 
-    fireEvent.click(screen.getByRole("button", { name: "复位画布" }));
+    expect(screen.getByTestId("canvas-world")).toHaveStyle({ transform: "translate(120px, -45px) scale(1.75)" });
+    expect(scaleControl).toHaveValue("175");
+
+    fireEvent.click(resetControl);
 
     expect(useCanvasStore.getState().openProject(id)?.viewport).toEqual({ x: 0, y: 0, k: 1 });
+});
+
+it.each([415, 240])("keeps compact navigation controls inside the studio canvas at %i px", (viewportWidth) => {
+    vi.stubGlobal("innerWidth", viewportWidth);
+    const id = useCanvasStore.getState().createProject("Narrow view");
+
+    renderProject(id);
+
+    const studioCanvas = screen.getByTestId("studio-canvas");
+    const resetControl = screen.getByRole("button", { name: "复位画布" });
+    const scaleControl = screen.getByLabelText("画布缩放");
+    const navigationControls = resetControl.parentElement;
+    expect(studioCanvas).toContainElement(navigationControls);
+    expect(navigationControls).toHaveClass("left-4", "max-w-[calc(100%-2rem)]", "px-3", "py-2");
+    expect(resetControl).toHaveClass("px-2", "py-1", "text-xs");
+    expect(scaleControl).toHaveClass("w-20");
 });
