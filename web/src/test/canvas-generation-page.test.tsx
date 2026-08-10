@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
+import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScopedStoreFactoryForTest(); useCanvasStore.setState({ projects: [], hydrated: true }); });
 
@@ -68,4 +69,30 @@ it("restores a pending result into its source project instead of the currently o
 
     await waitFor(() => expect(useCanvasStore.getState().openProject(sourceProjectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-from-source")).toBe(true));
     expect(useCanvasStore.getState().openProject(otherProjectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-from-source")).toBe(false);
+});
+
+it("keeps a concurrently appended generation result when a drag frame commits", () => {
+    const projectId = useCanvasStore.getState().createProject("Canvas");
+    const source: CanvasNodeData = { id: "source-a", type: CanvasNodeType.Config, title: "Source", position: { x: 10, y: 20 }, width: 300, height: 140 };
+    useCanvasStore.getState().updateProject(projectId, { nodes: [source] });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } })));
+    let dragFrame: FrameRequestCallback | undefined;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        dragFrame = callback;
+        return 1;
+    });
+    render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+
+    fireEvent.pointerDown(screen.getByTestId("draggable-node-source-a"), { button: 0, pointerId: 1, clientX: 10, clientY: 20 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 60, clientY: 70 });
+    const result: CanvasNodeData = { id: "result-a", type: CanvasNodeType.Image, title: "Result", position: { x: 100, y: 120 }, width: 320, height: 180, metadata: { status: "success", sourceJobId: "job-concurrent", content: "/api/v1/results/result-a" } };
+    act(() => {
+        const latest = useCanvasStore.getState().openProject(projectId)!;
+        useCanvasStore.getState().updateProject(projectId, { nodes: [...latest.nodes, result] });
+        dragFrame?.(0);
+    });
+
+    const nodes = useCanvasStore.getState().openProject(projectId)!.nodes;
+    expect(nodes.find((node) => node.id === "source-a")?.position).toEqual({ x: 60, y: 70 });
+    expect(nodes.find((node) => node.id === "result-a")?.metadata?.sourceJobId).toBe("job-concurrent");
 });
