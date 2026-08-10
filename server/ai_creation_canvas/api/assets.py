@@ -83,7 +83,7 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
             except AdapterNotFoundError:
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
             except PortalUpstreamError as error:
-                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+                raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
             except InvalidUpstreamResult:
                 raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
             except Exception:
@@ -118,7 +118,7 @@ async def get_asset(asset_id: str, request: Request) -> dict[str, object]:
             upstream = await get(context, item["upstream_asset_id"], request.headers["cookie"])
             item = request.app.state.canvas_store.update_asset_status(asset_id, upstream.status.value)
         except PortalUpstreamError as error:
-            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+            raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
         except InvalidUpstreamResult:
             raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
         except Exception:

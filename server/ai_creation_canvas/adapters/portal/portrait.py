@@ -20,6 +20,7 @@ from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUps
 
 _OPAQUE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _STATUSES = {"Processing": AssetStatus.PROCESSING, "Active": AssetStatus.ACTIVE, "Failed": AssetStatus.FAILED}
+_MIMES = {"image/png", "image/jpeg", "image/webp"}
 
 @dataclass(frozen=True, slots=True)
 class PortraitDeclaration:
@@ -41,6 +42,13 @@ class PortalPortraitAdapter:
     requires_portal_cookie = True
     def __init__(self, declaration: PortraitDeclaration, client: PortalClient):
         self.service_id, self._declaration, self._client = declaration.service_id, declaration, client
+
+    @staticmethod
+    def _json_object(response: httpx.Response, phase: str) -> Mapping:
+        try: value = response.json()
+        except (ValueError, TypeError) as error: raise InvalidUpstreamResult(f"portrait {phase} response is invalid") from error
+        if not isinstance(value, Mapping): raise InvalidUpstreamResult(f"portrait {phase} response is invalid")
+        return value
 
     @staticmethod
     def _opaque(value: object) -> str:
@@ -65,7 +73,7 @@ class PortalPortraitAdapter:
     async def _models(self, context, cookie):
         response = await self._client.request(context, "GET", self._declaration.routes["catalog"], mount=self._declaration.mount, cookie_header=cookie)
         try:
-            payload = response.json(); items = payload["models"]
+            payload = self._json_object(response, "catalog"); items = payload["models"]
             if response.status_code != 200 or not isinstance(items, list): raise ValueError
             output=[]
             for item in items:
@@ -83,7 +91,7 @@ class PortalPortraitAdapter:
     async def upload(self, context: RequestContext, asset: AssetRef):
         raise ValueError("portrait upload requires request-scoped cookie and bytes")
     async def upload_with_cookie(self, context, asset, source: Path, size: int, cookie_header: str):
-        if asset.kind.value != "portrait" or not isinstance(source, Path) or not isinstance(size, int) or size < 1: raise ValueError("portrait upload is invalid")
+        if asset.kind.value != "portrait" or asset.mime_type not in _MIMES or not isinstance(source, Path) or not isinstance(size, int) or size < 1: raise ValueError("portrait upload is invalid")
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
             fd = os.open(source, flags)
@@ -95,14 +103,13 @@ class PortalPortraitAdapter:
         try:
             group = await self._client.request(context, "POST", self._declaration.routes["groups"], mount=self._declaration.mount, cookie_header=cookie_header, json={})
             if group.status_code not in {200, 201}: raise PortalUpstreamError(retryable=group.status_code in {408,429} or group.status_code >= 500, status_code=group.status_code)
-            group_payload = group.json()
-            if not isinstance(group_payload, Mapping): raise InvalidUpstreamResult("portrait group response is invalid")
+            group_payload = self._json_object(group, "group")
             group_id = self._opaque(group_payload.get("id"))
             boundary = secrets.token_hex(24)
             prefix, suffix = self._multipart_edges(boundary, asset.mime_type, group_id)
             response = await self._client.request(context, "POST", self._declaration.routes["assets"], mount=self._declaration.mount, cookie_header=cookie_header, content=self._multipart(fd, size, prefix, suffix), extra_headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(prefix) + size + len(suffix))})
             if response.status_code not in {200, 201, 202}: raise PortalUpstreamError(retryable=response.status_code in {408,429} or response.status_code >= 500, status_code=response.status_code)
-            return self._asset(response.json())
+            return self._asset(self._json_object(response, "asset"))
         except asyncio.CancelledError: raise
         except httpx.HTTPError as error: raise PortalUpstreamError(retryable=True) from error
         finally:
@@ -115,7 +122,7 @@ class PortalPortraitAdapter:
         identifier = self._opaque(asset_id)
         response = await self._client.request(context, "GET", f"{self._declaration.routes['assets']}/{quote(identifier, safe='')}", mount=self._declaration.mount, cookie_header=cookie)
         if response.status_code != 200: raise PortalUpstreamError(retryable=response.status_code in {408,429} or response.status_code >= 500, status_code=response.status_code)
-        return self._asset(response.json())
+        return self._asset(self._json_object(response, "asset"))
 
     async def submit(self, context, request): return await self._submit(context, request, None)
     async def submit_with_cookie(self, context, request, cookie_header): return await self._submit(context, request, cookie_header)
@@ -124,8 +131,7 @@ class PortalPortraitAdapter:
         payload = {"operation": request.operation.value, "model_id": request.model_id, "prompt": request.prompt, "params": dict(request.params), "asset_ids": [self._opaque(request.asset_ids[0])], "idempotency_key": request.idempotency_key}
         response = await self._client.request(context, "POST", self._declaration.routes["jobs"], mount=self._declaration.mount, cookie_header=cookie, json=payload)
         if response.status_code not in {200,201,202}: raise PortalUpstreamError(retryable=response.status_code in {408,429} or response.status_code >= 500, status_code=response.status_code)
-        data=response.json()
-        if not isinstance(data, Mapping): raise InvalidUpstreamResult("portrait job response is invalid")
+        data=self._json_object(response, "job")
         identifier=self._opaque(data.get("id")); status=data.get("status", "queued")
         try: return UpstreamJob(self.service_id, identifier, JobState(identifier, status))
         except ValueError as error: raise InvalidUpstreamResult("portrait job response is invalid") from error
@@ -134,8 +140,7 @@ class PortalPortraitAdapter:
     async def _poll(self, context, upstream_job_id, cookie):
         identifier=self._opaque(upstream_job_id); response=await self._client.request(context,"GET",f"{self._declaration.routes['jobs']}/{quote(identifier,safe='')}",mount=self._declaration.mount,cookie_header=cookie)
         if response.status_code != 200: raise PortalUpstreamError(retryable=response.status_code in {408,429} or response.status_code >= 500,status_code=response.status_code)
-        data=response.json()
-        if not isinstance(data, Mapping): raise InvalidUpstreamResult("portrait job response is invalid")
+        data=self._json_object(response, "job")
         status=data.get("status")
         if status == "failed": return JobState(identifier,"failed",error=ApiError("TASK_FAILED","The generation task failed.",False,context.request_id,"generation"))
         try: return JobState(identifier,status)
@@ -152,9 +157,17 @@ class PortalPortraitAdapter:
         yield prefix
         remaining = size
         while remaining:
-            chunk = await asyncio.to_thread(os.read, fd, min(65536, remaining))
+            chunk = await PortalPortraitAdapter._read_fd_safely(fd, min(65536, remaining))
             if not chunk: raise InvalidUpstreamResult("portrait upload source changed")
             remaining -= len(chunk)
             yield chunk
-        if await asyncio.to_thread(os.read, fd, 1): raise InvalidUpstreamResult("portrait upload source changed")
+        if await PortalPortraitAdapter._read_fd_safely(fd, 1): raise InvalidUpstreamResult("portrait upload source changed")
         yield suffix
+
+    @staticmethod
+    async def _read_fd_safely(fd: int, amount: int) -> bytes:
+        task = asyncio.create_task(asyncio.to_thread(os.read, fd, amount))
+        try: return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try: await asyncio.shield(task)
+            finally: raise
