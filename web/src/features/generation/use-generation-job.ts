@@ -25,7 +25,7 @@ export function useGenerationJob(options: Options = {}) {
     const lease = useRef<ScopedStoreLease | null>(null);
     const refs = useRef(new Map<string, PendingRef>());
     const restoredVersion = useRef<number | null>(null);
-    const restoring = useRef<Promise<void> | null>(null);
+    const restoring = useRef(new Map<number, Promise<void>>());
     const completed = useRef(new Set<string>());
     const active = useRef(true);
     const persist = useCallback(async () => {
@@ -41,15 +41,17 @@ export function useGenerationJob(options: Options = {}) {
     }, []);
     const restore = useCallback(async (captured: ScopedStoreLease | null) => {
         if (!captured || !isStorageLeaseActive(captured) || restoredVersion.current === captured.version) return;
-        if (restoring.current) return restoring.current;
-        restoring.current = (async () => {
+        const pending = restoring.current.get(captured.version);
+        if (pending) return pending;
+        const task = (async () => {
             const saved = await captured.store.getItem<PendingRef[]>(REFS_KEY);
             if (!isStorageLeaseActive(captured)) return;
             refs.current.clear();
             for (const ref of saved || []) refs.current.set(ref.jobId || ref.request.idempotency_key, ref);
             restoredVersion.current = captured.version;
         })();
-        try { await restoring.current; } finally { restoring.current = null; }
+        restoring.current.set(captured.version, task);
+        try { await task; } finally { restoring.current.delete(captured.version); }
     }, []);
     const poll = useCallback(async (jobId: string, captured: ScopedStoreLease | null) => {
         if (controllers.current.has(jobId)) return;

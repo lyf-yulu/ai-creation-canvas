@@ -9,5 +9,5 @@ it("derives capabilities from the catalog even when a model name is misleading",
 
 it("renders only the safe local parameter-schema subset", () => {
     const controls = parameterControls({ steps: { type: "integer", minimum: 1, maximum: 8, default: 4, script: "alert(1)" }, evil: { type: "object", component: "<img>" } });
-    expect(controls).toEqual([{ name: "steps", type: "integer", minimum: 1, maximum: 8, default: 4 }]);
+    expect(controls).toEqual([{ name: "steps", type: "integer", required: false, minimum: 1, maximum: 8, default: 4 }]);
 });

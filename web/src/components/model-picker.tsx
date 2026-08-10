@@ -1,21 +1,24 @@
 import type { ModelOperation, ModelSpec } from "@/api/contracts";
 
-export type ParameterControl = { name: string; type: "number" | "integer" | "string" | "boolean" | "enum"; minimum?: number; maximum?: number; default?: string | number | boolean; enum?: readonly (string | number)[] };
+export type ParameterControl = { name: string; type: "number" | "integer" | "string" | "boolean" | "enum"; required?: boolean; minimum?: number; maximum?: number; default?: string | number | boolean; enum?: readonly (string | number)[] };
 
 /** The catalog is data, never executable UI. Unknown JSON-schema fields are ignored. */
 export function parameterControls(schema: Record<string, unknown>): ParameterControl[] {
-    return Object.entries(schema).flatMap(([name, raw]) => {
+    const objectSchema = schema.type === "object" && schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties);
+    const entries = Object.entries((objectSchema ? schema.properties : schema) as Record<string, unknown>);
+    const required = objectSchema && Array.isArray(schema.required) ? new Set(schema.required.filter((name): name is string => typeof name === "string")) : new Set<string>();
+    return entries.flatMap(([name, raw]) => {
         if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name) || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
         const value = raw as Record<string, unknown>;
         const type = value.type;
         if (type === "number" || type === "integer" || type === "string" || type === "boolean") {
-            const result: ParameterControl = { name, type };
+            const result: ParameterControl = { name, type, required: required.has(name) || value.required === true };
             if ((type === "number" || type === "integer") && typeof value.minimum === "number") result.minimum = value.minimum;
             if ((type === "number" || type === "integer") && typeof value.maximum === "number") result.maximum = value.maximum;
             if (["string", "number", "boolean"].includes(typeof value.default)) result.default = value.default as string | number | boolean;
             return [result];
         }
-        if (Array.isArray(value.enum) && value.enum.length && value.enum.every((item) => typeof item === "string" || typeof item === "number")) return [{ name, type: "enum", enum: value.enum as (string | number)[], default: (typeof value.default === "string" || typeof value.default === "number") ? value.default : undefined }];
+        if (Array.isArray(value.enum) && value.enum.length && value.enum.every((item) => typeof item === "string" || typeof item === "number")) return [{ name, type: "enum", required: required.has(name) || value.required === true, enum: value.enum as (string | number)[], default: (typeof value.default === "string" || typeof value.default === "number") ? value.default : undefined }];
         return [];
     });
 }
