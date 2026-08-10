@@ -1,3 +1,3 @@
 import { apiFetch } from "./client";
-import type { PortalSession } from "./contracts";
-export const fetchSession = () => apiFetch<PortalSession>("/api/v1/session");
+import type { SessionResponse } from "./contracts";
+export const fetchSession = () => apiFetch<SessionResponse>("/api/v1/session");

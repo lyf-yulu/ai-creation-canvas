@@ -1,8 +1,26 @@
 import { afterEach, expect, it, vi } from "vitest";
 
-import { ApiRequestError, apiFetch } from "@/api/client";
+import { ApiRequestError, apiFetch, setCsrfToken } from "@/api/client";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+    setCsrfToken(null);
+    vi.unstubAllGlobals();
+});
+
+it("adds the in-memory csrf token only to same-origin mutations", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    setCsrfToken("csrf-memory-only");
+
+    await apiFetch("/api/v1/projects", { method: "POST", body: "{}" });
+    await apiFetch("/api/v1/projects");
+
+    const mutationHeaders = new Headers(fetchMock.mock.calls[0][1].headers);
+    const queryHeaders = new Headers(fetchMock.mock.calls[1][1].headers);
+    expect(mutationHeaders.get("X-CSRF-Token")).toBe("csrf-memory-only");
+    expect(queryHeaders.has("X-CSRF-Token")).toBe(false);
+    expect(localStorage.getItem("csrf_token")).toBeNull();
+});
 
 it.each([
     [401, "unauthorized", false],

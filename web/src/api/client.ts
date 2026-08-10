@@ -1,6 +1,11 @@
 import type { ApiError } from "./contracts";
 
 const API_PREFIX = "/api/v1/";
+let csrfToken: string | null = null;
+
+export function setCsrfToken(value: string | null) {
+    csrfToken = value;
+}
 const unsafePathError = () => new Error("API requests must use a normalized relative /api/v1/ path");
 
 function fullyDecode(value: string) {
@@ -83,9 +88,14 @@ async function responseError(response: Response): Promise<ApiRequestError> {
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     const safePath = safeApiPath(path);
-    const response = await fetch(safePath, { ...init, credentials: "same-origin", headers: { Accept: "application/json", ...init.headers } });
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    const method = (init.method || "GET").toUpperCase();
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    const response = await fetch(safePath, { ...init, credentials: "same-origin", headers });
     if (!response.ok) {
         throw await responseError(response);
     }
+    if (response.status === 204) return undefined as T;
     return response.json() as Promise<T>;
 }
