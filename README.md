@@ -27,6 +27,16 @@ bash scripts/security-scan.sh
 
 所有自动化验证使用进程内模拟 Portal/生成服务与临时数据目录。不得把配置指向生产仓库、生产状态目录或 `9090/8787/8797/8891` 等生产端口。
 
+## 本地体验
+
+完成 Python 依赖安装后，可用下面的脚本构建前端并启动本地验证版：
+
+```bash
+bash scripts/run-local.sh
+```
+
+服务只监听 `127.0.0.1:8992`，首次启动会在终端显示一次性管理员与普通用户密码。两类账号首次登录均需修改密码。内置 `demo-image-v1` 是完全离线的固定演示结果，不调用外部模型，也不需要 API Key。
+
 ## 发布状态
 
-当前是隔离验证版本，不代表生产部署，也未执行真实模型调用。公开 GitHub 发布须在隔离验证完成后另行获得用户书面批准。运行、回滚和 Portal 补丁流程见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。
+当前公开版本是可本地运行的 Slice 1 验证版，不代表生产部署，也未执行真实模型调用。真实模型、飞书应用、云端域名与管理员 Key 派发将在后续增量版本中接入。运行、回滚和 Portal 补丁流程见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。
