@@ -44,6 +44,29 @@ it("restores this user's saved job references and only polls them", async () => 
     expect(api.create).not.toHaveBeenCalled();
 });
 
+it("polls two resumed jobs independently", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    let first!: (value: any) => void;
+    let second!: (value: any) => void;
+    const api = { create: vi.fn(), fetch: vi.fn((id: string) => new Promise((resolve) => { if (id === "j-1") first = resolve; else second = resolve; })) };
+    const { result } = renderHook(() => useGenerationJob({ api: api as any }));
+    void result.current.resume("j-1"); void result.current.resume("j-2");
+    await waitFor(() => expect(api.fetch).toHaveBeenCalledTimes(2));
+    await act(async () => { first({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/a" }); second({ id: "j-2", status: "succeeded", result_url: "/api/v1/results/b" }); });
+    expect(api.fetch).toHaveBeenCalledWith("j-1", expect.any(Object));
+    expect(api.fetch).toHaveBeenCalledWith("j-2", expect.any(Object));
+});
+
+it("keeps an ambiguous saved submission dormant until a manual retry reuses its key", async () => {
+    setScopedStoreFactoryForTest(() => ({ getItem: async () => [{ request: { operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "accepted-key" } }], setItem: async () => undefined, removeItem: async () => undefined, iterate: async () => undefined }) as never);
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const api = { create: vi.fn().mockResolvedValue({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/r" }), fetch: vi.fn() };
+    const { result } = renderHook(() => useGenerationJob({ api: api as any }));
+    await waitFor(() => expect(api.create).not.toHaveBeenCalled());
+    await act(async () => result.current.submit({ operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [] }));
+    expect(api.create.mock.calls[0][0].idempotency_key).toBe("accepted-key");
+});
+
 it("cancels an old scope poll and never publishes it into a new scope", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     let resolve!: (job: { id: string; status: "succeeded"; result_url: string }) => void;

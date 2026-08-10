@@ -70,6 +70,7 @@ export type CanvasNodeMetadata = {
     phase?: string;
     params?: Record<string, unknown>;
     assetIds?: string[];
+    idempotencyKey?: string;
 };
 
 export type CanvasNodeData = {
