@@ -1,0 +1,44 @@
+{
+  "models": [
+    {
+      "model_id": "doubao-seedream-4-0-250828",
+      "service_id": "ark-image",
+      "display_name": "图片生成（Ark）",
+      "operations": ["image.generate"],
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "string",
+            "enum": ["1024x1024"],
+            "default": "1024x1024"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "model_id": "doubao-seedance-1-0-pro-250528",
+      "service_id": "ark-video",
+      "display_name": "视频生成（Ark）",
+      "operations": ["video.generate"],
+      "parameter_schema": {
+        "type": "object",
+        "properties": {
+          "ratio": {
+            "type": "string",
+            "enum": ["16:9"],
+            "default": "16:9"
+          },
+          "duration": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 3,
+            "default": 3
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

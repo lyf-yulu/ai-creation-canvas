@@ -36,7 +36,7 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None):
     origin = f"http://127.0.0.1:{port}"
     settings = Settings(
         environment="development",
@@ -46,11 +46,17 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_i
         identity_mode="local",
         allowed_origins=(origin,),
         enable_demo_adapter=True,
+        enable_ark_adapter=ark_models_config is not None,
+        ark_models_config_path=ark_models_config,
+        ark_models_config_root=ark_models_config.parent if ark_models_config is not None else None,
     )
     app = create_app(settings, static_dir=static_dir)
     accounts: BootstrapResult | None = None
     if bootstrap_if_empty:
-        accounts = app.state.local_auth.bootstrap_accounts(("demo-image-v1",))
+        model_ids = ["demo-image-v1"]
+        for adapter in app.state.adapter_registry.generation_adapters():
+            model_ids.extend(getattr(adapter, "model_ids", ()))
+        accounts = app.state.local_auth.bootstrap_accounts(tuple(sorted(set(model_ids))))
     return app, accounts
 
 
@@ -87,8 +93,9 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--bootstrap-if-empty", action="store_true")
     parser.add_argument("--open", action="store_true", dest="open_browser")
+    parser.add_argument("--ark-models", type=Path, help="administrator-owned Ark model declarations; requires ARK_API_KEY")
     args = parser.parse_args(argv)
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"

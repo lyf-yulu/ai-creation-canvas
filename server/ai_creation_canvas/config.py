@@ -101,6 +101,9 @@ class Settings:
     session_cookie_name: str = "aicc_session"
     allowed_origins: tuple[str, ...] = ()
     enable_demo_adapter: bool = False
+    enable_ark_adapter: bool = False
+    ark_models_config_path: Path | str | None = None
+    ark_models_config_root: Path | str | None = None
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -141,6 +144,13 @@ class Settings:
             raise ValueError("local identity requires allowed_origins")
         if type(self.enable_demo_adapter) is not bool:
             raise ValueError("enable_demo_adapter must be a bool")
+        if type(self.enable_ark_adapter) is not bool:
+            raise ValueError("enable_ark_adapter must be a bool")
+        if self.enable_ark_adapter:
+            if self.identity_mode != "local" or self.ark_models_config_path is None or self.ark_models_config_root is None:
+                raise ValueError("Ark adapter requires explicit local configuration")
+            object.__setattr__(self, "ark_models_config_path", Path(self.ark_models_config_path))
+            object.__setattr__(self, "ark_models_config_root", Path(self.ark_models_config_root).resolve(strict=False))
         object.__setattr__(self, "allowed_origins", tuple(dict.fromkeys(self.allowed_origins)))
         if self.services_config_path is not None:
             if not self.portal_base_url or self.services_config_root is None:
