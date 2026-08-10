@@ -12,7 +12,8 @@ export type AiConfig = {
 };
 export const defaultConfig: AiConfig = { model: "", imageModel: "", videoModel: "", textModel: "", audioModel: "", audioVoice: "alloy", audioFormat: "mp3", audioSpeed: "1", audioInstructions: "", videoSeconds: "6", vquality: "720", videoGenerateAudio: "true", videoWatermark: "false", reasoningEffort: "auto", models: [], quality: "auto", size: "1:1", background: "", count: "1", canvasImageCount: "3" };
 type ConfigStore = { config: AiConfig; updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void; isAiConfigReady: (_config: AiConfig, model: string) => boolean };
-export const useConfigStore = create<ConfigStore>()(persist((set) => ({ config: defaultConfig, updateConfig: (key, value) => set((state) => ({ config: { ...state.config, [key]: value } })), isAiConfigReady: (_config, model) => Boolean(model.trim()) }), { name: "ai-creation-canvas:preferences", partialize: (state) => ({ config: state.config }) }));
+export const useConfigStore = create<ConfigStore>()(persist((set) => ({ config: defaultConfig, updateConfig: (key, value) => set((state) => ({ config: { ...state.config, [key]: value } })), isAiConfigReady: (_config, model) => Boolean(model.trim()) }), { name: "ai-creation-canvas:preferences", partialize: (state) => ({ config: { ...state.config, models: [] } }) }));
+export function clearGenerationPreferences() { useConfigStore.setState({ config: { ...defaultConfig } }); }
 export function useEffectiveConfig() { const config = useConfigStore((state) => state.config); return useMemo(() => config, [config]); }
 export function modelOptionName(value: string) { return value; }
 export function modelOptionLabel(value: string) { return value || "由服务端选择"; }

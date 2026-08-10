@@ -64,6 +64,12 @@ export type CanvasNodeMetadata = {
     durationMs?: number;
     groupId?: string;
     interactive?: boolean;
+    /** Local provenance only; result URLs always remain same-origin API paths. */
+    sourceJobId?: string;
+    requestId?: string;
+    phase?: string;
+    params?: Record<string, unknown>;
+    assetIds?: string[];
 };
 
 export type CanvasNodeData = {

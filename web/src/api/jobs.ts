@@ -1,8 +1,8 @@
 import { ApiRequestError, apiFetch, safeApiPath } from "./client";
 import type { JobRequest, JobState } from "./contracts";
 
-export const createJob = (job: JobRequest) => apiFetch<JobState>("/api/v1/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(job) });
-export const fetchJob = (id: string) => apiFetch<JobState>(`/api/v1/jobs/${encodeURIComponent(id)}`);
+export const createJob = (job: JobRequest, signal?: AbortSignal) => apiFetch<JobState>("/api/v1/jobs", { method: "POST", signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(job) });
+export const fetchJob = (id: string, signal?: AbortSignal) => apiFetch<JobState>(`/api/v1/jobs/${encodeURIComponent(id)}`, { signal });
 type AssetLike = { asset_id?: string; [key: string]: unknown };
 export function assetIdsForReferences(references: AssetLike[]) {
     return references.map((reference) => {

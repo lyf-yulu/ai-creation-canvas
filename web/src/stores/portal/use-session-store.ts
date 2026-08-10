@@ -5,6 +5,7 @@ import type { PortalSession } from "@/api/contracts";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { clearCanvasInMemory } from "@/stores/canvas/use-canvas-store";
+import { clearGenerationPreferences } from "@/stores/use-config-store";
 
 type PortalSessionStore = {
     session: PortalSession | null;
@@ -20,6 +21,7 @@ let sessionVersion = 0;
 function clearInMemoryUserState() {
     clearCanvasInMemory();
     useAssetStore.setState({ assets: [], hydrated: false });
+    clearGenerationPreferences();
 }
 
 export const useSessionStore = create<PortalSessionStore>()((set, get) => ({
