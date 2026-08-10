@@ -13,7 +13,7 @@
       "operations": ["video.generate", "video.image_to_video"]
     },
     {
-      "service_id": "portrait-assets",
+      "service_id": "portal-portrait",
       "mount": "/portrait-assets",
       "service_type": "portrait_asset",
       "operations": ["video.image_to_video"]

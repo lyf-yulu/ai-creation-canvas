@@ -115,12 +115,23 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
+    upstream_asset_ids: list[str] = []
     for asset_id in domain_request.asset_ids:
         asset, forbidden = store.asset_for_owner(asset_id, context.user.user_id)
         if forbidden:
             raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
-        if asset is None or asset["status"] != "active" or asset["kind"] != "reference":
+        if asset is None or asset["status"] != "active":
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+        if model.requires_asset_kind is not None:
+            if asset["kind"] != model.requires_asset_kind.value or asset.get("service_id") != model.service_id or not isinstance(asset.get("upstream_asset_id"), str):
+                raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+            upstream_asset_ids.append(asset["upstream_asset_id"])
+        elif asset["kind"] != "reference":
+            raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+        else:
+            upstream_asset_ids.append(asset_id)
+    if model.requires_asset_kind is not None and not upstream_asset_ids:
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
     reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
@@ -130,9 +141,10 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         adapter = selected_adapter
         submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
         if callable(submit_with_cookie):
-            upstream = await submit_with_cookie(context, domain_request, request.headers.get("cookie", ""))
+            upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids))
+            upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
         else:
-            upstream = await adapter.submit(context, domain_request)
+            upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids)))
         item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
     except PortalUpstreamError as error:

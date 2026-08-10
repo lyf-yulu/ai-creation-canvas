@@ -8,7 +8,8 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = {
 
 export type PortraitVideoJobRequest = JobRequest & { service_id?: string };
 export type PortraitVideoInput = {
-    file: File;
+    file?: File;
+    assetId?: string;
     modelId: string;
     serviceId?: string;
     prompt: string;

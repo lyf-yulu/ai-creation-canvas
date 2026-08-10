@@ -27,8 +27,11 @@ export const portraitVideoWorkflow: WorkflowDefinition<PortraitVideoInput, Portr
     version: 1,
     async run(input) {
         validatePollingLimits(input);
-        const uploaded = await input.uploadAsset(input.file, "portrait");
-        const asset = await waitForActiveAsset(uploaded, input);
+        if (!input.file && !input.assetId) throw new Error("file or assetId is required");
+        const initial = input.assetId
+            ? await input.fetchAsset(input.assetId)
+            : await input.uploadAsset(input.file!, "portrait");
+        const asset = await waitForActiveAsset(initial, input);
         const job = await input.submitJob({ operation: "video.image_to_video", model_id: input.modelId, ...(input.serviceId ? { service_id: input.serviceId } : {}), prompt: input.prompt, params: input.params, asset_ids: [asset.id], idempotency_key: input.idempotencyKey });
         return { jobId: job.jobId, assetId: asset.id };
     },

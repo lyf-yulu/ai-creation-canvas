@@ -329,6 +329,8 @@ class PortalClient:
         mount: str,
         params: Mapping[str, str | int | float | bool] | None = None,
         json: Mapping[str, Any] | None = None,
+        files: Mapping[str, tuple[str, bytes, str]] | None = None,
+        data: Mapping[str, str] | None = None,
         cookie_header: str | None = None,
     ) -> httpx.Response:
         if not isinstance(context, RequestContext):
@@ -345,7 +347,7 @@ class PortalClient:
                 transport=self._transport, headers={}, trust_env=False,
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
             ) as client:
-                request = client.build_request(verb, target, params=params, json=json, headers=headers)
+                request = client.build_request(verb, target, params=params, json=json, files=files, data=data, headers=headers)
                 response = await client.send(request, stream=True)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():

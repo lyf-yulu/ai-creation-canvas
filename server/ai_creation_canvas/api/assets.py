@@ -8,7 +8,8 @@ import secrets
 from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from ai_creation_canvas.api._common import context_for, problem
-from ai_creation_canvas.storage.sqlite import CanvasStore
+from ai_creation_canvas.domain.models import AssetRef
+from ai_creation_canvas.errors import AdapterNotFoundError, PortalUpstreamError
 
 router = APIRouter(prefix="/api/v1")
 _MAX_UPLOAD = 10 * 1024 * 1024
@@ -36,7 +37,7 @@ def _asset(item: dict[str, object]) -> dict[str, object]:
 @router.post("/assets", status_code=201)
 async def upload_asset(request: Request, file: UploadFile = File(...), kind: str = Form("reference")) -> dict[str, object]:
     context = context_for(request)
-    if kind != "reference":
+    if kind not in {"reference", "portrait"}:
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
     mime = file.content_type.lower() if isinstance(file.content_type, str) else ""
     if mime not in _TYPES:
@@ -71,7 +72,23 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415)
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)
-        item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, mime_type=mime, relative_path=relative, size_bytes=size)
+        if kind == "portrait":
+            if not request.headers.get("cookie"):
+                raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+            try:
+                adapter = request.app.state.adapter_registry.asset("portal-portrait")
+                upload = getattr(adapter, "upload_with_cookie", None)
+                if not callable(upload): raise ValueError
+                upstream = await upload(context, AssetRef(asset_id, "portrait", "processing", mime), target.read_bytes(), file.filename or "upload", request.headers["cookie"])
+            except AdapterNotFoundError:
+                raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
+            except PortalUpstreamError:
+                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+            except Exception:
+                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, mime_type=mime, relative_path=relative, size_bytes=size, status=upstream.status.value, service_id="portal-portrait", upstream_asset_id=upstream.asset_id)
+        else:
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, mime_type=mime, relative_path=relative, size_bytes=size)
         return _asset(item)
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -89,4 +106,17 @@ async def get_asset(asset_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
     if item is None:
         raise problem(request, "ASSET_NOT_FOUND", "The asset was not found.", status=404)
+    if item["kind"] == "portrait" and item["status"] == "processing":
+        if not request.headers.get("cookie"):
+            raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+        try:
+            adapter = request.app.state.adapter_registry.asset(str(item["service_id"]))
+            get = getattr(adapter, "get_with_cookie", None)
+            if not callable(get) or not isinstance(item.get("upstream_asset_id"), str): raise ValueError
+            upstream = await get(context, item["upstream_asset_id"], request.headers["cookie"])
+            item = request.app.state.canvas_store.update_asset_status(asset_id, upstream.status.value)
+        except PortalUpstreamError:
+            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+        except Exception:
+            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
     return _asset(item)

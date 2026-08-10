@@ -155,7 +155,8 @@ class CanvasStore:
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
                 mime_type TEXT NOT NULL, status TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
-                size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                service_id TEXT, upstream_asset_id TEXT
             )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -170,6 +171,10 @@ class CanvasStore:
         marker = db.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()
         scrub_pending = bool(marker is not None and marker[0] == "1")
         columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
+        asset_columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_assets)")}
+        for name in ("service_id", "upstream_asset_id"):
+            if name not in asset_columns:
+                db.execute(f"ALTER TABLE canvas_assets ADD COLUMN {name} TEXT")
         if "result_ref" in columns:
             scrub_pending = True
             # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
@@ -249,10 +254,10 @@ class CanvasStore:
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
         return dict(row) if row is not None else None
 
-    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int) -> dict[str, object]:
+    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int, status: str = "active", service_id: str | None = None, upstream_asset_id: str | None = None) -> dict[str, object]:
         now = _now()
         with self._connection(immediate=True) as db:
-            db.execute("INSERT INTO canvas_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, mime_type, "active", relative_path, size_bytes, now, now))
+            db.execute("INSERT INTO canvas_assets (asset_id,user_id,kind,mime_type,status,relative_path,size_bytes,created_at,updated_at,service_id,upstream_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, mime_type, status, relative_path, size_bytes, now, now, service_id, upstream_asset_id))
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         assert row is not None
         return dict(row)
@@ -262,6 +267,16 @@ class CanvasStore:
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         item = self._row(row)
         return (item, bool(item and item["user_id"] != user_id))
+
+    def update_asset_status(self, asset_id: str, status: str) -> dict[str, object]:
+        ranks = {"processing": 0, "active": 1, "failed": 1}
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+            if row is None: raise KeyError(asset_id)
+            old = dict(row)
+            if old["status"] in {"active", "failed"} or ranks.get(status, -1) < ranks.get(str(old["status"]), 0): return old
+            db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
+            return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
     def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0) -> Reservation:
         now = _now()

@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter
+from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.api.models import router as models_router
@@ -105,7 +106,11 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
             client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
             for declaration in declarations:
-                registry.register_generation(PortalJobsAdapter(declaration, client))
+                if declaration.capability == "portrait_asset":
+                    adapter = PortalPortraitAdapter(PortraitDeclaration(declaration.service_id, declaration.mount), client)
+                    registry.register_asset(adapter); registry.register_generation(adapter)
+                else:
+                    registry.register_generation(PortalJobsAdapter(declaration, client))
         model_catalog = ModelCatalog(registry)
     app.state.model_catalog = model_catalog
     app.state.adapter_registry = registry
