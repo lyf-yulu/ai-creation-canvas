@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -47,4 +47,18 @@ it("assembles the released prompt and image-generation studio around the infinit
     expect(screen.queryByText(/视频生成节点|Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("demo-image-v1"));
     expect(screen.getByRole("button", { name: "加入任务队列" })).toBeDisabled();
+});
+
+it("uses the stored project viewport and exposes scale and reset controls", () => {
+    const id = useCanvasStore.getState().createProject("Stored view");
+    useCanvasStore.getState().updateProject(id, { viewport: { x: 120, y: -45, k: 1.75 } });
+
+    renderProject(id);
+
+    expect(screen.getByTestId("canvas-world")).toHaveStyle({ transform: "translate(120px, -45px) scale(1.75)" });
+    expect(screen.getByLabelText("画布缩放")).toHaveValue("175");
+
+    fireEvent.click(screen.getByRole("button", { name: "复位画布" }));
+
+    expect(useCanvasStore.getState().openProject(id)?.viewport).toEqual({ x: 0, y: 0, k: 1 });
 });

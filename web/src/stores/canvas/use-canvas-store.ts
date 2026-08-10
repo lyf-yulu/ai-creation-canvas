@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
+import { normalizeViewport } from "@/features/canvas/viewport";
 import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
 import type { ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -117,7 +118,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     activeChatId: source.activeChatId || null,
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
-                    viewport: source.viewport || initialViewport,
+                    viewport: normalizeViewport(source.viewport),
                 };
                 set((state) => ({ projects: [project, ...state.projects] }));
                 return project.id;

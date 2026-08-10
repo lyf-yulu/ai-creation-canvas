@@ -81,6 +81,31 @@ it("debounces a create and then saves the returned version", async () => {
     sync.stop();
 });
 
+it("saves only the final viewport after rapid viewport updates", async () => {
+    vi.useFakeTimers();
+    const api = mockApi();
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+    await sync.activate(captureAppStorageLease()!);
+    const id = useCanvasStore.getState().createProject("Viewport project");
+    await vi.advanceTimersByTimeAsync(400);
+    vi.mocked(api.create).mockClear();
+
+    useCanvasStore.getState().updateProject(id, { viewport: { x: 20, y: -10, k: 1.1 } });
+    useCanvasStore.getState().updateProject(id, { viewport: { x: 50, y: -25, k: 1.25 } });
+    useCanvasStore.getState().updateProject(id, { viewport: { x: 120, y: -45, k: 1.75 } });
+
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(api.update).toHaveBeenCalledTimes(1);
+    expect(api.update).toHaveBeenCalledWith(
+        expect.objectContaining({ id, viewport: { x: 120, y: -45, k: 1.75 } }),
+        1,
+        expect.any(AbortSignal),
+    );
+    sync.stop();
+});
+
 it("does not apply a completed user-A save after user-B activates", async () => {
     vi.useFakeTimers();
     const pendingCreate = deferred<ProjectEnvelope>();
