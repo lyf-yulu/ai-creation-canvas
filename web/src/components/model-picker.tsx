@@ -21,7 +21,9 @@ export function parameterControls(schema: Record<string, unknown>): ParameterCon
             const result: ParameterControl = { name, type, required: required.has(name) || value.required === true };
             if ((type === "number" || type === "integer") && typeof value.minimum === "number") result.minimum = value.minimum;
             if ((type === "number" || type === "integer") && typeof value.maximum === "number") result.maximum = value.maximum;
-            if (["string", "number", "boolean"].includes(typeof value.default)) result.default = value.default as string | number | boolean;
+            const fallback = value.default;
+            const validDefault = (type === "string" && typeof fallback === "string") || (type === "boolean" && typeof fallback === "boolean") || ((type === "number" || type === "integer") && typeof fallback === "number" && Number.isFinite(fallback) && (type !== "integer" || Number.isInteger(fallback)) && (result.minimum === undefined || fallback >= result.minimum) && (result.maximum === undefined || fallback <= result.maximum));
+            if (validDefault) result.default = fallback as string | number | boolean;
             return [result];
         }
         return [];

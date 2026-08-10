@@ -6,4 +6,5 @@
 - The canvas reads `/api/v1/models`, filters by declared operations, sends the selected `model_id`, and exposes the safe parameter-schema controls. Retry is explicit from a failed node token; identical new submissions receive a new key.
 - Standard object-schema `properties`/`required` input is handled as a data-only subset with defaults, finite range and enum validation. Restore reads are isolated by storage-scope version.
 - Enum controls preserve their original string or numeric schema values through DOM selection; invalid or mixed enum declarations are ignored safely.
+- Primitive defaults are accepted only when type, finiteness, integer and range constraints hold; job parameters are rebuilt from validated controls at submit time.
 - Verification: `npm test --prefix web` (88 passed), `npm run typecheck --prefix web`, `npm run build --prefix web`, `bash scripts/security-scan.sh`, and `git diff --check`.
