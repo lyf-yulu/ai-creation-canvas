@@ -11,6 +11,12 @@ export function parameterControls(schema: Record<string, unknown>): ParameterCon
         if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name) || !raw || typeof raw !== "object" || Array.isArray(raw)) return [];
         const value = raw as Record<string, unknown>;
         const type = value.type;
+        if (Array.isArray(value.enum)) {
+            if (!value.enum.length || !value.enum.every((item) => typeof item === "string" || typeof item === "number") || (type !== undefined && type !== "string" && type !== "number" && type !== "integer")) return [];
+            const values = value.enum as (string | number)[];
+            if ((type === "string" && values.some((item) => typeof item !== "string")) || ((type === "number" || type === "integer") && values.some((item) => typeof item !== "number" || (type === "integer" && !Number.isInteger(item)))) || (value.default !== undefined && !values.some((item) => Object.is(item, value.default)))) return [];
+            return [{ name, type: "enum", required: required.has(name) || value.required === true, enum: values, default: value.default as string | number | undefined }];
+        }
         if (type === "number" || type === "integer" || type === "string" || type === "boolean") {
             const result: ParameterControl = { name, type, required: required.has(name) || value.required === true };
             if ((type === "number" || type === "integer") && typeof value.minimum === "number") result.minimum = value.minimum;
@@ -18,7 +24,6 @@ export function parameterControls(schema: Record<string, unknown>): ParameterCon
             if (["string", "number", "boolean"].includes(typeof value.default)) result.default = value.default as string | number | boolean;
             return [result];
         }
-        if (Array.isArray(value.enum) && value.enum.length && value.enum.every((item) => typeof item === "string" || typeof item === "number")) return [{ name, type: "enum", required: required.has(name) || value.required === true, enum: value.enum as (string | number)[], default: (typeof value.default === "string" || typeof value.default === "number") ? value.default : undefined }];
         return [];
     });
 }
