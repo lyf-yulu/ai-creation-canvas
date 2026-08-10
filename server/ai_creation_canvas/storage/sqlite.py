@@ -344,6 +344,21 @@ class CanvasStore:
             raise KeyError(user_id)
         return dict(row)
 
+    def reset_user_password(self, username_normalized: str, password_hash: str) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT user_id FROM canvas_users WHERE username_normalized=?", (username_normalized,)).fetchone()
+            if row is None:
+                raise KeyError(username_normalized)
+            user_id = str(row["user_id"])
+            db.execute(
+                "UPDATE canvas_users SET password_hash=?,must_change_password=1,updated_at=? WHERE user_id=?",
+                (password_hash, _now(), user_id),
+            )
+            db.execute("DELETE FROM canvas_sessions WHERE user_id=?", (user_id,))
+            updated = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        assert updated is not None
+        return dict(updated)
+
     def create_session(self, *, token_hash: str, csrf_token: str, user_id: str, expires_at: float) -> None:
         with self._connection(immediate=True) as db:
             db.execute("DELETE FROM canvas_sessions WHERE expires_at<=?", (time.time(),))

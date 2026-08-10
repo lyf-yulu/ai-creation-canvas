@@ -126,7 +126,7 @@ from pathlib import Path
 dist = Path(sys.argv[1])
 stamp = Path(sys.argv[2])
 source_hash = sys.argv[3]
-forbidden_names = {"node_modules", ".git", "state", "outputs", "uploads", "logs", "archives", "secrets"}
+forbidden_names = {"node_modules", ".git", ".local-data", "state", "outputs", "uploads", "logs", "archives", "secrets"}
 forbidden_suffixes = (".map", ".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx", ".jsonl")
 
 def forbidden(path: Path) -> bool:
@@ -194,7 +194,7 @@ from pathlib import Path
 dist = Path(sys.argv[1])
 stamp = Path(sys.argv[2])
 source_hash = sys.argv[3]
-forbidden_names = {"node_modules", ".git", "state", "outputs", "uploads", "logs", "archives", "secrets"}
+forbidden_names = {"node_modules", ".git", ".local-data", "state", "outputs", "uploads", "logs", "archives", "secrets"}
 forbidden_suffixes = (".map", ".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx", ".jsonl")
 
 def forbidden(path: Path) -> bool:
@@ -285,7 +285,7 @@ if find "$target" -type l -print -quit | grep -q .; then
     exit 65
 fi
 if find "$target" \( -type d -o -type f \) \( \
-    -name 'node_modules' -o -name '.git' -o -name '.env' -o -name '.env.*' -o \
+    -name 'node_modules' -o -name '.git' -o -name '.local-data' -o -name '.env' -o -name '.env.*' -o \
     -name 'state' -o -name 'outputs' -o -name 'uploads' -o -name 'logs' -o -name 'archives' -o \
     -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.db' -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' -o -name '*.jsonl' \
 \) -print -quit | grep -q .; then

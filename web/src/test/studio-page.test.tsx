@@ -18,7 +18,9 @@ it("assembles the released prompt and image-generation studio around the infinit
 
     expect(screen.getByTestId("studio-palette")).toBeVisible();
     expect(screen.getByTestId("studio-canvas")).toBeVisible();
+    expect(screen.getByTestId("studio-canvas")).toHaveClass("flex-1", "min-h-0");
     expect(screen.getByTestId("generation-inspector")).toBeVisible();
+    expect(screen.getByTestId("generation-inspector")).toHaveClass("max-h-[45%]", "lg:max-h-none");
     expect(screen.getByText("提示词节点")).toBeVisible();
     expect(screen.getByText("图片生成节点")).toBeVisible();
     expect(screen.queryByText(/视频生成节点|Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();

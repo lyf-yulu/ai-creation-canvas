@@ -137,6 +137,17 @@ class LocalAuthService:
             raise ValueError("invalid current password")
         self._store.update_user_password(user_id, PasswordHasher.hash(new_password))
 
+    def reset_password(self, username: str) -> str:
+        normalized = username.strip().casefold() if isinstance(username, str) else ""
+        if not normalized:
+            raise ValueError("user does not exist")
+        password = secrets.token_urlsafe(18)
+        try:
+            self._store.reset_user_password(normalized, PasswordHasher.hash(password))
+        except KeyError:
+            raise ValueError("user does not exist") from None
+        return password
+
     def assigned_models(self, user_id: str) -> tuple[str, ...]:
         return self._store.assigned_models(user_id)
 

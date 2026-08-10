@@ -24,7 +24,12 @@ def test_complete_offline_demo_flow_is_owned_and_idempotent(tmp_path) -> None:
     user_b = TestClient(app, base_url=ORIGIN)
     login_a = user_a.post("/api/v1/auth/login", json={"username": accounts.user_username, "password": accounts.user_password}).json()
     login_b = user_b.post("/api/v1/auth/login", json={"username": "canvas-user-b", "password": "correct-horse-battery"}).json()
-    headers_a = {"Origin": ORIGIN, "X-CSRF-Token": login_a["csrf_token"]}
+    changed_a = user_a.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": login_a["csrf_token"]},
+        json={"current_password": accounts.user_password, "new_password": "new-user-correct-horse"},
+    ).json()
+    headers_a = {"Origin": ORIGIN, "X-CSRF-Token": changed_a["csrf_token"]}
     del login_b
 
     models = user_a.get("/api/v1/models").json()["models"]

@@ -4,9 +4,9 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { clearStorageScope, setStorageScope } from "@/storage/scope";
+import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); useCanvasStore.setState({ projects: [], hydrated: true }); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScopedStoreFactoryForTest(); useCanvasStore.setState({ projects: [], hydrated: true }); });
 
 it("submits canvas image generation through jobs and writes its result node", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
@@ -37,4 +37,35 @@ it("writes a safe failure node for a rate-limited generation", async () => {
     fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.status === "error")).toBe(true));
     expect(screen.getAllByText("请求过于频繁，请稍后重试。")).not.toHaveLength(0);
+});
+
+it("restores a pending result into its source project instead of the currently open project", async () => {
+    const sourceProjectId = useCanvasStore.getState().createProject("Source Canvas");
+    const otherProjectId = useCanvasStore.getState().createProject("Other Canvas");
+    useCanvasStore.getState().updateProject(sourceProjectId, {
+        nodes: [{ id: "source-a", type: "config", title: "图片生成", position: { x: 10, y: 20 }, width: 300, height: 140, metadata: { status: "loading" } }],
+    });
+    setScopedStoreFactoryForTest(() => ({
+        getItem: async () => [{
+            jobId: "job-from-source",
+            projectId: sourceProjectId,
+            sourceNodeId: "source-a",
+            request: { operation: "image.generate", model_id: "image", prompt: "source prompt", params: {}, asset_ids: [], idempotency_key: "source-key" },
+        }],
+        setItem: async () => undefined,
+        removeItem: async () => undefined,
+        iterate: async () => undefined,
+    }) as never);
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        const path = String(input);
+        if (path === "/api/v1/models") return new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } });
+        if (path === "/api/v1/jobs/job-from-source") return new Response(JSON.stringify({ id: "job-from-source", status: "succeeded", result_url: "/api/v1/results/source-result" }), { headers: { "content-type": "application/json" } });
+        throw new Error(`unexpected request: ${path}`);
+    }));
+
+    render(<MemoryRouter initialEntries={[`/canvas/${otherProjectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+
+    await waitFor(() => expect(useCanvasStore.getState().openProject(sourceProjectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-from-source")).toBe(true));
+    expect(useCanvasStore.getState().openProject(otherProjectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-from-source")).toBe(false);
 });

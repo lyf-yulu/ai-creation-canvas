@@ -40,7 +40,7 @@ export function GenerationInspector({ models, operation, value, disabled, messag
         onChange({ ...value, modelId, params: defaultsFor(parameterControls(model?.parameter_schema || {})) });
     };
 
-    return <aside data-testid="generation-inspector" data-canvas-no-zoom className="h-full overflow-auto border-l border-[#1d3d28] bg-[#08100b] p-5 text-[#dceee1]">
+    return <aside data-testid="generation-inspector" data-canvas-no-zoom className="max-h-[45%] shrink-0 overflow-auto border-t border-[#1d3d28] bg-[#08100b] p-4 text-[#dceee1] lg:h-full lg:max-h-none lg:border-l lg:border-t-0 lg:p-5">
         <p className="text-xs tracking-[0.18em] text-[#58ed87]">IMAGE GENERATION</p><h2 className="mt-2 text-lg font-semibold">图片生成</h2>
         <label className="mt-5 block text-sm" htmlFor="studio-prompt">提示词</label><textarea id="studio-prompt" className="mt-2 min-h-28 w-full resize-y rounded-lg border border-[#285038] bg-[#050806] p-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" value={value.prompt} onChange={(event) => onChange({ ...value, prompt: event.target.value })} />
         <label className="mt-4 block text-sm">模型<select aria-label="模型" className="mt-2 block w-full rounded-lg border border-[#285038] bg-[#050806] p-2.5" value={selected?.model_id || ""} onChange={(event) => chooseModel(event.target.value)}>{available.map((model) => <option key={model.model_id} value={model.model_id}>{model.display_name}</option>)}</select></label>

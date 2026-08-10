@@ -50,8 +50,18 @@ def local_clients(tmp_path):
     user = TestClient(app, base_url=ORIGIN)
     admin_login = admin.post("/api/v1/auth/login", json={"username": accounts.admin_username, "password": accounts.admin_password}).json()
     user_login = user.post("/api/v1/auth/login", json={"username": accounts.user_username, "password": accounts.user_password}).json()
-    admin_headers = {"Origin": ORIGIN, "X-CSRF-Token": admin_login["csrf_token"]}
-    user_headers = {"Origin": ORIGIN, "X-CSRF-Token": user_login["csrf_token"]}
+    admin_changed = admin.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": admin_login["csrf_token"]},
+        json={"current_password": accounts.admin_password, "new_password": "new-admin-correct-horse"},
+    ).json()
+    user_changed = user.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": user_login["csrf_token"]},
+        json={"current_password": accounts.user_password, "new_password": "new-user-correct-horse"},
+    ).json()
+    admin_headers = {"Origin": ORIGIN, "X-CSRF-Token": admin_changed["csrf_token"]}
+    user_headers = {"Origin": ORIGIN, "X-CSRF-Token": user_changed["csrf_token"]}
     return app, accounts, admin, user, admin_headers, user_headers
 
 

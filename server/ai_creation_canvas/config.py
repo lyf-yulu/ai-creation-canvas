@@ -109,10 +109,10 @@ class Settings:
             raise ValueError("port must be a valid TCP port")
         data_dir = Path(self.data_dir).expanduser().resolve(strict=False)
         production_repo = _PRODUCTION_REPOSITORY.resolve(strict=False)
-        if self.environment == "test" and self.port in _PRODUCTION_PORTS:
-            raise ValueError("test environment cannot use a production port")
-        if self.environment == "test" and _is_within(data_dir, production_repo):
-            raise ValueError("test environment cannot use the production repository")
+        if (self.environment == "test" or (self.identity_mode == "local" and self.environment != "production")) and self.port in _PRODUCTION_PORTS:
+            raise ValueError("non-production environment cannot use a production port")
+        if self.environment != "production" and _is_within(data_dir, production_repo):
+            raise ValueError("non-production environment cannot use the production repository")
         if (
             not isinstance(self.signature_ttl_seconds, int)
             or isinstance(self.signature_ttl_seconds, bool)

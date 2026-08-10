@@ -1,5 +1,26 @@
 # 运行与运维
 
+## 本地 Slice 1 验证
+
+在源码仓库根目录运行一条命令：
+
+```bash
+bash scripts/run-local.sh
+```
+
+脚本会锁定前端依赖、构建真实 UI，并仅在 `127.0.0.1:8992` 启动本地服务。首次运行会在终端显示一次 `canvas-admin` 和 `canvas-user` 的随机初始密码，并打开 `http://127.0.0.1:8992/login`；后续启动不会再次显示旧密码。本地数据库与会话保存在已被 Git 忽略的 `.local-data/`。
+
+Slice 1 只启用不联网、不收费的 `本地演示图片` 模型。浏览器没有 Key 输入框，真实模型 Key 仍应由管理员在未来部署的服务端配置和派发。本阶段不提供 Cloudflare Quick Tunnel 或生产部署命令；正式 Cloudflare、域名与多地区入口放在后续 Slice 6。
+
+如遗失本地测试密码，可停止本地服务后执行：
+
+```bash
+PYTHONPATH=server python -m ai_creation_canvas reset-local-password \
+  --data-dir .local-data --username canvas-user
+```
+
+命令只显示这一次的新密码，并撤销该账号的既有会话；再次登录必须修改初始密码。
+
 ## 构建发布包
 
 在源码树任意子目录或其他工作目录执行：
@@ -48,5 +69,5 @@ Portal 薄代理补丁必须先在隔离测试副本中审查：验证挂载路�
 
 - 静态页面返回 404：确认发布包包含 `web/dist/index.html`，并以带 `Accept: text/html` 的请求访问 SPA 路由。
 - API 返回 401：检查 Portal 签名身份是否由受信边界注入，不要在浏览器伪造用户字段。
-- 资产或任务返回 403：确认使用同一 Portal 用户；跨用户访问按设计被拒绝。
+- 资产返回 403，或任务/结果返回 404：确认使用同一用户；任务和结果会隐藏跨用户资源是否存在。
 - 模型不可用：检查服务端数据目录中的受控服务声明和模型能力，不在浏览器增加自定义 URL 或脚本。

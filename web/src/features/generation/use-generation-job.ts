@@ -8,7 +8,7 @@ import { create } from "zustand";
 
 export type GenerationStatus = "idle" | "submitting" | "queued" | "running" | "succeeded" | "failed";
 export type GenerationState = { status: GenerationStatus; jobId?: string; message?: string; retryable?: boolean };
-export type PendingRef = { request: JobRequest; jobId?: string; sourceNodeId?: string };
+export type PendingRef = { request: JobRequest; projectId?: string; jobId?: string; sourceNodeId?: string };
 export type GenerationTask = { jobId: string; title: string; status: GenerationStatus; sourceNodeId?: string };
 type GenerationTaskStore = { tasks: GenerationTask[]; upsert: (task: GenerationTask) => void; remove: (jobId: string) => void; clear: () => void };
 export const useGenerationTasks = create<GenerationTaskStore>()((set) => ({
@@ -20,8 +20,8 @@ export const useGenerationTasks = create<GenerationTaskStore>()((set) => ({
 export function clearGenerationTasks() { useGenerationTasks.getState().clear(); }
 export function dismissGenerationTask(jobId: string) { useGenerationTasks.getState().remove(jobId); }
 type GenerationApi = { create: (job: JobRequest, signal?: AbortSignal) => Promise<JobState>; fetch: (id: string, signal?: AbortSignal) => Promise<JobState> };
-type SubmitInput = Omit<JobRequest, "idempotency_key"> & { sourceNodeId?: string };
-type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onFailed?: (details: { request: JobRequest; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
+type SubmitInput = Omit<JobRequest, "idempotency_key"> & { projectId: string; sourceNodeId?: string };
+type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onFailed?: (details: { request: JobRequest; projectId?: string; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
 const REFS_KEY = "generation-job-refs";
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true }); });
 const stateFor = (job: JobState): GenerationStatus => job.status === "uploading" || job.status === "submitting" ? "submitting" : job.status;
@@ -92,7 +92,7 @@ export function useGenerationJob(options: Options = {}) {
                     const message = generationErrorMessage(job.error ? new ApiRequestError(job.error) : new Error("failed"));
                     publish({ status, jobId, message, retryable: job.error?.retryable }, captured);
                     const safe = job.error ? { request_id: job.error.request_id, phase: job.error.phase } : undefined;
-                    if (request) optionsRef.current.onFailed?.({ request, sourceNodeId: ref?.sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase });
+                    if (request) optionsRef.current.onFailed?.({ request, projectId: ref?.projectId, sourceNodeId: ref?.sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase });
                     return;
                 }
                 await delay(wait, signal.signal); wait = Math.min(wait * 2, 10_000);
@@ -102,15 +102,15 @@ export function useGenerationJob(options: Options = {}) {
     const submit = useCallback(async (input: SubmitInput) => {
         const captured = lease.current = captureScopedStore(REFS_KEY);
         await restore(captured);
-        const { sourceNodeId, ...jobInput } = input;
+        const { projectId, sourceNodeId, ...jobInput } = input;
         const request = { ...jobInput, idempotency_key: optionsRef.current.idempotencyKey?.() ?? crypto.randomUUID() };
-        refs.current.set(request.idempotency_key, { request, sourceNodeId }); await persist(); publish({ status: "submitting" }, captured);
+        refs.current.set(request.idempotency_key, { request, projectId, sourceNodeId }); await persist(); publish({ status: "submitting" }, captured);
         useGenerationTasks.getState().upsert({ jobId: request.idempotency_key, title: request.prompt.slice(0, 32), status: "submitting", sourceNodeId });
         try {
             const submitController = new AbortController(); controllers.current.set(request.idempotency_key, submitController);
             const job = await apiRef.current.create(request, submitController.signal);
             controllers.current.delete(request.idempotency_key);
-            const ref = refs.current.get(request.idempotency_key); refs.current.delete(request.idempotency_key); refs.current.set(job.id, { request, jobId: job.id, sourceNodeId: ref?.sourceNodeId }); await persist();
+            const ref = refs.current.get(request.idempotency_key); refs.current.delete(request.idempotency_key); refs.current.set(job.id, { request, projectId: ref?.projectId, jobId: job.id, sourceNodeId: ref?.sourceNodeId }); await persist();
             useGenerationTasks.getState().remove(request.idempotency_key);
             useGenerationTasks.getState().upsert({ jobId: job.id, title: request.prompt.slice(0, 32), status: stateFor(job), sourceNodeId });
             publish({ status: stateFor(job), jobId: job.id }, captured);
@@ -121,7 +121,7 @@ export function useGenerationJob(options: Options = {}) {
             const message = generationErrorMessage(error);
             publish({ status: "failed", message, retryable: true }, captured);
             useGenerationTasks.getState().upsert({ jobId: request.idempotency_key, title: request.prompt.slice(0, 32), status: "failed", sourceNodeId });
-            optionsRef.current.onFailed?.({ request, sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase, retryToken: request.idempotency_key });
+            optionsRef.current.onFailed?.({ request, projectId, sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase, retryToken: request.idempotency_key });
             throw error;
         }
     }, [persist, poll, publish, restore]);

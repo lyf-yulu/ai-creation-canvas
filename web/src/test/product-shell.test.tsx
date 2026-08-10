@@ -35,4 +35,5 @@ it("shows only released ordinary-user destinations", () => {
     expect(screen.getAllByRole("link", { name: "任务" }).every((link) => link.getAttribute("href") === "/tasks")).toBe(true);
     expect(screen.queryByRole("link", { name: "管理员" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Skill" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "退出登录" })).toHaveLength(2);
 });

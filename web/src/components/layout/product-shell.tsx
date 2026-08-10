@@ -23,9 +23,10 @@ export function ProductShell({ children }: { children: ReactNode }) {
 
     return (
         <div className="h-dvh overflow-hidden bg-[#050806] text-[#e5f5e9]">
-            <header className="flex h-14 items-center justify-between border-b border-[#193523] bg-[#08100b] px-4 md:hidden">
-                <div className="flex items-center gap-2 font-semibold"><Orbit className="size-5 text-[#57ed86]" />AI 创作画布</div>
-                <nav className="flex gap-1">{[...releasedNavigation, ...(session?.role === "admin" ? adminNavigation : [])].map(({ label, to }) => <NavLink key={to} to={to} className="rounded px-2 py-1 text-xs text-[#a8bbae]">{label}</NavLink>)}</nav>
+            <header className="flex h-14 items-center justify-between gap-2 overflow-x-auto border-b border-[#193523] bg-[#08100b] px-3 md:hidden">
+                <div className="flex shrink-0 items-center gap-2 font-semibold"><Orbit className="size-5 text-[#57ed86]" /><span className="hidden sm:inline">AI 创作画布</span></div>
+                <nav className="flex shrink-0 gap-1">{[...releasedNavigation, ...(session?.role === "admin" ? adminNavigation : [])].map(({ label, to }) => <NavLink key={to} to={to} className="rounded px-2 py-1 text-xs text-[#a8bbae]">{label}</NavLink>)}</nav>
+                <button aria-label="退出登录" title="退出登录" className="shrink-0 rounded p-1.5 text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => void logout()}><LogOut className="size-4" /></button>
             </header>
             <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 border-r border-[#193523] bg-[#08100b] p-4 md:flex md:flex-col">
                 <div className="flex items-center gap-2 text-base font-semibold"><Orbit className="size-5 text-[#57ed86]" /><span><i className="not-italic text-[#57ed86]">AI</i> 创作画布</span></div>

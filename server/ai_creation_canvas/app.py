@@ -149,6 +149,24 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                         csrf = request.headers.get("x-csrf-token", "")
                         if origin not in settings.allowed_origins or not token or not app.state.local_auth.verify_csrf(token, csrf):
                             raise problem(request, "FORBIDDEN", "The request could not be completed.", status=403, phase="authentication")
+                    password_change_allowed = (request.method, request.url.path) in {
+                        ("POST", "/api/v1/auth/login"),
+                        ("POST", "/api/v1/auth/logout"),
+                        ("POST", "/api/v1/auth/change-password"),
+                        ("GET", "/api/v1/session"),
+                    }
+                    if user is not None and not password_change_allowed:
+                        details = app.state.local_auth.session_details(token)
+                        if details is None:
+                            raise AuthRequired(request.state.request_id)
+                        if bool(details["must_change_password"]):
+                            raise problem(
+                                request,
+                                "PASSWORD_CHANGE_REQUIRED",
+                                "Change the initial password before continuing.",
+                                status=403,
+                                phase="authentication",
+                            )
                 else:
                     request.state.portal_user = verify_portal_identity(
                         request.headers,

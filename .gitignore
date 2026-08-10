@@ -9,6 +9,7 @@ secrets/
 *.pfx
 
 # Runtime and user data
+/.local-data/
 state/
 outputs/
 archives/

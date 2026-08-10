@@ -30,7 +30,7 @@ it("reuses the pending idempotency key after an ambiguous submit failure", async
         fetch: vi.fn().mockResolvedValue({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/r-1" }),
     };
     const { result } = renderHook(() => useGenerationJob({ api, pollDelayMs: 1, idempotencyKey: () => "stable-key" }));
-    const request = { operation: "image.generate" as const, model_id: "m", prompt: "p", params: {}, asset_ids: [] };
+    const request = { operation: "image.generate" as const, model_id: "m", prompt: "p", params: {}, asset_ids: [], projectId: "project-a" };
 
     await act(async () => expect(result.current.submit(request)).rejects.toThrow("network"));
     await act(async () => result.current.submit(request));
