@@ -1,24 +1,29 @@
 {
   "services": [
     {
-      "service_id": "image-service",
+      "service_id": "example-images",
       "mount": "/image-service",
       "service_type": "image",
       "operations": ["image.generate", "image.edit"]
     },
     {
-      "service_id": "video-service",
+      "service_id": "example-videos",
       "mount": "/video-service",
       "service_type": "video",
       "operations": ["video.generate", "video.image_to_video"]
     },
     {
       "service_id": "portal-portrait",
-      "mount": "/portrait-assets",
+      "mount": "/portrait-service",
       "service_type": "portrait_asset",
       "operations": ["video.image_to_video"],
       "contract_id": "portal-virtual-v1",
-      "routes": {"catalog": "api/config", "groups": "api/virtual/groups", "assets": "api/virtual/assets", "jobs": "api/virtual/jobs"}
+      "routes": {
+        "catalog": "api/config",
+        "groups": "api/virtual/groups",
+        "assets": "api/virtual/assets",
+        "jobs": "api/virtual/jobs"
+      }
     }
   ]
 }

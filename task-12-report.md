@@ -6,19 +6,19 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| `PYTHONPATH=.:server .venv/bin/pytest -q tests` | 254 passed（22.18s） |
-| `PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_core_flows.py` | 6 passed（19.19s） |
+| `PYTHONPATH=.:server .venv/bin/pytest -q tests` | 256 passed（27.25s） |
+| `PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_core_flows.py` | 8 passed；其中发布包专项 2 passed（24.57s） |
 | `npm ci --prefix web` | 通过 |
 | `npm test --prefix web` | 16 文件、88 passed |
 | `npm run typecheck --prefix web` | 通过 |
 | `npm run build --prefix web` | 通过 |
 | `bash scripts/security-scan.sh` | 通过 |
 | `git diff --check` | 通过 |
-| 发布包 Node-free 运行 | 通过：临时包、受限 PATH、随机 localhost 端口；根路径和嵌套路由返回 SPA，未签名 session 为 401，进程与临时状态已清理 |
+| 发布包 Node-free 运行 | 通过：临时包、受限 PATH、随机 localhost 端口；验证的 `--skip-web-build` 包可启动，根路径和嵌套路由返回 SPA，未签名 session 为 401，进程与临时状态已清理 |
 
-核心流程测试逐项经过公开 API、真实 Canvas 路由/SQLite/Portal 适配器和进程内服务模拟：图像生成、参考图编辑、文本视频、图片参考视频、人像上传激活后的视频生成。每项验证异步轮询、结果读取、一次底层用量事件，以及第二用户不能读取资产、任务或结果。
+核心流程测试逐项经过公开 API、真实 Canvas 路由/SQLite/Portal 适配器和进程内服务模拟：图像生成、参考图编辑、文本视频、图片参考视频、人像上传激活后的视频生成。每项验证异步轮询、结果读取、一次底层用量事件，以及第二用户不能读取资产、任务或结果。人像结果由生产 `PortalPortraitAdapter` 仅接受不透明 `result_ref`，并通过受控 Portal 路由支持 GET、HEAD 和 Range；外部 URL 或畸形结果标识被拒绝。
 
-发布脚本从任意工作目录接受新目录，构建并校验静态资源，拒绝既有、符号链接和与源码重叠的目标，打包前扫描敏感/运行时文件，并生成不含时间、主机路径、用户名或密钥的确定性 SHA-256 清单。
+发布脚本从任意工作目录接受新目录，构建并校验静态资源，拒绝既有、符号链接和与源码重叠的目标，打包前扫描敏感/运行时文件，并生成不含时间、主机路径、用户名或密钥的确定性 SHA-256 清单。`--skip-web-build` 比较当前受控前端输入的内容指纹，缺失、过期或篡改的构建产物都会被拒绝；构建/复制失败只清理本次新建且带私有标记的目标，绝不删除预存目录。
 
 ## 已知非阻断提示
 

@@ -21,6 +21,7 @@ from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUps
 _OPAQUE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _STATUSES = {"Processing": AssetStatus.PROCESSING, "Active": AssetStatus.ACTIVE, "Failed": AssetStatus.FAILED}
 _MIMES = {"image/png", "image/jpeg", "image/webp"}
+_RESULTS_ROUTE = "api/virtual/results"
 
 @dataclass(frozen=True, slots=True)
 class PortraitDeclaration:
@@ -146,8 +147,27 @@ class PortalPortraitAdapter:
         data=self._json_object(response, "job")
         status=data.get("status")
         if status == "failed": return JobState(identifier,"failed",error=ApiError("TASK_FAILED","The generation task failed.",False,context.request_id,"generation"))
-        try: return JobState(identifier,status)
+        try:
+            result = None
+            if status == "succeeded":
+                result = AssetRef(self._opaque(data.get("result_ref")), "reference", "active", "application/octet-stream")
+            return JobState(identifier, status, result=result)
         except ValueError as error: raise InvalidUpstreamResult("portrait job response is invalid") from error
+
+    async def open_result(self, context, result_id, *, cookie_header, range_header=None, head=False):
+        """Open only opaque Portal-owned portrait result IDs for the common proxy."""
+        identifier = self._opaque(result_id)
+        if not isinstance(cookie_header, str) or not cookie_header:
+            raise ValueError("Cookie header is required")
+        headers = {"Range": range_header} if range_header else None
+        return await self._client.open_stream(
+            context,
+            "HEAD" if head else "GET",
+            f"{_RESULTS_ROUTE}/{quote(identifier, safe='')}",
+            mount=self._declaration.mount,
+            cookie_header=cookie_header,
+            headers=headers,
+        )
 
     @staticmethod
     def _multipart_edges(boundary: str, mime: str, group_id: str) -> tuple[bytes, bytes]:

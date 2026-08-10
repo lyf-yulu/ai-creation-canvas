@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import shutil
 import socket
 import subprocess
@@ -26,8 +25,9 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import AssetRef, JobState
+from ai_creation_canvas.domain.models import PortalUser, RequestContext
 from ai_creation_canvas.domain.registry import AdapterRegistry
+from ai_creation_canvas.errors import InvalidUpstreamResult
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -50,21 +50,6 @@ def signed_headers(user_id: str, *, cookie: bool = True) -> dict[str, str]:
     if cookie:
         headers["Cookie"] = f"portal_session={user_id}"
     return headers
-
-
-class ResultPortraitAdapter(PortalPortraitAdapter):
-    """Test service contract adds the same protected result stream as jobs services."""
-
-    async def poll_with_cookie(self, context, upstream_job_id, cookie_header):
-        await super().poll_with_cookie(context, upstream_job_id, cookie_header)
-        return JobState(upstream_job_id, "succeeded", result=AssetRef(f"result-{upstream_job_id}", "reference", "active", "video/mp4"))
-
-    async def open_result(self, context, result_id, *, cookie_header, range_header=None, head=False):
-        headers = {"Range": range_header} if range_header else None
-        return await self._client.open_stream(
-            context, "HEAD" if head else "GET", f"api/results/{result_id}",
-            mount=self._declaration.mount, cookie_header=cookie_header, headers=headers,
-        )
 
 
 @pytest.fixture
@@ -111,12 +96,14 @@ def canvas(tmp_path):
         if request.method == "GET" and resource.startswith("api/virtual/jobs/"):
             upstream_id = resource.rsplit("/", 1)[1]
             assert jobs[upstream_id][0] == mount
-            return httpx.Response(200, json={"id": upstream_id, "status": "queued"})
-        if request.method in {"GET", "HEAD"} and resource.startswith("api/results/"):
+            return httpx.Response(200, json={"id": upstream_id, "status": "succeeded", "result_ref": f"result-{upstream_id}"})
+        if request.method in {"GET", "HEAD"} and (resource.startswith("api/results/") or resource.startswith("api/virtual/results/")):
             result_id = resource.rsplit("/", 1)[1]
             data = b"mock-video" if jobs[result_id.removeprefix("result-")][0] != "images" else PNG
             mime = "video/mp4" if data == b"mock-video" else "image/png"
-            return httpx.Response(200, stream=httpx.ByteStream(data if request.method == "GET" else b""), headers={"content-type": mime, "content-length": str(len(data))})
+            if request.headers.get("range") == "bytes=0-3":
+                return httpx.Response(206, stream=httpx.ByteStream(data[:4]), headers={"content-type": mime, "content-length": "4", "content-range": f"bytes 0-3/{len(data)}", "accept-ranges": "bytes"})
+            return httpx.Response(200, stream=httpx.ByteStream(data if request.method == "GET" else b""), headers={"content-type": mime, "content-length": str(len(data)), "accept-ranges": "bytes"})
         raise AssertionError(f"unexpected in-process Portal request: {request.method} {path}")
 
     transport = httpx.MockTransport(portal)
@@ -124,7 +111,7 @@ def canvas(tmp_path):
     registry = AdapterRegistry()
     registry.register_generation(PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client))
     registry.register_generation(PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client))
-    portrait = ResultPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
+    portrait = PortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
     registry.register_asset(portrait)
     registry.register_generation(portrait)
     static_dir = tmp_path / "static"
@@ -168,7 +155,28 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     result = client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-a"))
     assert result.status_code == 200 and result.content
+    if model_id == "portrait-model":
+        assert client.head(f"/api/v1/results/{job_id}", headers=signed_headers("user-a")).status_code == 200
+        ranged = client.get(f"/api/v1/results/{job_id}", headers={**signed_headers("user-a"), "range": "bytes=0-3"})
+        assert ranged.status_code == 206 and ranged.content == b"mock"
     assert len(usage) == 1 and usage[0][0] == "user-a"
+
+
+def test_production_portrait_adapter_rejects_external_or_nonopaque_result_references():
+    def invalid_result(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/portrait/api/virtual/jobs/job-1"
+        return httpx.Response(200, json={"id": "job-1", "status": "succeeded", "result_ref": "https://outside.invalid/result"})
+
+    adapter = PortalPortraitAdapter(
+        PortraitDeclaration("portal-portrait", "/portrait"),
+        PortalClient("http://127.0.0.1:45679", allowed_mounts=("/portrait",), allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=True, transport=httpx.MockTransport(invalid_result)),
+    )
+    context = RequestContext(PortalUser("user-a", "Alice", "user"), "request", "trace")
+    import asyncio
+    with pytest.raises(InvalidUpstreamResult):
+        asyncio.run(adapter.poll_with_cookie(context, "job-1", "portal_session=user-a"))
+    with pytest.raises(InvalidUpstreamResult):
+        asyncio.run(adapter.open_result(context, "https://outside.invalid/result", cookie_header="portal_session=user-a"))
 
 
 def _free_port() -> int:
@@ -183,14 +191,42 @@ def test_release_build_is_node_free_at_runtime_and_excludes_sensitive_files(tmp_
     completed = subprocess.run(["bash", str(script), str(release)], cwd=tmp_path, text=True, capture_output=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert (release / "manifest.sha256").is_file()
+    services = release / "server" / "config" / "services.example.json"
+    assert services.is_file()
+    checked = subprocess.run(
+        [sys.executable, "-m", "ai_creation_canvas", "--environment", "test", "--port", str(_free_port()), "--data-dir", str(release / "check-data"), "--portal-internal-token", "release-test-secret", "--portal-base-url", "http://127.0.0.1:45679", "--services-config", str(services), "--allow-loopback-http", "--check-config"],
+        cwd=release,
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(release / "server")},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert set(checked.stdout.split()) == {"example-images", "example-videos", "portal-portrait"}
+    shutil.rmtree(release / "check-data", ignore_errors=True)
+    stamp = ROOT / "web" / "dist" / ".ai-creation-canvas-build-input.sha256"
+    assert stamp.is_file()
+    original_stamp = stamp.read_text(encoding="utf-8")
+    cached_release = tmp_path / "cached-release"
+    cached = subprocess.run(["bash", str(script), "--skip-web-build", str(cached_release)], cwd=tmp_path, text=True, capture_output=True, check=False)
+    assert cached.returncode == 0, cached.stderr
+    release = cached_release
+    services = release / "server" / "config" / "services.example.json"
+    try:
+        stamp.write_text("tampered\n", encoding="utf-8")
+        stale = subprocess.run(["bash", str(script), "--skip-web-build", str(tmp_path / "stale-release")], cwd=tmp_path, text=True, capture_output=True, check=False)
+        assert stale.returncode != 0
+        assert not (tmp_path / "stale-release").exists()
+    finally:
+        stamp.write_text(original_stamp, encoding="utf-8")
     forbidden = ("node_modules", ".git", ".env", "state", "outputs", "uploads", "logs", "archives", ".sqlite", ".db", ".map")
     assert not any(any(token in str(path.relative_to(release)) for token in forbidden) for path in release.rglob("*"))
     restricted_path = "/usr/bin:/bin"
     assert shutil.which("node", path=restricted_path) is None and shutil.which("bun", path=restricted_path) is None
     port = _free_port()
-    environment = {"PATH": restricted_path, "PYTHONPATH": str(release / "server"), "PORT": str(port)}
-    command = "from pathlib import Path; import os, uvicorn; from ai_creation_canvas.app import create_app; from ai_creation_canvas.config import Settings; uvicorn.run(create_app(Settings('test', int(os.environ['PORT']), Path('runtime-data'), 'release-test-secret')), host='127.0.0.1', port=int(os.environ['PORT']), log_level='error')"
-    process = subprocess.Popen([sys.executable, "-c", command], cwd=release, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    environment = {"PATH": restricted_path, "PYTHONPATH": str(release / "server")}
+    command = [sys.executable, "-m", "ai_creation_canvas", "--environment", "test", "--port", str(port), "--data-dir", "runtime-data", "--portal-internal-token", "release-test-secret", "--portal-base-url", "http://127.0.0.1:45679", "--services-config", str(services), "--allow-loopback-http"]
+    process = subprocess.Popen(command, cwd=release, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         for _ in range(50):
             try:
@@ -210,3 +246,22 @@ def test_release_build_is_node_free_at_runtime_and_excludes_sensitive_files(tmp_
         process.stderr.close()
         shutil.rmtree(release / "runtime-data", ignore_errors=True)
     assert not (release / "runtime-data").exists()
+
+
+def test_release_build_failure_cleans_only_its_new_target(tmp_path):
+    script = ROOT / "scripts" / "build-release.sh"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_npm = fake_bin / "npm"
+    fake_npm.write_text("#!/usr/bin/env bash\nexit 73\n", encoding="utf-8")
+    fake_npm.chmod(0o755)
+    environment = {**dict(__import__("os").environ), "PATH": f"{fake_bin}:{Path(sys.executable).parent}:/usr/bin:/bin"}
+    failed_target = tmp_path / "failed-release"
+    failed = subprocess.run(["bash", str(script), str(failed_target)], cwd=tmp_path, env=environment, text=True, capture_output=True, check=False)
+    assert failed.returncode != 0 and not failed_target.exists()
+    existing = tmp_path / "existing-release"
+    existing.mkdir()
+    sentinel = existing / "sentinel"
+    sentinel.write_text("keep", encoding="utf-8")
+    refused = subprocess.run(["bash", str(script), str(existing)], cwd=tmp_path, env=environment, text=True, capture_output=True, check=False)
+    assert refused.returncode != 0 and sentinel.read_text(encoding="utf-8") == "keep"

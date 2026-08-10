@@ -57,18 +57,78 @@ if not created:
     target.mkdir(mode=0o700, parents=True)
 PY
 
+marker="$target/.ai-creation-canvas-release-marker"
+nonce="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+printf '%s\n' "$nonce" > "$marker"
+
+cleanup_target() {
+    status=$?
+    if [[ "$status" -ne 0 && -f "$marker" ]]; then
+        python3 - "$root" "$target" "$marker" "$nonce" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=False)
+target = Path(sys.argv[2]).resolve(strict=False)
+marker = Path(sys.argv[3]).resolve(strict=False)
+nonce = sys.argv[4]
+if target == root or target.is_symlink() or marker.parent != target:
+    raise SystemExit(0)
+if not marker.is_file() or marker.read_text(encoding="utf-8") != nonce + "\n":
+    raise SystemExit(0)
+for parent in (target, *target.parents):
+    if parent.exists() and parent.is_symlink():
+        raise SystemExit(0)
+try:
+    target.resolve(strict=True).relative_to(root)
+except ValueError:
+    shutil.rmtree(target)
+PY
+    fi
+    exit "$status"
+}
+trap cleanup_target EXIT
+
+build_input_hash() {
+    python3 - "$root" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+inputs = [root / "VERSION", root / "CHANGELOG.md", root / "UPSTREAM.md", root / "web" / "package.json", root / "web" / "package-lock.json", root / "web" / "vite.config.ts"]
+web = root / "web"
+inputs.extend(path for path in web.rglob("*") if path.is_file() and "node_modules" not in path.parts and "dist" not in path.parts and path.suffix not in {".tsbuildinfo"})
+digest = hashlib.sha256()
+for path in sorted(set(inputs), key=lambda item: item.relative_to(root).as_posix()):
+    relative = path.relative_to(root).as_posix().encode("utf-8")
+    digest.update(relative + b"\0")
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+print(digest.hexdigest())
+PY
+}
+
+stamp="$root/web/dist/.ai-creation-canvas-build-input.sha256"
+input_hash="$(build_input_hash)"
+
 if [[ "$skip_web_build" == true ]]; then
     [[ -f "$root/web/dist/index.html" ]] || { echo "--skip-web-build requires a verified web/dist/index.html" >&2; exit 65; }
     [[ -n "$(find "$root/web/dist" -type f -name '*.js' -print -quit)" ]] || { echo "--skip-web-build requires built JavaScript assets" >&2; exit 65; }
+    [[ -f "$stamp" && "$(<"$stamp")" == "$input_hash" ]] || { echo "--skip-web-build refuses missing, stale, or tampered web assets" >&2; exit 65; }
 else
     npm ci --prefix "$root/web"
     npm run build --prefix "$root/web"
+    printf '%s\n' "$input_hash" > "$stamp"
 fi
 
 [[ -f "$root/web/dist/index.html" ]] || { echo "web build did not produce index.html" >&2; exit 65; }
 
 mkdir -p "$target/server" "$target/web" "$target/docs"
 cp -R "$root/server/ai_creation_canvas" "$target/server/"
+cp -R "$root/server/config" "$target/server/"
 cp -R "$root/web/dist" "$target/web/"
 for file in pyproject.toml requirements.lock LICENSE UPSTREAM.md README.md; do
     install -m 0644 "$root/$file" "$target/$file"
@@ -101,4 +161,6 @@ fi
         shasum -a 256 "$path"
     done > manifest.sha256
 )
+rm -f "$marker"
+trap - EXIT
 printf '%s\n' "$target"

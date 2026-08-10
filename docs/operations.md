@@ -14,7 +14,19 @@ bash /绝对路径/ai-creation-canvas/scripts/build-release.sh /新的/空/发�
 
 ## 运行发布包
 
-从发布目录安装 `requirements.lock` 中的 Python 依赖，并以部署环境的受控启动配置创建 `Settings` 和 `create_app`。生产运行只需要 Python 和预构建静态文件，**不需要 Node 或 Bun**。Node/Bun 仅允许用于源码构建和前端测试。
+从发布目录安装 `requirements.lock` 中的 Python 依赖，并显式提供服务声明、数据目录和静态文件路径。生产运行只需要 Python 和预构建静态文件，**不需要 Node 或 Bun**。Node/Bun 仅允许用于源码构建和前端测试。
+
+```bash
+PYTHONPATH=server python -m ai_creation_canvas \
+  --environment production --port 8991 \
+  --data-dir /受控/画布数据 \
+  --portal-internal-token "由部署系统注入" \
+  --portal-base-url "https://受信-portal.example" \
+  --services-config server/config/services.example.json \
+  --static-dir web/dist
+```
+
+`server/config/services.example.json` 仅是无密钥的声明模板，必须替换 mount 与服务标识并经审批。可使用同样的显式参数追加 `--check-config`，在启动 HTTP 服务前验证服务声明是否能被加载；该检查不会连接模型服务。
 
 `/api/v1/session` 必须由 Portal 已验证身份调用；无身份请求返回 `401`。根路径和前端嵌套路由由静态 SPA 返回。当前版本没有未认证健康检查接口，运行监控应使用平台进程健康机制和经认证的 API 检查。
 
