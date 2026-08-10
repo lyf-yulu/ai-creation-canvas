@@ -12,6 +12,18 @@ bash scripts/run-local.sh
 
 Slice 1 只启用不联网、不收费的 `本地演示图片` 模型。浏览器没有 Key 输入框，真实模型 Key 仍应由管理员在未来部署的服务端配置和派发。本阶段不提供 Cloudflare Quick Tunnel 或生产部署命令；正式 Cloudflare、域名与多地区入口放在后续 Slice 6。
 
+## 本地真实媒体验证（可选、会产生费用）
+
+当管理员已经在启动服务的终端环境中设置了 `ARK_API_KEY` 时，可运行：
+
+```bash
+bash scripts/run-real-media-local.sh
+```
+
+该入口会使用 `127.0.0.1:8994` 和已忽略的 `.local-real-media-data/`，与默认离线演示数据隔离。它只从服务端环境读取 Key，并通过 `server/config/ark-models.example.json` 注册管理员可审核的模型声明；声明文件不包含 Key、URL、脚本或浏览器可执行内容。默认包括 Seedream 文生图和 5 秒 Seedance 文生视频。普通用户只会收到管理员派发的模型名称、能力与安全参数，不能输入或查看 Key。
+
+真实任务结果会先被服务端下载到受限本地结果目录，再以同源、按用户归属的结果接口提供给画布。不要提交 `.local-real-media-data/`、终端输出、提示词、结果文件或任何环境变量。未设置 Key、模型未开通、或模型参数不支持时，界面只显示受控错误信息；不要通过反复重试来探测付费模型。
+
 如遗失本地测试密码，可停止本地服务后执行：
 
 ```bash

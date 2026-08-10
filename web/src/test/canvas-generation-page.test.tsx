@@ -41,12 +41,15 @@ it("submits canvas video generation through jobs and writes a video result node"
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video-job-1" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
     fireEvent.click(await screen.findByRole("button", { name: "视频生成" }));
+    expect(screen.getByText("VIDEO GENERATION")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "视频生成" })).toBeVisible();
     fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cloud moving slowly" } });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("video-model"));
     fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "video-job-1")).toBe(true));
     const result = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.sourceJobId === "video-job-1");
     expect(result?.type).toBe(CanvasNodeType.Video);
+    expect(await screen.findByLabelText("生成视频结果")).toHaveAttribute("src", "/api/v1/results/video-job-1");
     const [, request] = (fetch as any).mock.calls[1];
     expect(JSON.parse(request.body).operation).toBe("video.generate");
     expect(JSON.parse(request.body).model_id).toBe("video-model");

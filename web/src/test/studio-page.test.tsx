@@ -30,7 +30,7 @@ it("waits for the server project list before redirecting a missing project", asy
     await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/canvas"));
 });
 
-it("assembles the released prompt and image-generation studio around the infinite canvas", async () => {
+it("assembles the released image and video generation studio around the infinite canvas", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("黑绿工作室");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: [{ model_id: "demo-image-v1", service_id: "demo-image", display_name: "本地演示图片", operations: ["image.generate"], input_media: ["text"], parameter_schema: { type: "object", properties: { aspect_ratio: { type: "string", enum: ["square", "portrait", "landscape"], default: "landscape" } }, required: ["aspect_ratio"] } }] }), { headers: { "content-type": "application/json" } })));
@@ -43,8 +43,9 @@ it("assembles the released prompt and image-generation studio around the infinit
     expect(screen.getByTestId("generation-inspector")).toBeVisible();
     expect(screen.getByTestId("generation-inspector")).toHaveClass("max-h-[45%]", "lg:max-h-none");
     expect(screen.getByText("提示词节点")).toBeVisible();
-    expect(screen.getByText("图片生成节点")).toBeVisible();
-    expect(screen.queryByText(/视频生成节点|Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "图片生成" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "视频生成" })).toBeVisible();
+    expect(screen.queryByText(/Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("demo-image-v1"));
     expect(screen.getByRole("button", { name: "加入任务队列" })).toBeDisabled();
 });

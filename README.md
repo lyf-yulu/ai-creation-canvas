@@ -37,6 +37,14 @@ bash scripts/run-local.sh
 
 服务只监听 `127.0.0.1:8992`，首次启动会在终端显示一次性管理员与普通用户密码。两类账号首次登录均需修改密码。内置 `demo-image-v1` 是完全离线的固定演示结果，不调用外部模型，也不需要 API Key。
 
+如管理员已在**服务端环境**设置 `ARK_API_KEY`，可用下面的独立入口测试真实 Seedream 图片和 Seedance 视频。它使用另一份本地数据和 `8994` 端口，不会把 Key 发送给浏览器：
+
+```bash
+bash scripts/run-real-media-local.sh
+```
+
+首次创建的本地管理员可在管理界面把已声明的模型派发给普通用户；普通用户只能选择被派发的模型。真实调用可能产生费用，默认声明为 Seedream 文生图与 5 秒 Seedance 文生视频；管理员可通过受控、无密钥的模型声明文件增量调整模型能力。
+
 ## 发布状态
 
-当前公开版本是可本地运行的 Slice 1 验证版，不代表生产部署，也未执行真实模型调用。真实模型、飞书应用、云端域名与管理员 Key 派发将在后续增量版本中接入。运行、回滚和 Portal 补丁流程见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。
+当前公开版本可本地运行，并提供受控的真实模型适配入口；它仍不是生产部署。飞书应用、云端域名与管理员 Key 派发将在后续增量版本中接入。运行、回滚和 Portal 补丁流程见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。

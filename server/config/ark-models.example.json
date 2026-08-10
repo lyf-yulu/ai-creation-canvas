@@ -18,7 +18,7 @@
       }
     },
     {
-      "model_id": "doubao-seedance-1-0-pro-250528",
+      "model_id": "doubao-seedance-2-0-260128",
       "service_id": "ark-video",
       "display_name": "视频生成（Ark）",
       "operations": ["video.generate"],
@@ -32,9 +32,9 @@
           },
           "duration": {
             "type": "integer",
-            "minimum": 3,
-            "maximum": 3,
-            "default": 3
+            "minimum": 5,
+            "maximum": 5,
+            "default": 5
           }
         },
         "additionalProperties": false

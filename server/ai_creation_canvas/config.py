@@ -147,8 +147,8 @@ class Settings:
         if type(self.enable_ark_adapter) is not bool:
             raise ValueError("enable_ark_adapter must be a bool")
         if self.enable_ark_adapter:
-            if self.identity_mode != "local" or self.ark_models_config_path is None or self.ark_models_config_root is None:
-                raise ValueError("Ark adapter requires explicit local configuration")
+            if self.ark_models_config_path is None or self.ark_models_config_root is None:
+                raise ValueError("Ark adapter requires an explicit administrator configuration")
             object.__setattr__(self, "ark_models_config_path", Path(self.ark_models_config_path))
             object.__setattr__(self, "ark_models_config_root", Path(self.ark_models_config_root).resolve(strict=False))
         object.__setattr__(self, "allowed_origins", tuple(dict.fromkeys(self.allowed_origins)))

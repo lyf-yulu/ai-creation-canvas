@@ -27,6 +27,9 @@ function invalid(control: ParameterControl, value: unknown) {
 export function GenerationInspector({ models, operation, value, disabled, message, onChange, onSubmit }: Props) {
     const available = useMemo(() => modelsForOperation(models, operation, "text"), [models, operation]);
     const selected = available.find((model) => model.model_id === value.modelId) || available[0];
+    const isVideo = operation.startsWith("video.");
+    const generationLabel = isVideo ? "视频生成" : "图片生成";
+    const generationKicker = isVideo ? "VIDEO GENERATION" : "IMAGE GENERATION";
     const controls = useMemo(() => parameterControls(selected?.parameter_schema || {}), [selected]);
     const invalidParams = controls.some((control) => invalid(control, value.params[control.name]));
     const safeParams = Object.fromEntries(controls.filter((control) => value.params[control.name] !== undefined).map((control) => [control.name, value.params[control.name]]));
@@ -41,7 +44,7 @@ export function GenerationInspector({ models, operation, value, disabled, messag
     };
 
     return <aside data-testid="generation-inspector" data-canvas-no-zoom className="max-h-[45%] shrink-0 overflow-auto border-t border-[#1d3d28] bg-[#08100b] p-4 text-[#dceee1] lg:h-full lg:max-h-none lg:border-l lg:border-t-0 lg:p-5">
-        <p className="text-xs tracking-[0.18em] text-[#58ed87]">IMAGE GENERATION</p><h2 className="mt-2 text-lg font-semibold">图片生成</h2>
+        <p className="text-xs tracking-[0.18em] text-[#58ed87]">{generationKicker}</p><h2 className="mt-2 text-lg font-semibold">{generationLabel}</h2>
         <label className="mt-5 block text-sm" htmlFor="studio-prompt">提示词</label><textarea id="studio-prompt" className="mt-2 min-h-28 w-full resize-y rounded-lg border border-[#285038] bg-[#050806] p-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" value={value.prompt} onChange={(event) => onChange({ ...value, prompt: event.target.value })} />
         <label className="mt-4 block text-sm">模型<select aria-label="模型" className="mt-2 block w-full rounded-lg border border-[#285038] bg-[#050806] p-2.5" value={selected?.model_id || ""} onChange={(event) => chooseModel(event.target.value)}>{available.map((model) => <option key={model.model_id} value={model.model_id}>{model.display_name}</option>)}</select></label>
         {controls.map((control) => <label key={control.name} className="mt-4 block text-sm">{control.name}{control.type === "enum" ? <select aria-label={control.name} className="mt-2 block w-full rounded-lg border border-[#285038] bg-[#050806] p-2.5" value={String((control.enum || []).findIndex((item) => Object.is(item, value.params[control.name])))} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: control.enum?.[Number(event.target.value)] } })}>{control.enum?.map((item, index) => <option key={index} value={index}>{String(item)}</option>)}</select> : control.type === "boolean" ? <input aria-label={control.name} type="checkbox" className="ml-3 accent-[#58ed87]" checked={value.params[control.name] === true} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: event.target.checked } })} /> : <input aria-label={control.name} className="mt-2 block w-full rounded-lg border border-[#285038] bg-[#050806] p-2.5" value={value.params[control.name] === undefined ? "" : String(value.params[control.name])} onChange={(event) => onChange({ ...value, params: { ...value.params, [control.name]: control.type === "number" || control.type === "integer" ? (event.target.value === "" ? undefined : Number(event.target.value)) : event.target.value } })} />}</label>)}
