@@ -17,7 +17,7 @@ class Portrait:
     async def list_models(self, context): return (ModelSpec("portrait-video", self.service_id, "Portrait", ("video.image_to_video",), ("text", "image"), {}, "portrait"),)
     async def list_models_with_cookie(self, context, cookie): return await self.list_models(context)
     async def upload(self, context, asset): raise AssertionError
-    async def upload_with_cookie(self, context, asset, content, filename, cookie): return AssetRef("upstream-1", "portrait", "processing", asset.mime_type)
+    async def upload_with_cookie(self, context, asset, source, size, cookie): return AssetRef("upstream-1", "portrait", "processing", asset.mime_type)
     async def get(self, context, asset): raise AssertionError
     async def get_with_cookie(self, context, asset, cookie): return AssetRef(asset, "portrait", "active", "image/png")
     async def submit(self, context, request): raise AssertionError

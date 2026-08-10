@@ -107,7 +107,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             client = PortalClient(settings.portal_base_url, allowed_mounts=tuple(item.mount for item in declarations), verify=settings.portal_ca_file or True, allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=settings.portal_allow_loopback_http, max_concurrency=settings.portal_max_concurrency, transport=portal_transport)
             for declaration in declarations:
                 if declaration.capability == "portrait_asset":
-                    adapter = PortalPortraitAdapter(PortraitDeclaration(declaration.service_id, declaration.mount), client)
+                    adapter = PortalPortraitAdapter(PortraitDeclaration(declaration.service_id, declaration.mount, routes=declaration.routes), client)
                     registry.register_asset(adapter); registry.register_generation(adapter)
                 else:
                     registry.register_generation(PortalJobsAdapter(declaration, client))

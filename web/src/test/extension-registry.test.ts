@@ -98,7 +98,6 @@ it("runs portrait video as upload, active asset, then generic image-to-video sub
     const asset = await portraitVideoWorkflow.run({
         file: new File(["image"], "portrait.png", { type: "image/png" }),
         modelId: "video-model-a",
-        serviceId: "video-service-a",
         prompt: "walk forward",
         params: { seconds: 5 },
         idempotencyKey: "portrait-1",
@@ -113,7 +112,7 @@ it("runs portrait video as upload, active asset, then generic image-to-video sub
         submitJob: async (request) => {
             calls.push(`submit:${request.operation}:${request.model_id}`);
             expect(request.asset_ids).toEqual(["asset-1"]);
-            expect(request.service_id).toBe("video-service-a");
+            expect(request).not.toHaveProperty("service_id");
             return { jobId: "job-1" };
         },
         sleep: async () => undefined,

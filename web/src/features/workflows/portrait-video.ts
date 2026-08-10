@@ -1,5 +1,5 @@
 import type { AssetRef } from "@/api/contracts";
-import type { PortraitVideoInput, PortraitVideoOutput, WorkflowDefinition } from "./types";
+import { PortraitWorkflowError, type PortraitVideoInput, type PortraitVideoOutput, type WorkflowDefinition } from "./types";
 
 const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
@@ -32,7 +32,11 @@ export const portraitVideoWorkflow: WorkflowDefinition<PortraitVideoInput, Portr
             ? await input.fetchAsset(input.assetId)
             : await input.uploadAsset(input.file!, "portrait");
         const asset = await waitForActiveAsset(initial, input);
-        const job = await input.submitJob({ operation: "video.image_to_video", model_id: input.modelId, ...(input.serviceId ? { service_id: input.serviceId } : {}), prompt: input.prompt, params: input.params, asset_ids: [asset.id], idempotency_key: input.idempotencyKey });
-        return { jobId: job.jobId, assetId: asset.id };
+        try {
+            const job = await input.submitJob({ operation: "video.image_to_video", model_id: input.modelId, prompt: input.prompt, params: input.params, asset_ids: [asset.id], idempotency_key: input.idempotencyKey });
+            return { jobId: job.jobId, assetId: asset.id };
+        } catch (error) {
+            throw new PortraitWorkflowError(asset.id, error);
+        }
     },
 };

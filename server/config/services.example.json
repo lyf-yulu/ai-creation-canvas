@@ -16,7 +16,9 @@
       "service_id": "portal-portrait",
       "mount": "/portrait-assets",
       "service_type": "portrait_asset",
-      "operations": ["video.image_to_video"]
+      "operations": ["video.image_to_video"],
+      "contract_id": "portal-virtual-v1",
+      "routes": {"catalog": "api/config", "groups": "api/virtual/groups", "assets": "api/virtual/assets", "jobs": "api/virtual/jobs"}
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { portraitVideoWorkflow } from "@/features/workflows/portrait-video";
+import { PortraitWorkflowError } from "@/features/workflows/types";
 
 const file = new File(["image"], "portrait.png", { type: "image/png" });
 
@@ -20,4 +21,12 @@ it("reuses an existing active local asset without uploading", async () => {
   const uploadAsset = vi.fn(); const fetchAsset = vi.fn(async () => ({ id: "asset-1", kind: "portrait" as const, status: "active" as const, mime_type: "image/png" }));
   await portraitVideoWorkflow.run({ assetId: "asset-1", modelId: "portrait-video", prompt: "wave", params: {}, idempotencyKey: "key", uploadAsset, fetchAsset, submitJob: async () => ({ jobId: "job-1" }) });
   expect(uploadAsset).not.toHaveBeenCalled();
+});
+
+it("retains the local asset ID when video submission fails", async () => {
+  const error = await portraitVideoWorkflow.run({ file, modelId: "portrait-video", prompt: "wave", params: {}, idempotencyKey: "key", uploadAsset: async () => ({ id: "asset-1", kind: "portrait", status: "active", mime_type: "image/png" }), fetchAsset: async () => { throw new Error("unused"); }, submitJob: async () => { throw new Error("raw upstream"); } }).catch((value) => value);
+  expect(error).toBeInstanceOf(PortraitWorkflowError);
+  expect(error.assetId).toBe("asset-1");
+  expect(error.phase).toBe("video-submit");
+  expect(error.message).not.toContain("raw upstream");
 });

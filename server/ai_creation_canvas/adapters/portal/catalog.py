@@ -53,6 +53,8 @@ class ServiceDeclaration:
     mount: str
     capability: str
     operations: tuple[ModelOperation | str, ...]
+    contract_id: str | None = None
+    routes: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.service_id, str) or not self.service_id.strip():
@@ -65,6 +67,11 @@ class ServiceDeclaration:
         if not operations:
             raise ValueError("operations must not be empty")
         object.__setattr__(self, "operations", operations)
+        if self.capability == "portrait_asset":
+            if self.contract_id != "portal-virtual-v1" or not isinstance(self.routes, Mapping) or set(self.routes) != {"catalog", "groups", "assets", "jobs"}:
+                raise ValueError("portrait declaration requires the supported contract")
+        elif self.contract_id is not None or self.routes is not None:
+            raise ValueError("non-portrait declarations cannot define a contract")
 
 
 @runtime_checkable

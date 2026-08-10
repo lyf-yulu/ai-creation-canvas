@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, AsyncIterator
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
@@ -331,6 +331,8 @@ class PortalClient:
         json: Mapping[str, Any] | None = None,
         files: Mapping[str, tuple[str, bytes, str]] | None = None,
         data: Mapping[str, str] | None = None,
+        content: AsyncIterator[bytes] | None = None,
+        extra_headers: Mapping[str, str] | None = None,
         cookie_header: str | None = None,
     ) -> httpx.Response:
         if not isinstance(context, RequestContext):
@@ -339,7 +341,9 @@ class PortalClient:
         if verb not in self._allowed_methods:
             raise ValueError("method is not allowed")
         target = self._target(mount, path)
-        headers = self._cookie_header(cookie_header)
+        request_headers = self._cookie_header(cookie_header)
+        if extra_headers is not None:
+            request_headers.update(extra_headers)
         release = await self._semaphore.acquire()
         try:
             async with httpx.AsyncClient(
@@ -347,7 +351,7 @@ class PortalClient:
                 transport=self._transport, headers={}, trust_env=False,
                 limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
             ) as client:
-                request = client.build_request(verb, target, params=params, json=json, files=files, data=data, headers=headers)
+                request = client.build_request(verb, target, params=params, json=json, files=files, data=data, content=content, headers=request_headers)
                 response = await client.send(request, stream=True)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():

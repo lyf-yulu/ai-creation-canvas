@@ -6,12 +6,21 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = {
     run: (input: Input) => Promise<Output>;
 };
 
-export type PortraitVideoJobRequest = JobRequest & { service_id?: string };
+export type PortraitVideoJobRequest = JobRequest;
+export class PortraitWorkflowError extends Error {
+    readonly assetId: string;
+    readonly phase = "video-submit" as const;
+    constructor(assetId: string, cause: unknown) {
+        super("The portrait video could not be submitted.");
+        this.name = "PortraitWorkflowError";
+        this.assetId = assetId;
+        this.cause = cause;
+    }
+}
 export type PortraitVideoInput = {
     file?: File;
     assetId?: string;
     modelId: string;
-    serviceId?: string;
     prompt: string;
     params: Record<string, unknown>;
     idempotencyKey: string;

@@ -79,7 +79,7 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
                 adapter = request.app.state.adapter_registry.asset("portal-portrait")
                 upload = getattr(adapter, "upload_with_cookie", None)
                 if not callable(upload): raise ValueError
-                upstream = await upload(context, AssetRef(asset_id, "portrait", "processing", mime), target.read_bytes(), file.filename or "upload", request.headers["cookie"])
+                upstream = await upload(context, AssetRef(asset_id, "portrait", "processing", mime), target, size, request.headers["cookie"])
             except AdapterNotFoundError:
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
             except PortalUpstreamError:

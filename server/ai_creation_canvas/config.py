@@ -32,9 +32,12 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
         raise ValueError("services configuration is invalid")
     declarations = []
     for item in payload["services"]:
-        if not isinstance(item, dict) or _DANGEROUS_FIELDS & set(item) or set(item) != {"service_id", "mount", "service_type", "operations"}:
+        if not isinstance(item, dict) or _DANGEROUS_FIELDS & set(item):
             raise ValueError("services configuration is invalid")
-        service_id, mount, service_type, operations = item.values()
+        service_id, mount, service_type, operations = (item.get("service_id"), item.get("mount"), item.get("service_type"), item.get("operations"))
+        portrait = service_type == "portrait_asset"
+        if set(item) != ({"service_id", "mount", "service_type", "operations", "contract_id", "routes"} if portrait else {"service_id", "mount", "service_type", "operations"}):
+            raise ValueError("services configuration is invalid")
         if not isinstance(service_id, str) or not service_id.isascii() or not service_id.replace("-", "").replace("_", "").isalnum() or len(service_id) > 64:
             raise ValueError("services configuration is invalid")
         if service_type not in {"image", "video", "portrait_asset"} or not isinstance(operations, list):
@@ -43,7 +46,15 @@ def load_service_declarations(path: Path | str, expected_root: Path | str) -> tu
             raise ValueError("services configuration is invalid")
         try:
             parsed = tuple(ModelOperation(value) for value in operations)
-            declaration = ServiceDeclaration(service_id, mount, service_type, parsed)
+            contract_id = item.get("contract_id")
+            routes = item.get("routes")
+            if portrait:
+                if contract_id != "portal-virtual-v1" or not isinstance(routes, dict) or set(routes) != {"catalog", "groups", "assets", "jobs"}:
+                    raise ValueError
+                for route in routes.values():
+                    if not isinstance(route, str) or not route.startswith("api/") or route.startswith("//") or "%" in route or any(char in route for char in "?#\\") or any(ord(char) < 32 for char in route) or any(part in {"", ".", ".."} for part in route.split("/")):
+                        raise ValueError
+            declaration = ServiceDeclaration(service_id, mount, service_type, parsed, contract_id, routes)
         except (TypeError, ValueError) as error:
             raise ValueError("services configuration is invalid") from error
         declarations.append(declaration)
