@@ -364,6 +364,24 @@ class CanvasStore:
             rows = db.execute("SELECT model_id FROM canvas_user_models WHERE user_id=? ORDER BY model_id", (user_id,)).fetchall()
         return tuple(str(row["model_id"]) for row in rows)
 
+    def list_assets_for_owner(self, user_id: str, limit: int = 100) -> tuple[dict[str, object], ...]:
+        safe_limit = min(max(limit, 1), 100)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT asset_id,kind,mime_type,status,size_bytes,created_at,updated_at FROM canvas_assets WHERE user_id=? ORDER BY created_at DESC,asset_id DESC LIMIT ?",
+                (user_id, safe_limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def list_jobs_for_owner(self, user_id: str, limit: int = 100) -> tuple[dict[str, object], ...]:
+        safe_limit = min(max(limit, 1), 100)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT id,service_id,operation,status,error_code,created_at,updated_at FROM canvas_jobs WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT ?",
+                (user_id, safe_limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def asset_for_owner(self, asset_id: str, user_id: str) -> tuple[dict[str, object] | None, bool]:
         with self._connection() as db:
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()

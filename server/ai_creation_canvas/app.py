@@ -24,6 +24,7 @@ from ai_creation_canvas.api.assets import router as assets_router
 from ai_creation_canvas.api.jobs import router as jobs_router
 from ai_creation_canvas.api.results import router as results_router
 from ai_creation_canvas.api.auth import router as auth_router
+from ai_creation_canvas.api.activity import router as activity_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.config import Settings, load_service_declarations
@@ -187,6 +188,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
     app.include_router(auth_router)
+    app.include_router(activity_router)
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(assets_router)
