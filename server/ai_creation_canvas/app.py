@@ -23,6 +23,9 @@ from ai_creation_canvas.api.session import router as session_router
 from ai_creation_canvas.api.assets import router as assets_router
 from ai_creation_canvas.api.jobs import router as jobs_router
 from ai_creation_canvas.api.results import router as results_router
+from ai_creation_canvas.api.auth import router as auth_router
+from ai_creation_canvas.api._common import problem
+from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
@@ -115,6 +118,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.model_catalog = model_catalog
     app.state.adapter_registry = registry
     app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
+    app.state.settings = settings
+    app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
     build_dir = build_dir.resolve(strict=False)
 
@@ -123,11 +128,26 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         request.state.request_id = _request_id(request.headers.get("x-request-id"))
         try:
             if _is_api_v1_path(request.url.path):
-                request.state.portal_user = verify_portal_identity(
-                    request.headers,
-                    settings.portal_internal_token,
-                    max_age_seconds=settings.signature_ttl_seconds,
-                )
+                login_path = request.url.path == "/api/v1/auth/login" and request.method == "POST"
+                if settings.identity_mode == "local":
+                    token = request.cookies.get(settings.session_cookie_name, "")
+                    request.state.local_session_token = token
+                    user = app.state.local_auth.resolve(token) if token else None
+                    if user is not None:
+                        request.state.portal_user = user
+                    elif not login_path:
+                        raise AuthRequired(request.state.request_id)
+                    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not login_path:
+                        origin = request.headers.get("origin", "")
+                        csrf = request.headers.get("x-csrf-token", "")
+                        if origin not in settings.allowed_origins or not token or not app.state.local_auth.verify_csrf(token, csrf):
+                            raise problem(request, "FORBIDDEN", "The request could not be completed.", status=403, phase="authentication")
+                else:
+                    request.state.portal_user = verify_portal_identity(
+                        request.headers,
+                        settings.portal_internal_token,
+                        max_age_seconds=settings.signature_ttl_seconds,
+                    )
             response = await call_next(request)
         except DomainError as error:
             response = _error_response(error, request.state.request_id)
@@ -166,6 +186,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             return JSONResponse(status_code=error.status_code, content=ApiError(code, "The request could not be completed.", False, request_id, "request").to_dict())
         return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
+    app.include_router(auth_router)
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(assets_router)

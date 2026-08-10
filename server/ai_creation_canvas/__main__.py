@@ -4,11 +4,34 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+from typing import Callable
 
 import uvicorn
 
 from ai_creation_canvas.app import create_app
+from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.config import Settings
+from ai_creation_canvas.storage.sqlite import CanvasStore
+
+
+def initialize_local_accounts(data_dir: Path, *, output: Callable[[str], None] = print) -> bool:
+    store = CanvasStore(data_dir)
+    result = LocalAuthService(store, session_ttl_seconds=12 * 60 * 60).bootstrap_accounts()
+    if not result.created:
+        output("Local accounts are already initialized; no passwords were displayed.")
+        return False
+    output("Local accounts created. One-time credentials:")
+    output(f"{result.admin_username}: {result.admin_password}")
+    output(f"{result.user_username}: {result.user_password}")
+    return True
+
+
+def _run_init_local(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Initialize standalone local accounts.")
+    parser.add_argument("--data-dir", type=Path, required=True)
+    args = parser.parse_args(argv)
+    initialize_local_accounts(args.data_dir)
 
 
 def _arguments() -> argparse.Namespace:
@@ -26,6 +49,9 @@ def _arguments() -> argparse.Namespace:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "init-local":
+        _run_init_local(sys.argv[2:])
+        return
     args = _arguments()
     settings = Settings(
         environment=args.environment,

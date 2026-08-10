@@ -158,6 +158,24 @@ class CanvasStore:
                 size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 service_id TEXT, upstream_asset_id TEXT
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_users (
+                user_id TEXT PRIMARY KEY, username_normalized TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin','user')),
+                enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                must_change_password INTEGER NOT NULL CHECK(must_change_password IN (0,1)),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_sessions (
+                token_hash TEXT PRIMARY KEY, csrf_token TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
+                expires_at REAL NOT NULL, created_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_user_models (
+                user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
+                model_id TEXT NOT NULL, created_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, model_id)
+            )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             )""")
@@ -261,6 +279,90 @@ class CanvasStore:
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         assert row is not None
         return dict(row)
+
+    def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool) -> dict[str, object]:
+        now = _now()
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "INSERT INTO canvas_users (user_id,username_normalized,display_name,password_hash,role,enabled,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?,?)",
+                (user_id, username_normalized, display_name, password_hash, role, int(must_change_password), now, now),
+            )
+            row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def bootstrap_users(self, *, admin_id: str, admin_password_hash: str, user_id: str, user_password_hash: str, initial_user_model_ids: tuple[str, ...]) -> bool:
+        if len(initial_user_model_ids) > 128 or any(not isinstance(item, str) or not item or len(item) > 128 for item in initial_user_model_ids):
+            raise ValueError("initial model assignments are invalid")
+        now = _now()
+        with self._connection(immediate=True) as db:
+            if db.execute("SELECT 1 FROM canvas_users LIMIT 1").fetchone() is not None:
+                return False
+            db.execute("INSERT INTO canvas_users VALUES (?,?,?,?,?,1,1,?,?)", (admin_id, "canvas-admin", "管理员", admin_password_hash, "admin", now, now))
+            db.execute("INSERT INTO canvas_users VALUES (?,?,?,?,?,1,1,?,?)", (user_id, "canvas-user", "普通用户", user_password_hash, "user", now, now))
+            db.executemany(
+                "INSERT INTO canvas_user_models (user_id,model_id,created_at) VALUES (?,?,?)",
+                ((user_id, model_id, now) for model_id in sorted(set(initial_user_model_ids))),
+            )
+        return True
+
+    def user_by_username(self, username_normalized: str) -> dict[str, object] | None:
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM canvas_users WHERE username_normalized=?", (username_normalized,)).fetchone()
+        return self._row(row)
+
+    def user_by_id(self, user_id: str) -> dict[str, object] | None:
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        return self._row(row)
+
+    def set_user_enabled(self, user_id: str, enabled: bool) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            db.execute("UPDATE canvas_users SET enabled=?,updated_at=? WHERE user_id=?", (int(enabled), _now(), user_id))
+            if not enabled:
+                db.execute("DELETE FROM canvas_sessions WHERE user_id=?", (user_id,))
+            row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return dict(row)
+
+    def update_user_password(self, user_id: str, password_hash: str) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE canvas_users SET password_hash=?,must_change_password=0,updated_at=? WHERE user_id=?",
+                (password_hash, _now(), user_id),
+            )
+            db.execute("DELETE FROM canvas_sessions WHERE user_id=?", (user_id,))
+            row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return dict(row)
+
+    def create_session(self, *, token_hash: str, csrf_token: str, user_id: str, expires_at: float) -> None:
+        with self._connection(immediate=True) as db:
+            db.execute("DELETE FROM canvas_sessions WHERE expires_at<=?", (time.time(),))
+            db.execute(
+                "INSERT INTO canvas_sessions (token_hash,csrf_token,user_id,expires_at,created_at) VALUES (?,?,?,?,?)",
+                (token_hash, csrf_token, user_id, expires_at, _now()),
+            )
+
+    def session_user(self, token_hash: str, now: float) -> dict[str, object] | None:
+        with self._connection(immediate=True) as db:
+            db.execute("DELETE FROM canvas_sessions WHERE expires_at<=?", (now,))
+            row = db.execute(
+                "SELECT u.*,s.csrf_token,s.expires_at FROM canvas_sessions s JOIN canvas_users u ON u.user_id=s.user_id WHERE s.token_hash=? AND u.enabled=1 AND s.expires_at>?",
+                (token_hash, now),
+            ).fetchone()
+        return self._row(row)
+
+    def delete_session(self, token_hash: str) -> None:
+        with self._connection(immediate=True) as db:
+            db.execute("DELETE FROM canvas_sessions WHERE token_hash=?", (token_hash,))
+
+    def assigned_models(self, user_id: str) -> tuple[str, ...]:
+        with self._connection() as db:
+            rows = db.execute("SELECT model_id FROM canvas_user_models WHERE user_id=? ORDER BY model_id", (user_id,)).fetchall()
+        return tuple(str(row["model_id"]) for row in rows)
 
     def asset_for_owner(self, asset_id: str, user_id: str) -> tuple[dict[str, object] | None, bool]:
         with self._connection() as db:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
+from urllib.parse import urlsplit
 
 from ai_creation_canvas.adapters.portal.catalog import ServiceDeclaration
 from ai_creation_canvas.domain.models import ModelOperation
@@ -94,6 +96,11 @@ class Settings:
     portal_allow_loopback_http: bool = False
     portal_ca_file: Path | str | None = None
     portal_max_concurrency: int = 8
+    identity_mode: str = "signed_portal"
+    session_ttl_seconds: int = 12 * 60 * 60
+    session_cookie_name: str = "aicc_session"
+    allowed_origins: tuple[str, ...] = ()
+    enable_demo_adapter: bool = False
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -118,6 +125,23 @@ class Settings:
             raise ValueError("portal_allow_loopback_http must be a bool")
         if type(self.portal_max_concurrency) is not int or self.portal_max_concurrency < 1:
             raise ValueError("portal_max_concurrency must be a positive integer")
+        if self.identity_mode not in {"signed_portal", "local"}:
+            raise ValueError("identity_mode must be signed_portal or local")
+        if type(self.session_ttl_seconds) is not int or self.session_ttl_seconds < 1:
+            raise ValueError("session_ttl_seconds must be positive")
+        if not isinstance(self.session_cookie_name, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", self.session_cookie_name):
+            raise ValueError("session_cookie_name is invalid")
+        if not isinstance(self.allowed_origins, tuple) or len(self.allowed_origins) > 16:
+            raise ValueError("allowed_origins is invalid")
+        for origin in self.allowed_origins:
+            parsed = urlsplit(origin) if isinstance(origin, str) else None
+            if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+                raise ValueError("allowed_origins is invalid")
+        if self.identity_mode == "local" and not self.allowed_origins:
+            raise ValueError("local identity requires allowed_origins")
+        if type(self.enable_demo_adapter) is not bool:
+            raise ValueError("enable_demo_adapter must be a bool")
+        object.__setattr__(self, "allowed_origins", tuple(dict.fromkeys(self.allowed_origins)))
         if self.services_config_path is not None:
             if not self.portal_base_url or self.services_config_root is None:
                 raise ValueError("services configuration requires a Portal base URL and trusted root")
