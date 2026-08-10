@@ -92,7 +92,9 @@
 
 ## 设计与实施门禁
 
-- 当前书面设计位于 `docs/superpowers/specs/2026-08-06-ai-creation-canvas-design.md`。
-- 用户书面批准设计文档前，不编写实施计划或功能代码。
-- 设计获批后先编写可执行的实施计划，再按测试驱动方式实现。
+- 已完成的验证版设计位于 `docs/superpowers/specs/2026-08-06-ai-creation-canvas-design.md`。
+- 当前已批准的产品化设计位于 `docs/superpowers/specs/2026-08-10-ai-creation-canvas-product-design.md`。
+- Slice 1 实施计划位于 `docs/superpowers/plans/2026-08-10-slice-1-local-product.md`。
+- 产品化设计已经用户书面批准；实现必须按独立可运行、可演示、可回滚的 RAE 垂直切片推进。
+- 每个切片先编写可执行计划，再按测试驱动方式实现；不得因为产品化范围扩大而一次实现全部 Portal、ComfyUI 或 Skill 功能。
 - 设计细节如需改变，先更新设计文档并取得用户确认。
