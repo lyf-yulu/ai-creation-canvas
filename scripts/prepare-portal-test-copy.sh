@@ -89,10 +89,18 @@ for file in app.py app_spec.py pyproject.toml requirements.txt requirements.lock
 done
 for root in portal static config; do
   [[ -e $canonical_source/$root ]] || continue
+  if find -P "$canonical_source/$root" -type l -print -quit | grep -q .; then
+    echo "source tree contains a symlink: $root" >&2
+    exit 65
+  fi
   while IFS= read -r -d '' file; do
     relative=${file#"$canonical_source/"}
+    filename=${relative##*/}
     case "/$relative" in
       */.git/*|*/.env*|*/secrets/*|*/secret/*|*/keys/*|*/certificates/*|*/certs/*|*/state/*|*/outputs/*|*/archives/*|*/uploads/*|*/logs/*|*/cache/*|*/caches/*|*/database/*|*/databases/*|*/request-records/*|*/[Ss]eedance*|*/[Nn]ano-[Bb]anana*|*/[Nn]ano[Bb]anana*|*/[Dd]reamina*|*/[Pp]ortrait*) continue ;;
+    esac
+    case "$filename" in
+      .env*|*.key|*.pem|*.crt|*.cer|*.p12|*.pfx|*[Ss]ecret*|*[Tt]oken*|*[Pp]assword*|*[Cc]redential*|*[Cc]ertificate*|*[Rr]equest*[Rr]ecord*|*.db|*.sqlite|*.sqlite3) continue ;;
     esac
     case "$relative" in
       portal/*.py|static/*|config/*.example.json|config/*.example.toml|config/*.example.yaml|config/*.example.yml) copy_file "$relative" ;;

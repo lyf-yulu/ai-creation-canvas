@@ -13,7 +13,7 @@
 已运行：
 
     PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_portal_contract.py
-    6 passed
+    7 passed
 
     bash scripts/security-scan.sh
     通过
@@ -21,9 +21,16 @@
     git diff --check
     通过
 
-覆盖的行为包括：伪造身份头被忽略、v2 签名篡改被拒绝、两用户结果隔离、一次
-底层生成只形成一次用量事件、固定 Canvas mount、复制排除生成子应用/状态/密钥
-形态文件、符号链接拒绝、已有目标拒绝以及补丁不匹配时的失败清理。
+本轮 RED：补丁只含辅助函数、静态敏感文件会被复制，且测试没有执行补丁后的
+Portal 路由。GREEN：补丁现已向合成固定 Portal 基线注册实际
+/ai-canvas/ 和嵌套路由，固定转发到 127.0.0.1:8992，从已认证会话重签
+身份，并返回真实 Canvas 响应。
+
+覆盖的行为包括：伪造全部身份头被替换、v2 签名验证的篡改/过期拒绝、两用户
+经真实 Canvas 应用的任务隔离、一次生成只产生一次底层适配器调用、mount 前缀
+重写、方法/正文/Cookie 转发、SPA 回退、编码路径和开放代理拒绝、复制排除生成
+子应用/状态/任意深度敏感文件、任意符号链接拒绝、已有目标保留以及补丁不匹配
+时的失败清理。
 
 ## 明确未做
 
