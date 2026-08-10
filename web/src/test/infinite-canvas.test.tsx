@@ -51,6 +51,21 @@ it("pans on blank left drag and does not pan from a node", () => {
     expect(screen.getByTestId("viewport")).toHaveTextContent("60,60,1");
 });
 
+it("keeps a pan owned by its initiating pointer", () => {
+    render(<CanvasHarness />);
+    const canvas = screen.getByTestId("infinite-canvas");
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 120, clientY: 130, pointerId: 2 });
+    fireEvent.pointerUp(window, { pointerId: 2 });
+    fireEvent.pointerCancel(window, { pointerId: 2 });
+    expect(screen.getByTestId("viewport")).toHaveTextContent("0,0,1");
+
+    fireEvent.pointerMove(window, { clientX: 30, clientY: 50, pointerId: 1 });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+    expect(screen.getByTestId("viewport")).toHaveTextContent("10,20,1");
+});
+
 it("does not replay an already applied pan on pointer up", async () => {
     const containerRef = React.createRef<HTMLDivElement>();
     const onViewportChange = vi.fn();

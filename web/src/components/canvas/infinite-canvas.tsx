@@ -27,6 +27,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         initialX: 0,
         initialY: 0,
         hasMoved: false,
+        pointerId: null as number | null,
     });
     const scaleRef = useRef(viewport.k);
     const frameRef = useRef<number | null>(null);
@@ -76,6 +77,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
     };
 
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (panState.current.isPanning) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom]")) return;
         if (target?.closest("[data-connection-create-menu]")) return;
@@ -98,6 +100,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 initialX: viewport.x,
                 initialY: viewport.y,
                 hasMoved: false,
+                pointerId: event.pointerId,
             };
             document.body.style.cursor = "grabbing";
             return;
@@ -116,7 +119,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
 
     useEffect(() => {
         const handlePointerMove = (event: PointerEvent) => {
-            if (!panState.current.isPanning) return;
+            if (!panState.current.isPanning || event.pointerId !== panState.current.pointerId) return;
 
             const dx = event.clientX - panState.current.startX;
             const dy = event.clientY - panState.current.startY;
@@ -138,8 +141,8 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             });
         };
 
-        const finishPan = (deselect: boolean) => {
-            if (!panState.current.isPanning) return;
+        const finishPan = (deselect: boolean, pointerId?: number) => {
+            if (!panState.current.isPanning || (pointerId !== undefined && pointerId !== panState.current.pointerId)) return;
 
             if (frameRef.current) {
                 cancelAnimationFrame(frameRef.current);
@@ -153,11 +156,12 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 onCanvasDeselect?.();
             }
             panState.current.isPanning = false;
+            panState.current.pointerId = null;
             document.body.style.cursor = "";
         };
 
-        const handlePointerUp = () => finishPan(true);
-        const handlePointerCancel = () => finishPan(false);
+        const handlePointerUp = (event: PointerEvent) => finishPan(true, event.pointerId);
+        const handlePointerCancel = (event: PointerEvent) => finishPan(false, event.pointerId);
         const handleWindowBlur = () => finishPan(false);
 
         window.addEventListener("pointermove", handlePointerMove);
