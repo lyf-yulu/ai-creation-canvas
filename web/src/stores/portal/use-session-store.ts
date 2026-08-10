@@ -5,6 +5,7 @@ import { ApiRequestError, setCsrfToken } from "@/api/client";
 import { fetchSession } from "@/api/session";
 import type { PortalSession } from "@/api/contracts";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
+import { captureAppStorageLease } from "@/lib/localforage-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { clearCanvasInMemory } from "@/stores/canvas/use-canvas-store";
 import { clearGenerationPreferences } from "@/stores/use-config-store";
@@ -108,5 +109,10 @@ async function activateSession(version: number, session: PortalSession, environm
     if (version !== sessionVersion) return;
     const { useCanvasStore } = await import("@/stores/canvas/use-canvas-store");
     await Promise.all([useCanvasStore.persist.rehydrate(), useAssetStore.persist.rehydrate()]);
+    const projectLease = captureAppStorageLease();
+    if (projectLease) {
+        const { projectSync } = await import("@/features/projects/project-sync");
+        await projectSync.activate(projectLease);
+    }
     if (version === sessionVersion) set({ session, environment, errorCode: null });
 }

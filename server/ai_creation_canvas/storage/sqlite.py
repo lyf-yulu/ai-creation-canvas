@@ -1,4 +1,4 @@
-"""Small SQLite store.  It stores metadata only; user content remains in files."""
+"""Small SQLite store for metadata and bounded project documents; media remains in files."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -175,6 +175,12 @@ class CanvasStore:
                 user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
                 model_id TEXT NOT NULL, created_at TEXT NOT NULL,
                 PRIMARY KEY(user_id, model_id)
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_projects (
+                project_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                title TEXT NOT NULL, document_json TEXT NOT NULL,
+                version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY(user_id, project_id)
             )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -402,6 +408,59 @@ class CanvasStore:
                 (user_id, safe_limit),
             ).fetchall()
         return tuple(dict(row) for row in rows)
+
+    def create_project(self, *, user_id: str, project_id: str, title: str, document_json: str) -> tuple[dict[str, object], bool, bool]:
+        """Return row, created, conflict. Replaying an identical create is safe."""
+        now = _now()
+        with self._connection(immediate=True) as db:
+            existing = db.execute("SELECT * FROM canvas_projects WHERE user_id=? AND project_id=?", (user_id, project_id)).fetchone()
+            if existing is not None:
+                row = dict(existing)
+                return row, False, str(row["document_json"]) != document_json
+            db.execute(
+                "INSERT INTO canvas_projects(project_id,user_id,title,document_json,version,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
+                (project_id, user_id, title, document_json, now, now),
+            )
+            row = db.execute("SELECT * FROM canvas_projects WHERE user_id=? AND project_id=?", (user_id, project_id)).fetchone()
+        assert row is not None
+        return dict(row), True, False
+
+    def list_projects_for_owner(self, user_id: str, limit: int = 1000) -> tuple[dict[str, object], ...]:
+        safe_limit = min(max(limit, 1), 1000)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT project_id,title,document_json,version,created_at,updated_at FROM canvas_projects WHERE user_id=? ORDER BY updated_at DESC,project_id DESC LIMIT ?",
+                (user_id, safe_limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def project_for_owner(self, project_id: str, user_id: str) -> dict[str, object] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT project_id,title,document_json,version,created_at,updated_at FROM canvas_projects WHERE user_id=? AND project_id=?",
+                (user_id, project_id),
+            ).fetchone()
+        return self._row(row)
+
+    def update_project(self, *, user_id: str, project_id: str, title: str, document_json: str, expected_version: int) -> dict[str, object] | None:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_projects SET title=?,document_json=?,version=version+1,updated_at=? WHERE user_id=? AND project_id=? AND version=?",
+                (title, document_json, _now(), user_id, project_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = db.execute(
+                "SELECT project_id,title,document_json,version,created_at,updated_at FROM canvas_projects WHERE user_id=? AND project_id=?",
+                (user_id, project_id),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def delete_project(self, *, user_id: str, project_id: str) -> bool:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute("DELETE FROM canvas_projects WHERE user_id=? AND project_id=?", (user_id, project_id))
+        return cursor.rowcount == 1
 
     def asset_for_owner(self, asset_id: str, user_id: str) -> tuple[dict[str, object] | None, bool]:
         with self._connection() as db:

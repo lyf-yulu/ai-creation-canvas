@@ -21,6 +21,7 @@ export default function CanvasPage() {
     const autoOpenRef = useRef(false);
     const hydrated = useCanvasStore((state) => state.hydrated);
     const projects = useCanvasStore((state) => state.projects);
+    const syncNotice = useCanvasStore((state) => state.syncNotice);
     const createProject = useCanvasStore((state) => state.createProject);
     const importProject = useCanvasStore((state) => state.importProject);
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
@@ -99,6 +100,8 @@ export default function CanvasPage() {
                         </Button>
                     </div>
                 </header>
+
+                {syncNotice ? <p role="status" className="rounded-lg border border-[#70502b] bg-[#241a0c] px-4 py-3 text-sm text-[#ffbd73]">{syncNotice}</p> : null}
 
                 {!hydrated ? (
                     <section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">正在加载画布...</section>

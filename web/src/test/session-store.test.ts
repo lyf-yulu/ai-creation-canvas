@@ -6,6 +6,7 @@ const session = { user_id: "user-b", username: "B", role: "user" as const };
 vi.mock("@/storage/scope", () => ({
     clearStorageScope: vi.fn(() => events.push("scope:clear")),
     setStorageScope: vi.fn(async () => events.push("scope:set")),
+    captureScopedStore: vi.fn(() => null),
 }));
 vi.mock("@/stores/canvas/use-canvas-store", () => ({
     clearCanvasInMemory: () => events.push("canvas:clear"),
