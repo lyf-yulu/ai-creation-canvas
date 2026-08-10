@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 import httpx
@@ -17,6 +18,33 @@ from ai_creation_canvas.domain.models import RequestContext
 _MAX_COOKIE_BYTES = 8192
 _MAX_RESPONSE_BYTES = 1_048_576
 _DEFAULT_TIMEOUT = 10.0
+
+
+class CrossLoopLimiter:
+    """A cancellation-safe, event-loop-independent concurrency budget."""
+    def __init__(self, maximum: int) -> None:
+        self._maximum, self._in_use, self._lock = maximum, 0, threading.Lock()
+    async def acquire(self) -> Callable[[], None]:
+        delay = 0.001
+        while True:
+            with self._lock:
+                if self._in_use < self._maximum:
+                    self._in_use += 1
+                    released = False
+                    release_lock = threading.Lock()
+
+                    def release() -> None:
+                        nonlocal released
+                        with release_lock:
+                            if released:
+                                return
+                            released = True
+                        with self._lock:
+                            self._in_use -= 1
+
+                    return release
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 0.05)
 
 
 class PortalStream:
@@ -131,7 +159,7 @@ class PortalClient:
         self._transport = transport
         if type(max_concurrency) is not int or not 1 <= max_concurrency <= 128:
             raise ValueError("max_concurrency must be a finite positive integer")
-        self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._semaphore = CrossLoopLimiter(max_concurrency)
 
     @staticmethod
     def _validate_verify(verify: bool | str | Path) -> bool | str:
@@ -192,24 +220,24 @@ class PortalClient:
             raise ValueError("method is not allowed")
         target = self._target(mount, path)
         headers = self._cookie_header(cookie_header)
-        async with self._semaphore, httpx.AsyncClient(
-            verify=self.verify,
-            timeout=self._timeout,
-            follow_redirects=False,
-            transport=self._transport,
-            headers={},
-            trust_env=False,
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
-        ) as client:
-            request = client.build_request(verb, target, params=params, json=json, headers=headers)
-            response = await client.send(request, stream=True)
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    await response.aclose()
-                    raise ValueError("Portal response exceeds the maximum size")
-            return httpx.Response(response.status_code, headers=response.headers, content=bytes(body), request=request)
+        release = await self._semaphore.acquire()
+        try:
+            async with httpx.AsyncClient(
+                verify=self.verify, timeout=self._timeout, follow_redirects=False,
+                transport=self._transport, headers={}, trust_env=False,
+                limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+            ) as client:
+                request = client.build_request(verb, target, params=params, json=json, headers=headers)
+                response = await client.send(request, stream=True)
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > _MAX_RESPONSE_BYTES:
+                        await response.aclose()
+                        raise ValueError("Portal response exceeds the maximum size")
+                return httpx.Response(response.status_code, headers=response.headers, content=bytes(body), request=request)
+        finally:
+            release()
 
     async def open_stream(self, context: RequestContext, method: str, path: str, *, mount: str, cookie_header: str | None = None, headers: Mapping[str, str] | None = None) -> PortalStream:
         if not isinstance(context, RequestContext): raise ValueError("context must be a RequestContext")
@@ -219,10 +247,14 @@ class PortalClient:
         merged = self._cookie_header(cookie_header)
         merged["Accept-Encoding"] = "identity"
         if headers: merged.update(headers)
-        await self._semaphore.acquire()
+        release = await self._semaphore.acquire()
         client = httpx.AsyncClient(verify=self.verify, timeout=self._timeout, follow_redirects=False, transport=self._transport, headers={}, trust_env=False, limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
         try:
             response = await client.send(client.build_request(verb, target, headers=merged), stream=True)
-            return PortalStream(response, client, self._semaphore.release)
-        except Exception:
-            await client.aclose(); self._semaphore.release(); raise
+            return PortalStream(response, client, release)
+        except BaseException:
+            try:
+                await client.aclose()
+            finally:
+                release()
+            raise

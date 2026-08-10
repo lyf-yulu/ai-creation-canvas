@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 import re
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 def _now() -> str:
@@ -30,8 +30,9 @@ class Reservation:
 class CanvasStore:
     """Metadata-only SQLite persistence with short immediate transactions."""
 
-    def __init__(self, data_dir: Path | str) -> None:
+    def __init__(self, data_dir: Path | str, *, clock: Callable[[], float] = time.time) -> None:
         self.data_dir = Path(data_dir)
+        self._clock = clock
         self._lock = threading.RLock()
         self._prepare_root()
         self.assets_dir = self.data_dir / "assets"
@@ -68,6 +69,9 @@ class CanvasStore:
             try:
                 connection.execute("PRAGMA foreign_keys = ON")
                 connection.execute("PRAGMA busy_timeout = 5000")
+                connection.execute("PRAGMA secure_delete = ON")
+                if connection.execute("PRAGMA secure_delete").fetchone()[0] != 1:
+                    raise RuntimeError("SQLite secure deletion could not be enabled")
                 if immediate:
                     connection.execute("BEGIN IMMEDIATE")
                 yield connection
@@ -86,7 +90,7 @@ class CanvasStore:
             mode = db.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             if str(mode).lower() != "wal":
                 raise RuntimeError("SQLite WAL could not be enabled")
-            db.execute("PRAGMA secure_delete = ON")
+        migrated = False
         with self._connection(immediate=True) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -102,6 +106,7 @@ class CanvasStore:
             )""")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             if "result_ref" in columns:
+                migrated = True
                 # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
                 # Remove the legacy column itself.  SQLite has no portable DROP COLUMN
                 # for older supported versions; rebuild only from non-sensitive fields.
@@ -133,6 +138,15 @@ class CanvasStore:
             for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
                 if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
                     db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
+        if migrated:
+            # The migration transaction committed above.  Truncate WAL first,
+            # then rebuild the main database so a removed signed URL is not
+            # retained in live, free, or WAL pages.
+            with self._connection() as db:
+                if db.execute("PRAGMA secure_delete").fetchone()[0] != 1:
+                    raise RuntimeError("SQLite secure deletion could not be enabled")
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+                db.execute("VACUUM")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
@@ -155,14 +169,14 @@ class CanvasStore:
     def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0) -> Reservation:
         now = _now()
         token = os.urandom(16).hex()
-        lease_until = time.time() + lease_seconds
+        lease_until = self._clock() + lease_seconds
         with self._connection(immediate=True) as db:
             existing = db.execute("SELECT * FROM canvas_jobs WHERE user_id = ? AND idempotency_key = ?", (user_id, idempotency_key)).fetchone()
             if existing is not None:
                 item = dict(existing)
                 if item["request_hash"] != request_hash:
                     return Reservation(item, False, True)
-                if item["status"] == "submitting" and float(item.get("lease_until") or 0) <= time.time():
+                if item["status"] == "submitting" and float(item.get("lease_until") or 0) <= self._clock():
                     db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, updated_at=? WHERE id=? AND submission_token IS ?", (token, lease_until, now, item["id"], item.get("submission_token")))
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
@@ -187,7 +201,7 @@ class CanvasStore:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token: return dict(row)
-            db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, updated_at=? WHERE id=?", (error_code, time.time() - 1, _now(), job_id))
+            db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, updated_at=? WHERE id=?", (error_code, self._clock() - 1, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def mark_failed(self, job_id: str, error_code: str, token: str | None = None) -> dict[str, object]:
@@ -197,6 +211,19 @@ class CanvasStore:
             if token is not None and row["submission_token"] != token: return dict(row)
             db.execute("UPDATE canvas_jobs SET status='failed', error_code=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (error_code, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def fail_invalid_upstream_result(self, job_id: str, error_code: str = "INVALID_UPSTREAM_RESULT") -> dict[str, object]:
+        """CAS a polled queued/running job to terminal failure exactly once."""
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE canvas_jobs SET status='failed', error_code=?, submission_token=NULL, lease_until=NULL, updated_at=? "
+                "WHERE id=? AND status IN ('queued', 'running')",
+                (error_code, _now(), job_id),
+            )
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
 
     def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}

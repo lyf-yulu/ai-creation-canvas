@@ -4,12 +4,25 @@ import asyncio
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from ai_creation_canvas.api._common import context_for, problem
+from ai_creation_canvas.errors import DomainError
 
 router = APIRouter(prefix="/api/v1")
 _MAX = 64 * 1024 * 1024
 _MIME = {"image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"}
 
 class ResultStreamProtocolError(RuntimeError): pass
+
+
+def _upstream_status_problem(request: Request, status_code: int):
+    """Expose status-class retryability without forwarding provider details."""
+    retryable = status_code in {408, 425, 429} or 500 <= status_code <= 599
+    return problem(
+        request,
+        "UPSTREAM_UNAVAILABLE",
+        "The generation result is unavailable.",
+        status=502,
+        retryable=retryable,
+    )
 
 def parse_range_header(value: str | None) -> tuple[str, int | None, int | None] | None:
     """Validate the single-byte-range grammar before contacting the provider."""
@@ -95,20 +108,33 @@ async def get_result(job_id: str, request: Request):
         if stream.status_code == 416:
             content_range = stream.headers.get("content-range", "")
             await _close(stream)
+            stream = None
+            if requested_range is None:
+                raise _upstream_status_problem(request, 416)
             if not content_range.startswith("bytes */") or not content_range[8:].isdigit(): raise ValueError
             return Response(status_code=416, headers={"Content-Range": content_range, "Accept-Ranges": "bytes"})
+        if stream.status_code == 404:
+            await _close(stream)
+            stream = None
+            raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404, phase="generation")
+        expected_status = 206 if requested_range is not None else 200
+        if stream.status_code != expected_status:
+            status_code = stream.status_code
+            await _close(stream)
+            stream = None
+            raise _upstream_status_problem(request, status_code)
         content_type = stream.headers.get("content-type", "").split(";", 1)[0].lower()
         declared = _content_length(length)
         if content_type not in _MIME:
             raise ValueError
         if stream.headers.get("content-encoding", "identity").lower() != "identity": raise ValueError
-        if range_header and stream.status_code != 206: return Response(status_code=416, headers={"Accept-Ranges":"bytes"})
-        if not range_header and stream.status_code != 200: raise ValueError
         if stream.status_code == 206:
             assert requested_range is not None
             validate_partial_response(requested_range, stream.headers.get("content-range"), declared)
     except asyncio.CancelledError:
         if stream is not None: await _close(stream)
+        raise
+    except DomainError:
         raise
     except Exception:
         if stream is not None: await _close(stream)

@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import asyncio
 import httpx
+import re
 from typing import Any, Mapping, Protocol, runtime_checkable
 from urllib.parse import quote
 
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import ApiError, PortalUpstreamError
+from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -19,6 +20,7 @@ _MAX_CONFIG_BYTES = 512 * 1024
 _MAX_SCHEMA_DEPTH = 8
 _MAX_SCHEMA_ITEMS = 128
 _MAX_TEXT_LENGTH = 4096
+_RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
 def _safe_json(value: object, *, depth: int = 0) -> bool:
@@ -175,7 +177,9 @@ class PortalJobsAdapter:
         try:
             payload = response.json(); status = payload["status"]
             result = payload.get("result_ref")
-            ref = AssetRef(result, "reference", "active", "application/octet-stream") if status == "succeeded" and isinstance(result, str) else None
+            if status == "succeeded" and (not isinstance(result, str) or not _RESULT_ID.fullmatch(result)):
+                raise InvalidUpstreamResult("provider success result is invalid")
+            ref = AssetRef(result, "reference", "active", "application/octet-stream") if status == "succeeded" else None
             if status == "failed":
                 return JobState(upstream_job_id, status, error=ApiError("TASK_FAILED", "The generation task failed.", False, context.request_id, "generation"))
             return JobState(upstream_job_id, status, result=ref)

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import JobRequest, JobStatus
-from ai_creation_canvas.errors import PortalUpstreamError
+from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -87,8 +87,12 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
         if state.result is not None:
             result_id = state.result.asset_id
             if not _RESULT_ID.fullmatch(result_id):
-                return request.app.state.canvas_store.mark_failed(str(item["id"]), "INVALID_UPSTREAM_RESULT")
+                raise InvalidUpstreamResult("provider success result is invalid")
         return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_id=result_id)
+    except InvalidUpstreamResult:
+        return request.app.state.canvas_store.fail_invalid_upstream_result(
+            str(item["id"]), "INVALID_UPSTREAM_RESULT"
+        )
     except Exception:
         # A transient poll error is not an upstream terminal state.
         return item

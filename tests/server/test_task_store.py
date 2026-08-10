@@ -48,3 +48,25 @@ def test_active_lease_and_reopened_store_preserve_one_reservation(tmp_path):
     first = CanvasStore(path).reserve_job(user_id="u", job_id="j", service_id="s", operation="op", idempotency_key="k", request_hash="h")
     reopened = CanvasStore(path).reserve_job(user_id="u", job_id="other", service_id="s", operation="op", idempotency_key="k", request_hash="h")
     assert first.created and not reopened.created and reopened.job["id"] == "j"
+
+
+def test_legacy_migration_physically_scrubs_signed_urls_but_keeps_opaque_ids(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    database = data / "canvas.sqlite3"
+    secret = "https://provider.test/private/result?signature=unique-signed-secret"
+    db = sqlite3.connect(database)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("CREATE TABLE canvas_jobs (id TEXT PRIMARY KEY,user_id TEXT,service_id TEXT,upstream_job_id TEXT,operation TEXT,status TEXT,idempotency_key TEXT,request_hash TEXT,error_code TEXT,result_ref TEXT,created_at TEXT,updated_at TEXT)")
+    db.execute("INSERT INTO canvas_jobs VALUES ('bad','u','s','up','op','succeeded','k1','h',NULL,?,'t','t')", (secret,))
+    db.execute("INSERT INTO canvas_jobs VALUES ('good','u','s','up','op','succeeded','k2','h',NULL,'opaque_result_1','t','t')")
+    db.commit(); db.close()
+
+    store = CanvasStore(data)
+    with store._connection() as verify:
+        assert verify.execute("PRAGMA secure_delete").fetchone()[0] == 1
+        assert "result_ref" not in {row[1] for row in verify.execute("PRAGMA table_info(canvas_jobs)")}
+        assert verify.execute("SELECT result_id FROM canvas_jobs WHERE id='bad'").fetchone()[0] is None
+        assert verify.execute("SELECT result_id FROM canvas_jobs WHERE id='good'").fetchone()[0] == "opaque_result_1"
+    for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes()

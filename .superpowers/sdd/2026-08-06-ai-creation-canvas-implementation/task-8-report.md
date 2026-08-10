@@ -81,3 +81,42 @@ Round 4 verification at that point:
 - `python3 -m compileall -q server`
 - `./scripts/security-scan.sh`
 - `git diff --check`
+
+## Exception Round 6 (user-approved)
+
+- Result proxy pre-header status handling now returns 416 only for an actual
+  upstream 416 on a valid client range, maps upstream 404 to `RESULT_EXPIRED`,
+  and maps auth, rate-limit, server, and other unexpected statuses to safe
+  structured upstream errors with explicit retryability.  Every such branch
+  closes the provider stream before responding; 206 remains range-validated.
+- Successful provider polls require a non-empty opaque result ID.  Missing,
+  empty, or invalid IDs raise `InvalidUpstreamResult`; queued/running jobs use
+  a SQLite compare-and-set transition to terminal
+  `INVALID_UPSTREAM_RESULT`, so later reads do not poll again.
+- `PortalClient` now uses a thread-locked, loop-independent concurrency budget
+  with per-acquisition idempotent synchronous release.  It releases permits on
+  normal responses, stream close failures, and cancellation while opening a
+  stream.
+- Submission lease time is injectable for deterministic recovery tests.  A
+  provider that accepts a keyed request then loses the response is retried with
+  the same idempotency key after store reopen; the mock provider creates one
+  upstream job and SQLite retains one canvas job.
+- Legacy `result_ref` migration enables and verifies `secure_delete` on the
+  migration connection, then checkpoints and vacuums after commit.  The test
+  confirms a unique signed URL is absent from schema, rows, main DB, WAL, and
+  SHM while a valid opaque ID remains.
+
+TDD evidence:
+
+- Initial focused run: 28 passed, 6 expected failures covering limiter release,
+  pre-header status mapping, forged local 416, invalid-result terminalization,
+  injected clock recovery, and per-connection secure deletion.
+- A second red run isolated stream-open cancellation leaking its permit; the
+  cancellation-safe cleanup change made it green.
+
+Final verification:
+
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 201 passed
+- `python3 -m compileall -q server` — passed
+- `./scripts/security-scan.sh` — passed
+- `git diff --check` — passed

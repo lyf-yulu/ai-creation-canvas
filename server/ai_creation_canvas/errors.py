@@ -59,6 +59,10 @@ class PortalUpstreamError(Exception):
         super().__init__(code)
 
 
+class InvalidUpstreamResult(Exception):
+    """A provider declared success without a safe opaque result identifier."""
+
+
 class AdapterNotFoundError(DomainError):
     """Raised for a requested adapter that has not been registered."""
 
