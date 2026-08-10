@@ -4,13 +4,24 @@ import type { JobRequest, JobState } from "@/api/contracts";
 import { captureScopedStore, isStorageLeaseActive, onStorageScopeChanged, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import { generationErrorMessage, safeFailureMetadata } from "./error-message";
 import { ApiRequestError } from "@/api/client";
+import { create } from "zustand";
 
 export type GenerationStatus = "idle" | "submitting" | "queued" | "running" | "succeeded" | "failed";
 export type GenerationState = { status: GenerationStatus; jobId?: string; message?: string; retryable?: boolean };
 export type PendingRef = { request: JobRequest; jobId?: string; sourceNodeId?: string };
+export type GenerationTask = { jobId: string; title: string; status: GenerationStatus; sourceNodeId?: string };
+type GenerationTaskStore = { tasks: GenerationTask[]; upsert: (task: GenerationTask) => void; remove: (jobId: string) => void; clear: () => void };
+export const useGenerationTasks = create<GenerationTaskStore>()((set) => ({
+    tasks: [],
+    upsert: (task) => set((state) => ({ tasks: [...state.tasks.filter((item) => item.jobId !== task.jobId), task] })),
+    remove: (jobId) => set((state) => ({ tasks: state.tasks.filter((item) => item.jobId !== jobId) })),
+    clear: () => set({ tasks: [] }),
+}));
+export function clearGenerationTasks() { useGenerationTasks.getState().clear(); }
+export function dismissGenerationTask(jobId: string) { useGenerationTasks.getState().remove(jobId); }
 type GenerationApi = { create: (job: JobRequest, signal?: AbortSignal) => Promise<JobState>; fetch: (id: string, signal?: AbortSignal) => Promise<JobState> };
 type SubmitInput = Omit<JobRequest, "idempotency_key"> & { sourceNodeId?: string };
-type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onFailed?: (details: { request: JobRequest; sourceNodeId?: string; message: string; requestId?: string; phase?: string }) => void };
+type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onFailed?: (details: { request: JobRequest; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
 const REFS_KEY = "generation-job-refs";
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true }); });
 const stateFor = (job: JobState): GenerationStatus => job.status === "uploading" || job.status === "submitting" ? "submitting" : job.status;
@@ -55,6 +66,8 @@ export function useGenerationJob(options: Options = {}) {
     }, []);
     const poll = useCallback(async (jobId: string, captured: ScopedStoreLease | null) => {
         if (controllers.current.has(jobId)) return;
+        const refAtStart = refs.current.get(jobId);
+        useGenerationTasks.getState().upsert({ jobId, title: refAtStart?.request.prompt.slice(0, 32) || jobId, status: "queued", sourceNodeId: refAtStart?.sourceNodeId });
         const signal = new AbortController(); controllers.current.set(jobId, signal);
         let wait = optionsRef.current.pollDelayMs ?? 1_000;
         try {
@@ -62,6 +75,8 @@ export function useGenerationJob(options: Options = {}) {
                 const job = await apiRef.current.fetch(jobId, signal.signal);
                 const status = stateFor(job);
                 publish({ status, jobId }, captured);
+                const taskRef = refs.current.get(jobId);
+                useGenerationTasks.getState().upsert({ jobId, title: taskRef?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: taskRef?.sourceNodeId });
                 if (status === "succeeded") {
                     const ref = refs.current.get(jobId);
                     const operation = ref?.request.operation;
@@ -82,7 +97,7 @@ export function useGenerationJob(options: Options = {}) {
                 }
                 await delay(wait, signal.signal); wait = Math.min(wait * 2, 10_000);
             }
-        } catch (error) { if (!(error instanceof DOMException && error.name === "AbortError") && (!captured || isStorageLeaseActive(captured))) publish({ status: "failed", jobId, message: generationErrorMessage(error), retryable: true }, captured); } finally { controllers.current.delete(jobId); }
+        } catch (error) { if (!(error instanceof DOMException && error.name === "AbortError") && (!captured || isStorageLeaseActive(captured))) { publish({ status: "failed", jobId, message: generationErrorMessage(error), retryable: true }, captured); const ref = refs.current.get(jobId); useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status: "failed", sourceNodeId: ref?.sourceNodeId }); } } finally { controllers.current.delete(jobId); }
     }, [persist, publish, stop]);
     const submit = useCallback(async (input: SubmitInput) => {
         const captured = lease.current = captureScopedStore(REFS_KEY);
@@ -90,18 +105,23 @@ export function useGenerationJob(options: Options = {}) {
         const { sourceNodeId, ...jobInput } = input;
         const request = { ...jobInput, idempotency_key: optionsRef.current.idempotencyKey?.() ?? crypto.randomUUID() };
         refs.current.set(request.idempotency_key, { request, sourceNodeId }); await persist(); publish({ status: "submitting" }, captured);
+        useGenerationTasks.getState().upsert({ jobId: request.idempotency_key, title: request.prompt.slice(0, 32), status: "submitting", sourceNodeId });
         try {
             const submitController = new AbortController(); controllers.current.set(request.idempotency_key, submitController);
             const job = await apiRef.current.create(request, submitController.signal);
             controllers.current.delete(request.idempotency_key);
             const ref = refs.current.get(request.idempotency_key); refs.current.delete(request.idempotency_key); refs.current.set(job.id, { request, jobId: job.id, sourceNodeId: ref?.sourceNodeId }); await persist();
+            useGenerationTasks.getState().remove(request.idempotency_key);
+            useGenerationTasks.getState().upsert({ jobId: job.id, title: request.prompt.slice(0, 32), status: stateFor(job), sourceNodeId });
+            publish({ status: stateFor(job), jobId: job.id }, captured);
             await poll(job.id, captured);
         } catch (error) {
             controllers.current.delete(request.idempotency_key);
             const safe = safeFailureMetadata(error);
             const message = generationErrorMessage(error);
             publish({ status: "failed", message, retryable: true }, captured);
-            optionsRef.current.onFailed?.({ request, sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase });
+            useGenerationTasks.getState().upsert({ jobId: request.idempotency_key, title: request.prompt.slice(0, 32), status: "failed", sourceNodeId });
+            optionsRef.current.onFailed?.({ request, sourceNodeId, message, requestId: safe?.request_id, phase: safe?.phase, retryToken: request.idempotency_key });
             throw error;
         }
     }, [persist, poll, publish, restore]);
@@ -113,10 +133,10 @@ export function useGenerationJob(options: Options = {}) {
         try {
             const submitController = new AbortController(); controllers.current.set(request.idempotency_key, submitController);
             const job = await apiRef.current.create(request, submitController.signal);
-            controllers.current.delete(request.idempotency_key); refs.current.delete(retryToken); refs.current.set(job.id, { ...ref, jobId: job.id }); await persist(); await poll(job.id, captured);
+            controllers.current.delete(request.idempotency_key); refs.current.delete(retryToken); refs.current.set(job.id, { ...ref, jobId: job.id }); await persist(); useGenerationTasks.getState().remove(retryToken); useGenerationTasks.getState().upsert({ jobId: job.id, title: request.prompt.slice(0, 32), status: stateFor(job), sourceNodeId: ref.sourceNodeId }); publish({ status: stateFor(job), jobId: job.id }, captured); await poll(job.id, captured);
         } catch (error) { controllers.current.delete(request.idempotency_key); throw error; }
     }, [persist, poll, restore]);
     const resume = useCallback(async (jobId: string) => { const captured = lease.current = captureScopedStore(REFS_KEY); await poll(jobId, captured); }, [poll]);
-    useEffect(() => { active.current = true; const activate = () => { stop(); refs.current.clear(); completed.current.clear(); restoredVersion.current = null; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); }; activate(); const unsubscribe = onStorageScopeCleared(stop); const unsubscribeScope = onStorageScopeChanged(activate); return () => { active.current = false; unsubscribe(); unsubscribeScope(); stop(); }; }, [poll, restore, stop]);
+    useEffect(() => { active.current = true; const activate = () => { stop(); clearGenerationTasks(); refs.current.clear(); completed.current.clear(); restoredVersion.current = null; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); }; const clear = () => { stop(); clearGenerationTasks(); }; activate(); const unsubscribe = onStorageScopeCleared(clear); const unsubscribeScope = onStorageScopeChanged(activate); return () => { active.current = false; unsubscribe(); unsubscribeScope(); stop(); }; }, [poll, restore, stop]);
     return { state, submit, retry, resume, cancel: stop, failureMetadata: safeFailureMetadata };
 }

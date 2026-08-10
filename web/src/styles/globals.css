@@ -619,3 +619,10 @@
     border-radius: 0.6rem;
     font-size: 0.75rem;
 }
+
+.media-surface,
+.embed-surface {
+    border: 1px solid #1f3f2a;
+    background: #07100a;
+    color: #e5f5e9;
+}

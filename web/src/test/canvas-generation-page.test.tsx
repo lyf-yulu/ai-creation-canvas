@@ -16,8 +16,10 @@ it("submits canvas image generation through jobs and writes its result node", as
     fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cat" } });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("real-video-looking-image"));
     fireEvent.change(screen.getByLabelText("steps"), { target: { value: "6" } });
-    fireEvent.click(screen.getByRole("button", { name: "生成图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-1")).toBe(true));
+    expect(await screen.findByTestId("result-node-job-1")).toBeVisible();
+    expect(screen.getAllByTestId("result-node-job-1")).toHaveLength(1);
     const [path, request] = (fetch as any).mock.calls[1];
     expect(path).toBe("/api/v1/jobs");
     expect(request.method).toBe("POST");
@@ -32,7 +34,7 @@ it("writes a safe failure node for a rate-limited generation", async () => {
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
     fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "private prompt" } });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("image"));
-    fireEvent.click(screen.getByRole("button", { name: "生成图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.status === "error")).toBe(true));
     expect(screen.getAllByText("请求过于频繁，请稍后重试。")).not.toHaveLength(0);
 });

@@ -1,11 +1,13 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 import { useGenerationJob } from "@/features/generation/use-generation-job";
+import { clearGenerationTasks, useGenerationTasks } from "@/features/generation/use-generation-job";
+import { TaskTray } from "@/components/layout/task-tray";
 import { appendResultNode, createResultNode } from "@/features/generation/result-node";
 
-afterEach(() => { clearStorageScope(); setScopedStoreFactoryForTest(); });
+afterEach(() => { clearStorageScope(); setScopedStoreFactoryForTest(); clearGenerationTasks(); });
 
 it("resumes an existing job without submitting another job", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
@@ -55,6 +57,24 @@ it("polls two resumed jobs independently", async () => {
     await act(async () => { first({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/a" }); second({ id: "j-2", status: "succeeded", result_url: "/api/v1/results/b" }); });
     expect(api.fetch).toHaveBeenCalledWith("j-1", expect.any(Object));
     expect(api.fetch).toHaveBeenCalledWith("j-2", expect.any(Object));
+});
+
+it("publishes each concurrent job independently to the shared task tray", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const resolvers = new Map<string, (value: any) => void>();
+    const api = { create: vi.fn(), fetch: vi.fn((id: string) => new Promise((resolve) => resolvers.set(id, resolve))) };
+    const { result } = renderHook(() => useGenerationJob({ api: api as any }));
+    render(<TaskTray />);
+
+    void result.current.resume("job-image");
+    void result.current.resume("job-second");
+    await waitFor(() => expect(useGenerationTasks.getState().tasks.map((task) => task.jobId).sort()).toEqual(["job-image", "job-second"]));
+    expect(screen.getByText("job-image")).toBeVisible();
+    expect(screen.getByText("job-second")).toBeVisible();
+
+    await act(async () => resolvers.get("job-image")?.({ id: "job-image", status: "succeeded", result_url: "/api/v1/results/a" }));
+    expect(useGenerationTasks.getState().tasks.find((task) => task.jobId === "job-image")?.status).toBe("succeeded");
+    expect(useGenerationTasks.getState().tasks.find((task) => task.jobId === "job-second")?.status).not.toBe("succeeded");
 });
 
 it("keeps an ambiguous saved submission dormant until a manual retry reuses its key", async () => {
