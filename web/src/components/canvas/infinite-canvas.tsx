@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { zoomViewportAt } from "@/features/canvas/viewport";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ViewportTransform } from "@/types/canvas";
 
@@ -66,22 +67,12 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest("[data-canvas-no-zoom],.ant-modal,.ant-popover,.ant-dropdown,.ant-select-dropdown,.ant-picker-dropdown")) return;
 
-        const delta = -event.deltaY;
-        const factor = Math.pow(1.1, delta / 100);
-        const newScale = Math.min(Math.max(viewport.k * factor, 0.05), 5);
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
 
         const mouseX = event.clientX - rect.left;
         const mouseY = event.clientY - rect.top;
-        const worldX = (mouseX - viewport.x) / viewport.k;
-        const worldY = (mouseY - viewport.y) / viewport.k;
-
-        onViewportChange({
-            x: mouseX - worldX * newScale,
-            y: mouseY - worldY * newScale,
-            k: newScale,
-        });
+        onViewportChange(zoomViewportAt(viewport, { x: mouseX, y: mouseY }, event.deltaY));
     };
 
     const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -92,14 +83,14 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
 
         if (event.button === 0 && (event.ctrlKey || event.metaKey) && isBackgroundClick) {
             event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
             onCanvasMouseDown?.(event);
             return;
         }
 
         if (event.button === 1 || (event.button === 0 && !isSpacePressed && isBackgroundClick)) {
             event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
             panState.current = {
                 isPanning: true,
                 startX: event.clientX,
@@ -141,25 +132,43 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             if (frameRef.current) return;
             frameRef.current = requestAnimationFrame(() => {
                 frameRef.current = null;
-                if (nextViewportRef.current) onViewportChange(nextViewportRef.current);
+                const nextViewport = nextViewportRef.current;
+                nextViewportRef.current = null;
+                if (nextViewport) onViewportChange(nextViewport);
             });
         };
 
-        const handlePointerUp = () => {
+        const finishPan = (deselect: boolean) => {
             if (!panState.current.isPanning) return;
 
-            if (!panState.current.hasMoved) {
+            if (frameRef.current) {
+                cancelAnimationFrame(frameRef.current);
+                frameRef.current = null;
+            }
+            if (nextViewportRef.current) {
+                onViewportChange(nextViewportRef.current);
+                nextViewportRef.current = null;
+            }
+            if (deselect && !panState.current.hasMoved) {
                 onCanvasDeselect?.();
             }
             panState.current.isPanning = false;
             document.body.style.cursor = "";
         };
 
+        const handlePointerUp = () => finishPan(true);
+        const handlePointerCancel = () => finishPan(false);
+        const handleWindowBlur = () => finishPan(false);
+
         window.addEventListener("pointermove", handlePointerMove);
         window.addEventListener("pointerup", handlePointerUp);
+        window.addEventListener("pointercancel", handlePointerCancel);
+        window.addEventListener("blur", handleWindowBlur);
         return () => {
             window.removeEventListener("pointermove", handlePointerMove);
             window.removeEventListener("pointerup", handlePointerUp);
+            window.removeEventListener("pointercancel", handlePointerCancel);
+            window.removeEventListener("blur", handleWindowBlur);
         };
     }, [onCanvasDeselect, onViewportChange]);
 
@@ -180,6 +189,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
     return (
         <div
             ref={containerRef}
+            data-testid="infinite-canvas"
             className="relative h-full w-full cursor-grab select-none overflow-hidden"
             style={{ background: theme.canvas.background }}
             onPointerDown={handlePointerDown}
