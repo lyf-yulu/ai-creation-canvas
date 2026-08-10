@@ -265,3 +265,42 @@ def test_release_build_failure_cleans_only_its_new_target(tmp_path):
     sentinel.write_text("keep", encoding="utf-8")
     refused = subprocess.run(["bash", str(script), str(existing)], cwd=tmp_path, env=environment, text=True, capture_output=True, check=False)
     assert refused.returncode != 0 and sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_skip_web_build_rejects_every_dist_manifest_difference_in_an_isolated_copy(tmp_path):
+    def copy_source(name: str, source_root: Path = ROOT) -> Path:
+        copied = tmp_path / name
+        shutil.copytree(
+            source_root,
+            copied,
+            ignore=shutil.ignore_patterns(".git", ".venv", ".worktrees", ".pytest_cache", "node_modules", "__pycache__"),
+        )
+        return copied
+
+    def skipped(source: Path, output: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(source / "scripts" / "build-release.sh"), "--skip-web-build", str(output)],
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    baseline = copy_source("baseline")
+    built = subprocess.run(["bash", str(baseline / "scripts" / "build-release.sh"), str(tmp_path / "built-release")], cwd=tmp_path, text=True, capture_output=True, check=False)
+    assert built.returncode == 0, built.stderr
+    assert skipped(baseline, tmp_path / "baseline-release").returncode == 0
+
+    mutations = {
+        "index": lambda dist: (dist / "index.html").write_text((dist / "index.html").read_text(encoding="utf-8") + "<!-- altered -->", encoding="utf-8"),
+        "hashed-js": lambda dist: next((dist / "assets").glob("*.js")).write_bytes(next((dist / "assets").glob("*.js")).read_bytes() + b"altered"),
+        "added": lambda dist: (dist / "evil.js").write_text("console.log('unexpected')", encoding="utf-8"),
+        "deleted": lambda dist: (dist / "logo.svg").unlink(),
+    }
+    for name, mutate in mutations.items():
+        source = copy_source(name, baseline)
+        mutate(source / "web" / "dist")
+        output = tmp_path / f"{name}-release"
+        result = skipped(source, output)
+        assert result.returncode != 0, name
+        assert not output.exists(), name

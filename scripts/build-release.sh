@@ -114,14 +114,151 @@ PY
 stamp="$root/web/dist/.ai-creation-canvas-build-input.sha256"
 input_hash="$(build_input_hash)"
 
+write_dist_stamp() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+dist = Path(sys.argv[1])
+stamp = Path(sys.argv[2])
+source_hash = sys.argv[3]
+forbidden_names = {"node_modules", ".git", "state", "outputs", "uploads", "logs", "archives", "secrets"}
+forbidden_suffixes = (".map", ".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx", ".jsonl")
+
+def forbidden(path: Path) -> bool:
+    return any(part in forbidden_names or part == ".env" or part.startswith(".env.") for part in path.parts) or path.name.endswith(forbidden_suffixes)
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def manifest(root: Path) -> list[dict[str, str]]:
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit("web dist must be a real directory")
+    files = []
+    for current_text, directories, names in os.walk(root, topdown=True, followlinks=False):
+        current = Path(current_text)
+        for name in sorted(directories):
+            candidate = current / name
+            if candidate.is_symlink() or not stat.S_ISDIR(candidate.lstat().st_mode):
+                raise SystemExit("web dist contains a non-directory entry")
+            if forbidden(candidate.relative_to(root)):
+                raise SystemExit("web dist contains a forbidden entry")
+        for name in sorted(names):
+            candidate = current / name
+            relative = candidate.relative_to(root)
+            if candidate == stamp:
+                continue
+            if candidate.is_symlink() or not stat.S_ISREG(candidate.lstat().st_mode) or forbidden(relative):
+                raise SystemExit("web dist contains an unsafe file")
+            text = relative.as_posix()
+            if not text or text.startswith("/") or ".." in relative.parts or any(ord(char) < 32 for char in text):
+                raise SystemExit("web dist contains an unsafe path")
+            files.append({"path": text, "sha256": file_hash(candidate)})
+    return sorted(files, key=lambda item: item["path"])
+
+if stamp.is_symlink():
+    raise SystemExit("web dist stamp must not be a symlink")
+payload = {"files": manifest(dist), "source_input_sha256": source_hash, "version": 1}
+encoded = (json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+temporary = stamp.with_name(f".{stamp.name}.{os.getpid()}.tmp")
+try:
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(encoded)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, stamp)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
+}
+
+verify_dist_stamp() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import hashlib
+import hmac
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+dist = Path(sys.argv[1])
+stamp = Path(sys.argv[2])
+source_hash = sys.argv[3]
+forbidden_names = {"node_modules", ".git", "state", "outputs", "uploads", "logs", "archives", "secrets"}
+forbidden_suffixes = (".map", ".pyc", ".pyo", ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".pfx", ".jsonl")
+
+def forbidden(path: Path) -> bool:
+    return any(part in forbidden_names or part == ".env" or part.startswith(".env.") for part in path.parts) or path.name.endswith(forbidden_suffixes)
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def manifest(root: Path) -> list[dict[str, str]]:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError
+    files = []
+    for current_text, directories, names in os.walk(root, topdown=True, followlinks=False):
+        current = Path(current_text)
+        for name in sorted(directories):
+            candidate = current / name
+            if candidate.is_symlink() or not stat.S_ISDIR(candidate.lstat().st_mode) or forbidden(candidate.relative_to(root)):
+                raise ValueError
+        for name in sorted(names):
+            candidate = current / name
+            relative = candidate.relative_to(root)
+            if candidate == stamp:
+                continue
+            if candidate.is_symlink() or not stat.S_ISREG(candidate.lstat().st_mode) or forbidden(relative):
+                raise ValueError
+            text = relative.as_posix()
+            if not text or text.startswith("/") or ".." in relative.parts or any(ord(char) < 32 for char in text):
+                raise ValueError
+            files.append({"path": text, "sha256": file_hash(candidate)})
+    return sorted(files, key=lambda item: item["path"])
+
+try:
+    if stamp.is_symlink() or not stamp.is_file():
+        raise ValueError
+    payload = json.loads(stamp.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or set(payload) != {"files", "source_input_sha256", "version"} or payload["version"] != 1 or not isinstance(payload["source_input_sha256"], str) or not hmac.compare_digest(payload["source_input_sha256"], source_hash):
+        raise ValueError
+    expected = payload["files"]
+    actual = manifest(dist)
+    if not isinstance(expected, list) or len(expected) != len(actual):
+        raise ValueError
+    seen = set()
+    for recorded, observed in zip(expected, actual):
+        if not isinstance(recorded, dict) or set(recorded) != {"path", "sha256"} or not isinstance(recorded["path"], str) or not isinstance(recorded["sha256"], str) or recorded["path"] in seen or recorded["path"] != observed["path"] or not hmac.compare_digest(recorded["sha256"], observed["sha256"]):
+            raise ValueError
+        seen.add(recorded["path"])
+except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+    raise SystemExit("web dist stamp is missing, stale, tampered, or incomplete")
+PY
+}
+
 if [[ "$skip_web_build" == true ]]; then
     [[ -f "$root/web/dist/index.html" ]] || { echo "--skip-web-build requires a verified web/dist/index.html" >&2; exit 65; }
     [[ -n "$(find "$root/web/dist" -type f -name '*.js' -print -quit)" ]] || { echo "--skip-web-build requires built JavaScript assets" >&2; exit 65; }
-    [[ -f "$stamp" && "$(<"$stamp")" == "$input_hash" ]] || { echo "--skip-web-build refuses missing, stale, or tampered web assets" >&2; exit 65; }
+    verify_dist_stamp "$root/web/dist" "$stamp" "$input_hash"
 else
     npm ci --prefix "$root/web"
     npm run build --prefix "$root/web"
-    printf '%s\n' "$input_hash" > "$stamp"
+    input_hash="$(build_input_hash)"
+    write_dist_stamp "$root/web/dist" "$stamp" "$input_hash"
 fi
 
 [[ -f "$root/web/dist/index.html" ]] || { echo "web build did not produce index.html" >&2; exit 65; }
@@ -130,6 +267,7 @@ mkdir -p "$target/server" "$target/web" "$target/docs"
 cp -R "$root/server/ai_creation_canvas" "$target/server/"
 cp -R "$root/server/config" "$target/server/"
 cp -R "$root/web/dist" "$target/web/"
+verify_dist_stamp "$target/web/dist" "$target/web/dist/.ai-creation-canvas-build-input.sha256" "$input_hash"
 for file in pyproject.toml requirements.lock LICENSE UPSTREAM.md README.md; do
     install -m 0644 "$root/$file" "$target/$file"
 done

@@ -6,8 +6,8 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| `PYTHONPATH=.:server .venv/bin/pytest -q tests` | 256 passed（27.25s） |
-| `PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_core_flows.py` | 8 passed；其中发布包专项 2 passed（24.57s） |
+| Python 测试分组执行 | 257 passed：非集成 235、Portal 集成 13、核心隔离流 9 |
+| `tests/integration/test_core_flows.py` | 9 passed；包括发布包专项、Node-free、失败清理与完整 dist 清单回归 |
 | `npm ci --prefix web` | 通过 |
 | `npm test --prefix web` | 16 文件、88 passed |
 | `npm run typecheck --prefix web` | 通过 |
@@ -18,7 +18,7 @@
 
 核心流程测试逐项经过公开 API、真实 Canvas 路由/SQLite/Portal 适配器和进程内服务模拟：图像生成、参考图编辑、文本视频、图片参考视频、人像上传激活后的视频生成。每项验证异步轮询、结果读取、一次底层用量事件，以及第二用户不能读取资产、任务或结果。人像结果由生产 `PortalPortraitAdapter` 仅接受不透明 `result_ref`，并通过受控 Portal 路由支持 GET、HEAD 和 Range；外部 URL 或畸形结果标识被拒绝。
 
-发布脚本从任意工作目录接受新目录，构建并校验静态资源，拒绝既有、符号链接和与源码重叠的目标，打包前扫描敏感/运行时文件，并生成不含时间、主机路径、用户名或密钥的确定性 SHA-256 清单。`--skip-web-build` 比较当前受控前端输入的内容指纹，缺失、过期或篡改的构建产物都会被拒绝；构建/复制失败只清理本次新建且带私有标记的目标，绝不删除预存目录。
+发布脚本从任意工作目录接受新目录，构建并校验静态资源，拒绝既有、符号链接和与源码重叠的目标，打包前扫描敏感/运行时文件，并生成不含时间、主机路径、用户名或密钥的确定性 SHA-256 清单。正常构建以原子写入方式记录源码指纹及完整 `web/dist` 文件清单（规范相对路径与逐文件 SHA-256）；`--skip-web-build` 会重新枚举所有普通文件，拒绝缺失、增加、改动、符号链接、特殊文件和禁止文件。临时副本回归覆盖改动 `index.html`、改动带哈希 JavaScript、增加 `evil.js`、删除资源四种情形，均拒绝且清理新目标；未改产物可成功 skip。复制进发布包后再次验证静态清单。构建/复制失败只清理本次新建且带私有标记的目标，绝不删除预存目录。
 
 ## 已知非阻断提示
 
