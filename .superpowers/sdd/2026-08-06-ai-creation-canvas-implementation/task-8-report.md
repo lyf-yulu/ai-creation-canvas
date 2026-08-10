@@ -121,6 +121,34 @@ Final verification:
 - `./scripts/security-scan.sh` — passed
 - `git diff --check` — passed
 
+## Exception Round 6 follow-up 2 (user-approved)
+
+- Each `wal_checkpoint(TRUNCATE)` now reads and validates SQLite's
+  `(busy, log, checkpointed)` result.  A nonzero `busy` retries with bounded
+  backoff; continued busy raises `StoreInitializationError` and leaves the
+  durable pending marker set.  Both checkpoints in the scrub sequence use
+  this gate, so the marker only changes to complete after the post-vacuum
+  checkpoint succeeds.
+- The cross-loop limiter no longer grants a permit before the target loop has
+  resumed.  Release decrements capacity and signals FIFO waiters; the waiter
+  claims capacity under the shared lock only after its own loop wakes.  A
+  stopped or closed head loop is removed before another loop can claim, so no
+  permit is stranded between notification and acknowledgement.
+
+TDD evidence:
+
+- RED: checkpoint status handling and the closed-after-notification limiter
+  race were absent; the new tests initially could not import the safe startup
+  error, and the prior pre-grant limiter would time out the third loop.
+- GREEN: focused store and Portal-client suites — 21 passed.
+
+Final verification:
+
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 210 passed
+- `python3 -m compileall -q server` — passed
+- `./scripts/security-scan.sh` — passed
+- `git diff --check` — passed
+
 ## Exception Round 6 follow-up (user-approved)
 
 - Legacy-result migration now uses one secure SQLite connection for WAL setup,

@@ -20,6 +20,7 @@ def _now() -> str:
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
+_CHECKPOINT_ATTEMPTS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,10 @@ class Reservation:
     job: dict[str, object]
     created: bool
     conflict: bool = False
+
+
+class StoreInitializationError(RuntimeError):
+    """Startup cannot safely expose a database whose scrub has not completed."""
 
 
 class CanvasStore:
@@ -38,10 +43,12 @@ class CanvasStore:
         *,
         clock: Callable[[], float] = time.time,
         migration_hook: Callable[[str], None] | None = None,
+        checkpoint_hook: Callable[[str, int], tuple[int, int, int] | None] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self._clock = clock
         self._migration_hook = migration_hook
+        self._checkpoint_hook = checkpoint_hook
         self._lock = threading.RLock()
         self._prepare_root()
         self.assets_dir = self.data_dir / "assets"
@@ -208,9 +215,9 @@ class CanvasStore:
         """Physically remove freed pages before clearing the durable pending marker."""
         if db.execute("PRAGMA secure_delete").fetchone()[0] != 1:
             raise RuntimeError("SQLite secure deletion could not be enabled")
-        db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self._checkpoint_truncate_or_raise(db, "before_vacuum")
         db.execute("VACUUM")
-        db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        self._checkpoint_truncate_or_raise(db, "after_vacuum")
         db.execute("BEGIN IMMEDIATE")
         try:
             db.execute(
@@ -221,6 +228,22 @@ class CanvasStore:
         except BaseException:
             db.rollback()
             raise
+
+    def _checkpoint_truncate_or_raise(self, db: sqlite3.Connection, phase: str) -> None:
+        """Require a completed truncating checkpoint before advancing scrub state."""
+        for attempt in range(_CHECKPOINT_ATTEMPTS):
+            row = self._checkpoint_hook(phase, attempt) if self._checkpoint_hook is not None else None
+            if row is None:
+                row = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is None or len(row) != 3:
+                raise StoreInitializationError("SQLite checkpoint returned an invalid status")
+            busy, log, checkpointed = row
+            if type(busy) is not int or type(log) is not int or type(checkpointed) is not int:
+                raise StoreInitializationError("SQLite checkpoint returned an invalid status")
+            if busy == 0:
+                return
+            time.sleep(_INIT_BACKOFF_SECONDS * (2**attempt))
+        raise StoreInitializationError("SQLite checkpoint remained busy; pending scrub was not completed")
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:

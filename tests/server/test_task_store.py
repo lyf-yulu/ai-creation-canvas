@@ -1,4 +1,4 @@
-from ai_creation_canvas.storage.sqlite import CanvasStore
+from ai_creation_canvas.storage.sqlite import CanvasStore, StoreInitializationError
 import pytest
 import sqlite3
 import time
@@ -101,3 +101,45 @@ def test_pending_legacy_scrub_recovers_after_a_crash_between_schema_commit_and_v
     for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
         if path.exists():
             assert secret.encode() not in path.read_bytes()
+
+
+def test_busy_checkpoints_preserve_pending_marker_until_a_later_startup_can_scrub(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    database = data / "canvas.sqlite3"
+    secret = "https://provider.test/private/result?signature=checkpoint-busy-secret"
+    db = sqlite3.connect(database)
+    db.execute("CREATE TABLE canvas_jobs (id TEXT PRIMARY KEY,user_id TEXT,service_id TEXT,upstream_job_id TEXT,operation TEXT,status TEXT,idempotency_key TEXT,request_hash TEXT,error_code TEXT,result_ref TEXT,created_at TEXT,updated_at TEXT)")
+    db.execute("INSERT INTO canvas_jobs VALUES ('bad','u','s','up','op','succeeded','k','h',NULL,?,'t','t')", (secret,))
+    db.commit(); db.close()
+
+    with pytest.raises(StoreInitializationError, match="checkpoint"):
+        CanvasStore(data, checkpoint_hook=lambda phase, attempt: (1, 9, 0))
+    pending = sqlite3.connect(database)
+    assert pending.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "1"
+    pending.close()
+
+    CanvasStore(data)
+    verify = sqlite3.connect(database)
+    assert verify.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "0"
+    verify.close()
+    for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes()
+
+
+def test_checkpoint_busy_once_retries_before_clearing_the_pending_marker(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    db = sqlite3.connect(data / "canvas.sqlite3")
+    db.execute("CREATE TABLE canvas_jobs (id TEXT PRIMARY KEY,user_id TEXT,service_id TEXT,upstream_job_id TEXT,operation TEXT,status TEXT,idempotency_key TEXT,request_hash TEXT,error_code TEXT,result_ref TEXT,created_at TEXT,updated_at TEXT)")
+    db.execute("INSERT INTO canvas_jobs VALUES ('bad','u','s','up','op','succeeded','k','h',NULL,'https://provider.test/?checkpoint-once','t','t')")
+    db.commit(); db.close()
+    calls: list[tuple[str, int]] = []
+
+    def busy_once(phase, attempt):
+        calls.append((phase, attempt))
+        return (1, 1, 0) if len(calls) == 1 else None
+
+    store = CanvasStore(data, checkpoint_hook=busy_once)
+    assert calls[:2] == [("before_vacuum", 0), ("before_vacuum", 1)]
+    with store._connection() as verify:
+        assert verify.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "0"

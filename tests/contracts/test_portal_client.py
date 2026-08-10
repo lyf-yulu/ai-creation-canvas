@@ -263,10 +263,26 @@ def test_limiter_skips_a_closed_loop_waiter_without_leaking_its_permit():
     limiter = CrossLoopLimiter(1)
     holder = asyncio.run(limiter.acquire())
     closed_loop = asyncio.new_event_loop()
-    waiter = _LimiterWaiter(closed_loop, closed_loop.create_future())
+    waiter = _LimiterWaiter(closed_loop, threading.Event())
     with limiter._lock:
         limiter._waiters.append(waiter)
     closed_loop.close()
     holder()
     release = asyncio.run(limiter.acquire())
     release()
+
+
+def test_limiter_does_not_transfer_a_permit_before_the_notified_loop_claims_it():
+    limiter = CrossLoopLimiter(1)
+    holder = asyncio.run(limiter.acquire())
+    blocked_loop = asyncio.new_event_loop()
+    blocked_task = blocked_loop.create_task(limiter.acquire())
+    blocked_loop.call_soon(blocked_loop.stop)
+    blocked_loop.run_forever()
+    holder()
+    blocked_task.cancel()
+    blocked_task._log_destroy_pending = False
+    blocked_loop.close()
+    release = asyncio.run(asyncio.wait_for(limiter.acquire(), timeout=0.2))
+    release()
+    assert limiter._in_use == 0

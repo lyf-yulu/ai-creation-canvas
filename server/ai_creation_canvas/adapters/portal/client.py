@@ -25,7 +25,7 @@ _DEFAULT_TIMEOUT = 10.0
 @dataclass(slots=True)
 class _LimiterWaiter:
     loop: asyncio.AbstractEventLoop
-    future: asyncio.Future[Callable[[], None]]
+    signal: threading.Event
     state: str = "queued"
 
 
@@ -42,22 +42,35 @@ class CrossLoopLimiter:
             if self._in_use < self._maximum and not self._waiters:
                 self._in_use += 1
                 return self._new_release()
-            waiter = _LimiterWaiter(loop, loop.create_future())
+            waiter = _LimiterWaiter(loop, threading.Event())
             self._waiters.append(waiter)
-        try:
-            return await waiter.future
-        except asyncio.CancelledError:
+        while True:
+            try:
+                await asyncio.to_thread(waiter.signal.wait)
+            except asyncio.CancelledError:
+                with self._lock:
+                    if waiter.state == "queued":
+                        waiter.state = "cancelled"
+                        try:
+                            self._waiters.remove(waiter)
+                        except ValueError:
+                            pass
+                        waiter.signal.set()
+                        self._notify_waiters_locked()
+                raise
             with self._lock:
-                if waiter.state == "queued":
-                    waiter.state = "cancelled"
-                    try:
-                        self._waiters.remove(waiter)
-                    except ValueError:
-                        pass
-                elif waiter.state == "granted":
-                    waiter.state = "cancelled"
-                    self._handoff_or_free_locked()
-            raise
+                # Notification and clear both occur under this lock, so a
+                # release cannot be lost between this wakeup and the next wait.
+                waiter.signal.clear()
+                self._discard_invalid_head_locked()
+                if waiter.state != "queued":
+                    raise asyncio.CancelledError
+                if self._waiters and self._waiters[0] is waiter and self._in_use < self._maximum:
+                    self._waiters.popleft()
+                    waiter.state = "claimed"
+                    self._in_use += 1
+                    self._notify_waiters_locked()
+                    return self._new_release()
 
     def _new_release(self) -> Callable[[], None]:
         released = False
@@ -70,42 +83,28 @@ class CrossLoopLimiter:
                     return
                 released = True
             with self._lock:
-                self._handoff_or_free_locked()
+                if self._in_use <= 0:
+                    raise RuntimeError("limiter permit underflow")
+                self._in_use -= 1
+                self._notify_waiters_locked()
 
         return release
 
     def _discard_invalid_head_locked(self) -> None:
         while self._waiters:
             waiter = self._waiters[0]
-            if waiter.state == "queued" and not waiter.future.cancelled() and not waiter.loop.is_closed():
+            if waiter.state == "queued" and not waiter.loop.is_closed():
                 return
             self._waiters.popleft()
             waiter.state = "cancelled"
+            waiter.signal.set()
 
-    def _handoff_or_free_locked(self) -> None:
-        while self._waiters:
-            waiter = self._waiters.popleft()
-            if waiter.state != "queued" or waiter.future.cancelled() or waiter.loop.is_closed():
-                waiter.state = "cancelled"
-                continue
-            waiter.state = "granted"
-            release = self._new_release()
-            try:
-                waiter.loop.call_soon_threadsafe(self._resolve_waiter, waiter, release)
-            except RuntimeError:
-                waiter.state = "cancelled"
-                continue
-            return
-        if self._in_use <= 0:
-            raise RuntimeError("limiter permit underflow")
-        self._in_use -= 1
-
-    @staticmethod
-    def _resolve_waiter(waiter: _LimiterWaiter, release: Callable[[], None]) -> None:
-        if waiter.state != "granted" or waiter.future.cancelled():
-            return
-        if not waiter.future.done():
-            waiter.future.set_result(release)
+    def _notify_waiters_locked(self) -> None:
+        # Wake every queue member: the head may belong to a loop that closed
+        # after notification, and only a running loop can claim a permit.
+        for waiter in self._waiters:
+            if waiter.state == "queued":
+                waiter.signal.set()
 
 
 class PortalStream:
