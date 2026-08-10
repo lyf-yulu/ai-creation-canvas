@@ -156,6 +156,9 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     except asyncio.CancelledError:
         store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
         raise
+    except InvalidUpstreamResult:
+        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
+        raise problem(request, "UPSTREAM_INVALID", "The generation service returned an invalid response.", status=502) from None
     except Exception:
         store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
