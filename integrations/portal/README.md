@@ -15,6 +15,15 @@ Portal、图像、视频或人像服务的源码、配置、密钥、状态或�
   事件，因此每个底层生成任务只记一次 Portal 用量。
 - `signed-identity-v2.patch` 是针对其文件上下文精确匹配的 Portal `app.py`
   形状的窄补丁；任何上下文或版本不匹配都必须失败，不能手工模糊套用。
+- 该合成固定基线明确提供 portal_authenticated_user(request) 与
+  app.state.portal_internal_token。补丁在启动和每次代理前验证前者可调用、
+  后者至少 16 个字符；缺失或不合格会明确失败，绝不在首次请求时以
+  NameError 方式退化。真实 Portal 若不具备相同受审阅接口，补丁必须拒绝
+  应用或启动，不能靠浏览器头、环境变量或用户注入隐藏依赖。
+- 请求会按大小写删除全部 X-Portal-*，并过滤 Connection 及其列出的
+  token、全部 RFC hop-by-hop 头、Host 与客户端 Content-Length；响应也过滤
+  hop-by-hop、X-Job-Id 与 X-Usage。Portal 的既有下游生成计量路径才是唯一
+  用量记录方，Canvas 薄代理不自行计量。
 
 ## 仅夹具验证
 

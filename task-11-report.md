@@ -13,7 +13,7 @@
 已运行：
 
     PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_portal_contract.py
-    7 passed
+    9 passed
 
     bash scripts/security-scan.sh
     通过
@@ -21,10 +21,15 @@
     git diff --check
     通过
 
-本轮 RED：补丁只含辅助函数、静态敏感文件会被复制，且测试没有执行补丁后的
-Portal 路由。GREEN：补丁现已向合成固定 Portal 基线注册实际
+第 1 轮 RED：补丁只含辅助函数、静态敏感文件会被复制，且测试没有执行补丁后的
+Portal 路由。第 1 轮 GREEN：补丁现已向合成固定 Portal 基线注册实际
 /ai-canvas/ 和嵌套路由，固定转发到 127.0.0.1:8992，从已认证会话重签
 身份，并返回真实 Canvas 响应。
+
+第 2 轮 RED：认证 hook/签名配置、动态 Connection 头与 Portal 计量边界未被
+明确验证。第 2 轮 GREEN：启动阶段显式校验合成固定 Portal 的认证 hook 和
+最短签名 token；未知 X-Portal-*、Connection token 和 hop-by-hop 请求/响应
+头均被过滤；用量由模拟 Portal 既有下游记录器精确记录一次，代理不添加计量头。
 
 覆盖的行为包括：伪造全部身份头被替换、v2 签名验证的篡改/过期拒绝、两用户
 经真实 Canvas 应用的任务隔离、一次生成只产生一次底层适配器调用、mount 前缀

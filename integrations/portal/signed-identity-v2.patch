@@ -2,7 +2,7 @@ diff --git a/app.py b/app.py
 index 31c82b0..b9da220 100644
 --- a/app.py
 +++ b/app.py
-@@ -1 +1,49 @@
+@@ -1 +1,83 @@
 -from fastapi import FastAPI, HTTPException, Request
 +import hashlib
 +import hmac
@@ -19,6 +19,40 @@ index 31c82b0..b9da220 100644
 +    "x-portal-sig-version", "x-portal-timestamp", "x-portal-user-id",
 +    "x-portal-username", "x-portal-role", "x-portal-signature",
 +})
++HOP_BY_HOP_HEADERS = frozenset({
++    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
++    "te", "trailer", "transfer-encoding", "upgrade",
++})
++
++
++def _canvas_dependencies():
++    """Resolve the pinned Portal hooks once and fail closed if its shape drifts."""
++    auth_hook = globals().get("portal_authenticated_user")
++    secret = getattr(app.state, "portal_internal_token", None)
++    if not callable(auth_hook):
++        raise RuntimeError("AI Canvas requires Portal's portal_authenticated_user hook")
++    if not isinstance(secret, str) or len(secret) < 16:
++        raise RuntimeError("AI Canvas requires a configured Portal internal signing token")
++    return auth_hook, secret
++
++
++def _filtered_headers(headers, *, request: bool) -> dict[str, str]:
++    get_values = getattr(headers, "getlist", None) or getattr(headers, "get_list")
++    connection_tokens = {
++        token.strip().lower()
++        for value in get_values("connection")
++        for token in value.split(",")
++        if token.strip()
++    }
++    blocked = HOP_BY_HOP_HEADERS | connection_tokens
++    if request:
++        blocked |= IDENTITY_HEADERS | {"host", "content-length"}
++    return {
++        name: value
++        for name, value in headers.items()
++        if name.lower() not in blocked
++        and not (request and name.lower().startswith("x-portal-"))
++    }
 +
 +
 +def _canvas_payload(timestamp: str, user_id: str, role: str, username: str) -> bytes:
@@ -53,9 +87,16 @@ index 31c82b0..b9da220 100644
 +        "X-Portal-Role": user["role"],
 +        "X-Portal-Signature": _canvas_signature(secret, timestamp, user["user_id"], user["role"], user["username"]),
 +    }
-@@ -15,2 +62,47 @@
+@@ -20,2 +102,49 @@
  def healthz():
      return {'ok': True}
++
++
++async def _validate_canvas_dependencies() -> None:
++    _canvas_dependencies()
++
++
++app.router.on_startup.append(_validate_canvas_dependencies)
 +
 +
 +@app.api_route("/ai-canvas/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
@@ -73,13 +114,9 @@ index 31c82b0..b9da220 100644
 +        or target_path.startswith("/../")
 +    ):
 +        raise HTTPException(status_code=404)
-+    user = authenticated_session(request)
-+    secret = request.app.state.canvas_identity_secret
-+    headers = {
-+        name: value for name, value in request.headers.items()
-+        if name.lower() not in IDENTITY_HEADERS
-+        and name.lower() not in {"host", "connection", "content-length"}
-+    }
++    auth_hook, secret = _canvas_dependencies()
++    user = auth_hook(request)
++    headers = _filtered_headers(request.headers, request=True)
 +    headers.update(canvas_identity_headers(user, secret))
 +    transport = getattr(request.app.state, "canvas_transport", None)
 +    body = await request.body()
@@ -96,8 +133,7 @@ index 31c82b0..b9da220 100644
 +            content=body,
 +            headers=headers,
 +        )
-+    response_headers = {
-+        name: value for name, value in response.headers.items()
-+        if name.lower() not in {"connection", "transfer-encoding", "x-job-id"}
-+    }
++    response_headers = _filtered_headers(response.headers, request=False)
++    response_headers.pop("x-job-id", None)
++    response_headers.pop("x-usage", None)
 +    return Response(content=response.content, status_code=response.status_code, headers=response_headers)
