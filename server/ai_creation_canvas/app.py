@@ -25,8 +25,10 @@ from ai_creation_canvas.api.jobs import router as jobs_router
 from ai_creation_canvas.api.results import router as results_router
 from ai_creation_canvas.api.auth import router as auth_router
 from ai_creation_canvas.api.activity import router as activity_router
+from ai_creation_canvas.api.admin import router as admin_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
+from ai_creation_canvas.catalog import AssignedModelCatalog
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
@@ -116,9 +118,9 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                 else:
                     registry.register_generation(PortalJobsAdapter(declaration, client))
         model_catalog = ModelCatalog(registry)
-    app.state.model_catalog = model_catalog
     app.state.adapter_registry = registry
     app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
+    app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.settings = settings
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
@@ -189,6 +191,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
 
     app.include_router(auth_router)
     app.include_router(activity_router)
+    app.include_router(admin_router)
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(assets_router)

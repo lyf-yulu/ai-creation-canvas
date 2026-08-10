@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from fastapi.testclient import TestClient
+
+from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
+from ai_creation_canvas.app import create_app
+from ai_creation_canvas.config import Settings
+from ai_creation_canvas.domain.models import JobRequest, JobState, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.registry import AdapterRegistry
+
+
+ORIGIN = "http://127.0.0.1:8992"
+
+
+class AssignmentAdapter:
+    service_id = "assignment-fixture"
+
+    async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]:
+        del context
+        return (
+            ModelSpec("visible-model", self.service_id, "可见模型", ("image.generate",), ("text",), {}),
+            ModelSpec("hidden-model", self.service_id, "隐藏模型", ("image.generate",), ("text",), {}),
+        )
+
+    async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
+        del context, request
+        return UpstreamJob(self.service_id, "upstream-1", JobState("upstream-1", "queued"), datetime.now(UTC))
+
+    async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        del context
+        return JobState(upstream_job_id, "queued")
+
+
+def local_clients(tmp_path):
+    registry = AdapterRegistry()
+    registry.register_generation(AssignmentAdapter())
+    settings = Settings(
+        "test",
+        8992,
+        tmp_path / "data",
+        "test-secret",
+        identity_mode="local",
+        allowed_origins=(ORIGIN,),
+    )
+    app = create_app(settings, static_dir=tmp_path / "dist", registry=registry, model_catalog=ModelCatalog(registry))
+    accounts = app.state.local_auth.bootstrap_accounts(("visible-model",))
+    admin = TestClient(app, base_url=ORIGIN)
+    user = TestClient(app, base_url=ORIGIN)
+    admin_login = admin.post("/api/v1/auth/login", json={"username": accounts.admin_username, "password": accounts.admin_password}).json()
+    user_login = user.post("/api/v1/auth/login", json={"username": accounts.user_username, "password": accounts.user_password}).json()
+    admin_headers = {"Origin": ORIGIN, "X-CSRF-Token": admin_login["csrf_token"]}
+    user_headers = {"Origin": ORIGIN, "X-CSRF-Token": user_login["csrf_token"]}
+    return app, accounts, admin, user, admin_headers, user_headers
+
+
+def job_payload(model_id: str) -> dict[str, object]:
+    return {
+        "operation": "image.generate",
+        "model_id": model_id,
+        "prompt": "test prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": f"key-{model_id}",
+    }
+
+
+def test_unassigned_model_is_hidden_and_cannot_be_submitted(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, accounts, admin, admin_headers
+
+    models = user.get("/api/v1/models").json()["models"]
+    hidden = user.post("/api/v1/jobs", headers=user_headers, json=job_payload("hidden-model"))
+
+    assert [item["model_id"] for item in models] == ["visible-model"]
+    assert hidden.status_code == 400
+    assert hidden.json()["code"] == "MODEL_UNAVAILABLE"
+
+
+def test_admin_can_atomically_replace_user_model_assignments(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, user_headers
+    assert accounts.user is not None
+
+    response = admin.put(
+        f"/api/v1/admin/users/{accounts.user.user_id}/models",
+        headers=admin_headers,
+        json={"model_ids": ["hidden-model"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model_ids"] == ["hidden-model"]
+    assert [item["model_id"] for item in user.get("/api/v1/models").json()["models"]] == ["hidden-model"]
+
+
+def test_normal_user_cannot_call_admin_api(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, accounts, admin, admin_headers
+
+    assert user.get("/api/v1/admin/users").status_code == 404
+    assert user.patch("/api/v1/admin/users/anything", headers=user_headers, json={"enabled": False}).status_code == 404

@@ -364,6 +364,27 @@ class CanvasStore:
             rows = db.execute("SELECT model_id FROM canvas_user_models WHERE user_id=? ORDER BY model_id", (user_id,)).fetchall()
         return tuple(str(row["model_id"]) for row in rows)
 
+    def replace_model_assignments(self, user_id: str, model_ids: tuple[str, ...]) -> tuple[str, ...]:
+        if len(model_ids) > 128 or len(model_ids) != len(set(model_ids)) or any(not isinstance(item, str) or not item or len(item) > 128 for item in model_ids):
+            raise ValueError("model assignments are invalid")
+        with self._connection(immediate=True) as db:
+            if db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is None:
+                raise KeyError(user_id)
+            db.execute("DELETE FROM canvas_user_models WHERE user_id=?", (user_id,))
+            now = _now()
+            db.executemany(
+                "INSERT INTO canvas_user_models (user_id,model_id,created_at) VALUES (?,?,?)",
+                ((user_id, model_id, now) for model_id in sorted(model_ids)),
+            )
+        return self.assigned_models(user_id)
+
+    def list_users(self) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT user_id,username_normalized,display_name,role,enabled,must_change_password,created_at,updated_at FROM canvas_users ORDER BY role,username_normalized"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def list_assets_for_owner(self, user_id: str, limit: int = 100) -> tuple[dict[str, object], ...]:
         safe_limit = min(max(limit, 1), 100)
         with self._connection() as db:

@@ -1,6 +1,6 @@
 import { createBrowserRouter, Outlet } from "react-router-dom";
 
-import { AuthGate } from "@/components/auth/auth-gate";
+import { AuthGate, RoleGate } from "@/components/auth/auth-gate";
 import { ProductShell } from "@/components/layout/product-shell";
 import ActivityAssetsPage from "@/pages/assets/activity";
 import CanvasPage from "@/pages/canvas";
@@ -8,6 +8,8 @@ import CanvasProjectPage from "@/pages/canvas/project";
 import LoginPage from "@/pages/auth/login";
 import NotFound from "@/pages/not-found";
 import TasksPage from "@/pages/tasks";
+import AdminModelsPage from "@/pages/admin/models";
+import AdminUsersPage from "@/pages/admin/users";
 
 export const router = createBrowserRouter([
     { path: "/login", element: <LoginPage /> },
@@ -19,6 +21,8 @@ export const router = createBrowserRouter([
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/assets", element: <ActivityAssetsPage /> },
             { path: "/tasks", element: <TasksPage /> },
+            { path: "/admin/users", element: <RoleGate allowed={["admin"]}><AdminUsersPage /></RoleGate> },
+            { path: "/admin/models", element: <RoleGate allowed={["admin"]}><AdminModelsPage /></RoleGate> },
         ],
     },
     { path: "*", element: <NotFound /> },
