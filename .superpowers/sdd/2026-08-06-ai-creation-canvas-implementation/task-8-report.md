@@ -121,6 +121,31 @@ Final verification:
 - `./scripts/security-scan.sh` — passed
 - `git diff --check` — passed
 
+## Exception Round 6 limiter follow-up 3 (user-approved)
+
+- Replaced the limiter's executor-backed `Event.wait` path with per-loop
+  `asyncio.Future` waiters.  FIFO notification still does not reserve a
+  permit: the resumed coroutine alone claims it under the shared lock.
+- A daemon claim timer expires a notified but unclaimed head waiter.  It
+  atomically removes that waiter, notifies the next queue member, and gives a
+  later-resumed loop `ConcurrencyClaimTimeout` rather than allowing it to
+  claim a stale slot.  No default-executor worker is held by a stopped loop.
+
+TDD evidence:
+
+- RED: the stopped-but-unclosed loop race required a configurable claim
+  timeout and safe timeout type; the earlier implementation could retain the
+  queue head indefinitely.
+- GREEN: Portal client suite — 13 passed, including normal FIFO, cancellation,
+  timeout/late-resume, no-underflow, and the three-loop stopped-loop race.
+
+Final verification:
+
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 211 passed
+- `python3 -m compileall -q server` — passed
+- `./scripts/security-scan.sh` — passed
+- `git diff --check` — passed
+
 ## Exception Round 6 follow-up 2 (user-approved)
 
 - Each `wal_checkpoint(TRUNCATE)` now reads and validates SQLite's

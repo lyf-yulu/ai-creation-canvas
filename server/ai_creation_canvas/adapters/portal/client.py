@@ -20,20 +20,31 @@ from ai_creation_canvas.domain.models import RequestContext
 _MAX_COOKIE_BYTES = 8192
 _MAX_RESPONSE_BYTES = 1_048_576
 _DEFAULT_TIMEOUT = 10.0
+_DEFAULT_CLAIM_TIMEOUT = 5.0
 
 
 @dataclass(slots=True)
 class _LimiterWaiter:
     loop: asyncio.AbstractEventLoop
-    signal: threading.Event
+    future: asyncio.Future[None]
     state: str = "queued"
+    timer: threading.Timer | None = None
+
+
+class ConcurrencyClaimTimeout(RuntimeError):
+    """A notified loop did not claim its FIFO concurrency slot in time."""
 
 
 class CrossLoopLimiter:
     """A cancellation-safe, FIFO, event-loop-independent concurrency budget."""
-    def __init__(self, maximum: int) -> None:
+    def __init__(self, maximum: int, *, claim_timeout: float = _DEFAULT_CLAIM_TIMEOUT) -> None:
+        if type(maximum) is not int or maximum < 1:
+            raise ValueError("maximum must be a positive integer")
+        if not isinstance(claim_timeout, (int, float)) or isinstance(claim_timeout, bool) or claim_timeout <= 0:
+            raise ValueError("claim_timeout must be positive")
         self._maximum, self._in_use, self._lock = maximum, 0, threading.Lock()
         self._waiters: deque[_LimiterWaiter] = deque()
+        self._claim_timeout = float(claim_timeout)
 
     async def acquire(self) -> Callable[[], None]:
         loop = asyncio.get_running_loop()
@@ -42,35 +53,34 @@ class CrossLoopLimiter:
             if self._in_use < self._maximum and not self._waiters:
                 self._in_use += 1
                 return self._new_release()
-            waiter = _LimiterWaiter(loop, threading.Event())
+            waiter = _LimiterWaiter(loop, loop.create_future())
             self._waiters.append(waiter)
-        while True:
-            try:
-                await asyncio.to_thread(waiter.signal.wait)
-            except asyncio.CancelledError:
-                with self._lock:
-                    if waiter.state == "queued":
-                        waiter.state = "cancelled"
-                        try:
-                            self._waiters.remove(waiter)
-                        except ValueError:
-                            pass
-                        waiter.signal.set()
-                        self._notify_waiters_locked()
-                raise
+            self._notify_head_locked()
+        try:
+            await waiter.future
+        except asyncio.CancelledError:
             with self._lock:
-                # Notification and clear both occur under this lock, so a
-                # release cannot be lost between this wakeup and the next wait.
-                waiter.signal.clear()
-                self._discard_invalid_head_locked()
-                if waiter.state != "queued":
-                    raise asyncio.CancelledError
-                if self._waiters and self._waiters[0] is waiter and self._in_use < self._maximum:
-                    self._waiters.popleft()
-                    waiter.state = "claimed"
-                    self._in_use += 1
-                    self._notify_waiters_locked()
-                    return self._new_release()
+                if waiter.state in {"queued", "notified"}:
+                    self._remove_waiter_locked(waiter, "cancelled")
+                    self._notify_head_locked()
+            raise
+        with self._lock:
+            if waiter.state == "expired":
+                raise ConcurrencyClaimTimeout("the event loop did not claim its concurrency slot in time")
+            self._discard_invalid_head_locked()
+            if (
+                waiter.state != "notified"
+                or not self._waiters
+                or self._waiters[0] is not waiter
+                or self._in_use >= self._maximum
+            ):
+                raise ConcurrencyClaimTimeout("the concurrency slot is no longer available")
+            self._waiters.popleft()
+            waiter.state = "claimed"
+            self._cancel_timer_locked(waiter)
+            self._in_use += 1
+            self._notify_head_locked()
+            return self._new_release()
 
     def _new_release(self) -> Callable[[], None]:
         released = False
@@ -86,25 +96,73 @@ class CrossLoopLimiter:
                 if self._in_use <= 0:
                     raise RuntimeError("limiter permit underflow")
                 self._in_use -= 1
-                self._notify_waiters_locked()
+                self._notify_head_locked()
 
         return release
 
     def _discard_invalid_head_locked(self) -> None:
         while self._waiters:
             waiter = self._waiters[0]
-            if waiter.state == "queued" and not waiter.loop.is_closed():
+            if waiter.state in {"queued", "notified"} and not waiter.loop.is_closed() and not waiter.future.cancelled():
                 return
             self._waiters.popleft()
-            waiter.state = "cancelled"
-            waiter.signal.set()
+            waiter.state = "expired"
+            self._cancel_timer_locked(waiter)
 
-    def _notify_waiters_locked(self) -> None:
-        # Wake every queue member: the head may belong to a loop that closed
-        # after notification, and only a running loop can claim a permit.
-        for waiter in self._waiters:
-            if waiter.state == "queued":
-                waiter.signal.set()
+    def _notify_head_locked(self) -> None:
+        self._discard_invalid_head_locked()
+        if self._in_use >= self._maximum or not self._waiters:
+            return
+        waiter = self._waiters[0]
+        if waiter.state != "queued":
+            return
+        waiter.state = "notified"
+        timer = threading.Timer(self._claim_timeout, self._expire_waiter, args=(waiter,))
+        timer.daemon = True
+        waiter.timer = timer
+        timer.start()
+        try:
+            waiter.loop.call_soon_threadsafe(self._wake_waiter, waiter)
+        except RuntimeError:
+            self._remove_waiter_locked(waiter, "expired")
+            self._notify_head_locked()
+
+    def _expire_waiter(self, waiter: _LimiterWaiter) -> None:
+        with self._lock:
+            if waiter.state != "notified":
+                return
+            self._remove_waiter_locked(waiter, "expired")
+            self._notify_head_locked()
+        try:
+            waiter.loop.call_soon_threadsafe(self._fail_waiter, waiter)
+        except RuntimeError:
+            pass
+
+    def _remove_waiter_locked(self, waiter: _LimiterWaiter, state: str) -> None:
+        try:
+            self._waiters.remove(waiter)
+        except ValueError:
+            pass
+        waiter.state = state
+        self._cancel_timer_locked(waiter)
+
+    @staticmethod
+    def _cancel_timer_locked(waiter: _LimiterWaiter) -> None:
+        if waiter.timer is not None:
+            waiter.timer.cancel()
+            waiter.timer = None
+
+    @staticmethod
+    def _wake_waiter(waiter: _LimiterWaiter) -> None:
+        if waiter.state == "notified" and not waiter.future.done():
+            waiter.future.set_result(None)
+
+    @staticmethod
+    def _fail_waiter(waiter: _LimiterWaiter) -> None:
+        if waiter.state == "expired" and not waiter.future.done():
+            waiter.future.set_exception(
+                ConcurrencyClaimTimeout("the event loop did not claim its concurrency slot in time")
+            )
 
 
 class PortalStream:

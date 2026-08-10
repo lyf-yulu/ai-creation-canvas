@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from ai_creation_canvas.adapters.portal.client import CrossLoopLimiter, PortalClient, PortalStream, _LimiterWaiter
+from ai_creation_canvas.adapters.portal.client import ConcurrencyClaimTimeout, CrossLoopLimiter, PortalClient, PortalStream, _LimiterWaiter
 from ai_creation_canvas.domain.models import PortalUser, RequestContext
 
 
@@ -263,7 +263,7 @@ def test_limiter_skips_a_closed_loop_waiter_without_leaking_its_permit():
     limiter = CrossLoopLimiter(1)
     holder = asyncio.run(limiter.acquire())
     closed_loop = asyncio.new_event_loop()
-    waiter = _LimiterWaiter(closed_loop, threading.Event())
+    waiter = _LimiterWaiter(closed_loop, closed_loop.create_future())
     with limiter._lock:
         limiter._waiters.append(waiter)
     closed_loop.close()
@@ -273,16 +273,37 @@ def test_limiter_skips_a_closed_loop_waiter_without_leaking_its_permit():
 
 
 def test_limiter_does_not_transfer_a_permit_before_the_notified_loop_claims_it():
-    limiter = CrossLoopLimiter(1)
+    limiter = CrossLoopLimiter(1, claim_timeout=0.05)
     holder = asyncio.run(limiter.acquire())
     blocked_loop = asyncio.new_event_loop()
     blocked_task = blocked_loop.create_task(limiter.acquire())
     blocked_loop.call_soon(blocked_loop.stop)
     blocked_loop.run_forever()
     holder()
-    blocked_task.cancel()
-    blocked_task._log_destroy_pending = False
-    blocked_loop.close()
+    time.sleep(0.1)
     release = asyncio.run(asyncio.wait_for(limiter.acquire(), timeout=0.2))
     release()
+    with pytest.raises(ConcurrencyClaimTimeout):
+        blocked_loop.run_until_complete(blocked_task)
+    blocked_loop.close()
+    assert limiter._in_use == 0
+
+
+@pytest.mark.anyio
+async def test_limiter_claims_normal_fifo_order_without_underflow():
+    limiter = CrossLoopLimiter(1, claim_timeout=1)
+    holder = await limiter.acquire()
+    order: list[str] = []
+
+    async def acquire_and_release(name: str):
+        release = await limiter.acquire()
+        order.append(name)
+        release()
+
+    first = asyncio.create_task(acquire_and_release("B"))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(acquire_and_release("C"))
+    holder()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=0.2)
+    assert order == ["B", "C"]
     assert limiter._in_use == 0
