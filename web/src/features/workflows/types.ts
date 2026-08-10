@@ -8,12 +8,13 @@ export type WorkflowDefinition<Input = unknown, Output = unknown> = {
 
 export type PortraitVideoJobRequest = JobRequest;
 export class PortraitWorkflowError extends Error {
-    readonly assetId: string;
-    readonly phase = "video-submit" as const;
-    constructor(assetId: string, cause: unknown) {
-        super("The portrait video could not be submitted.");
+    readonly assetId?: string;
+    readonly phase: "asset-upload" | "asset-resolve" | "asset-poll" | "video-submit";
+    constructor(phase: PortraitWorkflowError["phase"], cause: unknown, assetId?: string) {
+        super("The portrait workflow could not be completed.");
         this.name = "PortraitWorkflowError";
         this.assetId = assetId;
+        this.phase = phase;
         this.cause = cause;
     }
 }

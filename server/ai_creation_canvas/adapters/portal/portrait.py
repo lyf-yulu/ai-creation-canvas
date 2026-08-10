@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import re
+import os
+import secrets
+import stat
 from dataclasses import dataclass
 from typing import Mapping, AsyncIterator
 from pathlib import Path
-import anyio
 from urllib.parse import quote
 
 import httpx
@@ -82,17 +84,30 @@ class PortalPortraitAdapter:
         raise ValueError("portrait upload requires request-scoped cookie and bytes")
     async def upload_with_cookie(self, context, asset, source: Path, size: int, cookie_header: str):
         if asset.kind.value != "portrait" or not isinstance(source, Path) or not isinstance(size, int) or size < 1: raise ValueError("portrait upload is invalid")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(source, flags)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size != size or size > 10 * 1024 * 1024:
+                os.close(fd); raise ValueError("portrait upload source is invalid")
+        except OSError as error:
+            raise ValueError("portrait upload source is invalid") from error
         try:
             group = await self._client.request(context, "POST", self._declaration.routes["groups"], mount=self._declaration.mount, cookie_header=cookie_header, json={})
             if group.status_code not in {200, 201}: raise PortalUpstreamError(retryable=group.status_code in {408,429} or group.status_code >= 500, status_code=group.status_code)
             group_payload = group.json()
             if not isinstance(group_payload, Mapping): raise InvalidUpstreamResult("portrait group response is invalid")
             group_id = self._opaque(group_payload.get("id"))
-            response = await self._client.request(context, "POST", self._declaration.routes["assets"], mount=self._declaration.mount, cookie_header=cookie_header, content=self._multipart(source, size, asset.mime_type, group_id), extra_headers={"Content-Type": "multipart/form-data; boundary=canvas-upload"})
+            boundary = secrets.token_hex(24)
+            prefix, suffix = self._multipart_edges(boundary, asset.mime_type, group_id)
+            response = await self._client.request(context, "POST", self._declaration.routes["assets"], mount=self._declaration.mount, cookie_header=cookie_header, content=self._multipart(fd, size, prefix, suffix), extra_headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(len(prefix) + size + len(suffix))})
             if response.status_code not in {200, 201, 202}: raise PortalUpstreamError(retryable=response.status_code in {408,429} or response.status_code >= 500, status_code=response.status_code)
             return self._asset(response.json())
         except asyncio.CancelledError: raise
         except httpx.HTTPError as error: raise PortalUpstreamError(retryable=True) from error
+        finally:
+            try: os.close(fd)
+            except OSError: pass
 
     async def get(self, context, asset_id): return await self._get(context, asset_id, None)
     async def get_with_cookie(self, context, asset_id, cookie_header): return await self._get(context, asset_id, cookie_header)
@@ -127,10 +142,19 @@ class PortalPortraitAdapter:
         except ValueError as error: raise InvalidUpstreamResult("portrait job response is invalid") from error
 
     @staticmethod
-    async def _multipart(source: Path, size: int, mime: str, group_id: str) -> AsyncIterator[bytes]:
-        boundary = b"--canvas-upload\r\n"
-        yield boundary + f'Content-Disposition: form-data; name="group_id"\r\n\r\n{group_id}\r\n'.encode()
-        yield boundary + f'Content-Disposition: form-data; name="file"; filename="upload.bin"\r\nContent-Type: {mime}\r\n\r\n'.encode()
-        async with await anyio.open_file(source, "rb") as handle:
-            while chunk := await handle.read(65536): yield chunk
-        yield b"\r\n--canvas-upload--\r\n"
+    def _multipart_edges(boundary: str, mime: str, group_id: str) -> tuple[bytes, bytes]:
+        prefix = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"group_id\"\r\n\r\n{group_id}\r\n"
+                  f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload.bin\"\r\nContent-Type: {mime}\r\n\r\n").encode()
+        return prefix, f"\r\n--{boundary}--\r\n".encode()
+
+    @staticmethod
+    async def _multipart(fd: int, size: int, prefix: bytes, suffix: bytes) -> AsyncIterator[bytes]:
+        yield prefix
+        remaining = size
+        while remaining:
+            chunk = await asyncio.to_thread(os.read, fd, min(65536, remaining))
+            if not chunk: raise InvalidUpstreamResult("portrait upload source changed")
+            remaining -= len(chunk)
+            yield chunk
+        if await asyncio.to_thread(os.read, fd, 1): raise InvalidUpstreamResult("portrait upload source changed")
+        yield suffix

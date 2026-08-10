@@ -133,8 +133,8 @@ it("stops portrait workflow when the asset fails or remains pending past its tim
         submitJob: async () => ({ jobId: "job-1" }),
         sleep: async () => undefined,
     };
-    await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "failed", mime_type: "image/png" }) })).rejects.toThrow("asset asset-1 failed");
-    await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "processing", mime_type: "image/png" }), pollIntervalMs: 1, maxWaitMs: 1 })).rejects.toThrow("asset asset-1 timed out");
+    await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "failed", mime_type: "image/png" }) })).rejects.toMatchObject({ phase: "asset-poll", assetId: "asset-1" });
+    await expect(portraitVideoWorkflow.run({ ...base, fetchAsset: async () => ({ id: "asset-1", kind: "portrait", status: "processing", mime_type: "image/png" }), pollIntervalMs: 1, maxWaitMs: 1 })).rejects.toMatchObject({ phase: "asset-poll", assetId: "asset-1" });
 });
 
 it("rejects invalid portrait polling limits before upload or sleep", async () => {
@@ -159,7 +159,7 @@ it("bounds portrait polling when the maximum wait is shorter than the interval",
         uploadAsset: async () => ({ id: "asset", kind: "portrait", status: "processing", mime_type: "image/png" }),
         fetchAsset: async () => { assetReads += 1; return { id: "asset", kind: "portrait" as const, status: "processing" as const, mime_type: "image/png" }; },
         submitJob: async () => ({ jobId: "job" }), sleep: async () => { sleeps += 1; }, pollIntervalMs: 10, maxWaitMs: 1,
-    })).rejects.toThrow("asset asset timed out");
+    })).rejects.toMatchObject({ phase: "asset-poll", assetId: "asset" });
     expect(assetReads).toBe(0);
     expect(sleeps).toBe(0);
 });

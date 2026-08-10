@@ -28,15 +28,22 @@ export const portraitVideoWorkflow: WorkflowDefinition<PortraitVideoInput, Portr
     async run(input) {
         validatePollingLimits(input);
         if (!input.file && !input.assetId) throw new Error("file or assetId is required");
-        const initial = input.assetId
-            ? await input.fetchAsset(input.assetId)
-            : await input.uploadAsset(input.file!, "portrait");
-        const asset = await waitForActiveAsset(initial, input);
+        let initial;
+        try {
+            initial = input.assetId
+                ? await input.fetchAsset(input.assetId)
+                : await input.uploadAsset(input.file!, "portrait");
+        } catch (error) {
+            throw new PortraitWorkflowError(input.assetId ? "asset-resolve" : "asset-upload", error, input.assetId);
+        }
+        let asset;
+        try { asset = await waitForActiveAsset(initial, input); }
+        catch (error) { throw new PortraitWorkflowError("asset-poll", error, initial.id); }
         try {
             const job = await input.submitJob({ operation: "video.image_to_video", model_id: input.modelId, prompt: input.prompt, params: input.params, asset_ids: [asset.id], idempotency_key: input.idempotencyKey });
             return { jobId: job.jobId, assetId: asset.id };
         } catch (error) {
-            throw new PortraitWorkflowError(asset.id, error);
+            throw new PortraitWorkflowError("video-submit", error, asset.id);
         }
     },
 };

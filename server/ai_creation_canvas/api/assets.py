@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import AssetRef
-from ai_creation_canvas.errors import AdapterNotFoundError, PortalUpstreamError
+from ai_creation_canvas.errors import AdapterNotFoundError, PortalUpstreamError, InvalidUpstreamResult
 
 router = APIRouter(prefix="/api/v1")
 _MAX_UPLOAD = 10 * 1024 * 1024
@@ -82,8 +82,10 @@ async def upload_asset(request: Request, file: UploadFile = File(...), kind: str
                 upstream = await upload(context, AssetRef(asset_id, "portrait", "processing", mime), target, size, request.headers["cookie"])
             except AdapterNotFoundError:
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
-            except PortalUpstreamError:
-                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+            except PortalUpstreamError as error:
+                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+            except InvalidUpstreamResult:
+                raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
             except Exception:
                 raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
             item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, mime_type=mime, relative_path=relative, size_bytes=size, status=upstream.status.value, service_id="portal-portrait", upstream_asset_id=upstream.asset_id)
@@ -115,8 +117,10 @@ async def get_asset(asset_id: str, request: Request) -> dict[str, object]:
             if not callable(get) or not isinstance(item.get("upstream_asset_id"), str): raise ValueError
             upstream = await get(context, item["upstream_asset_id"], request.headers["cookie"])
             item = request.app.state.canvas_store.update_asset_status(asset_id, upstream.status.value)
-        except PortalUpstreamError:
-            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+        except PortalUpstreamError as error:
+            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+        except InvalidUpstreamResult:
+            raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
         except Exception:
             raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
     return _asset(item)
