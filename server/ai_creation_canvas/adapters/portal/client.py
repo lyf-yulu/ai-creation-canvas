@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import threading
+from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -20,31 +22,90 @@ _MAX_RESPONSE_BYTES = 1_048_576
 _DEFAULT_TIMEOUT = 10.0
 
 
+@dataclass(slots=True)
+class _LimiterWaiter:
+    loop: asyncio.AbstractEventLoop
+    future: asyncio.Future[Callable[[], None]]
+    state: str = "queued"
+
+
 class CrossLoopLimiter:
-    """A cancellation-safe, event-loop-independent concurrency budget."""
+    """A cancellation-safe, FIFO, event-loop-independent concurrency budget."""
     def __init__(self, maximum: int) -> None:
         self._maximum, self._in_use, self._lock = maximum, 0, threading.Lock()
+        self._waiters: deque[_LimiterWaiter] = deque()
+
     async def acquire(self) -> Callable[[], None]:
-        delay = 0.001
-        while True:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            self._discard_invalid_head_locked()
+            if self._in_use < self._maximum and not self._waiters:
+                self._in_use += 1
+                return self._new_release()
+            waiter = _LimiterWaiter(loop, loop.create_future())
+            self._waiters.append(waiter)
+        try:
+            return await waiter.future
+        except asyncio.CancelledError:
             with self._lock:
-                if self._in_use < self._maximum:
-                    self._in_use += 1
-                    released = False
-                    release_lock = threading.Lock()
+                if waiter.state == "queued":
+                    waiter.state = "cancelled"
+                    try:
+                        self._waiters.remove(waiter)
+                    except ValueError:
+                        pass
+                elif waiter.state == "granted":
+                    waiter.state = "cancelled"
+                    self._handoff_or_free_locked()
+            raise
 
-                    def release() -> None:
-                        nonlocal released
-                        with release_lock:
-                            if released:
-                                return
-                            released = True
-                        with self._lock:
-                            self._in_use -= 1
+    def _new_release(self) -> Callable[[], None]:
+        released = False
+        release_lock = threading.Lock()
 
-                    return release
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, 0.05)
+        def release() -> None:
+            nonlocal released
+            with release_lock:
+                if released:
+                    return
+                released = True
+            with self._lock:
+                self._handoff_or_free_locked()
+
+        return release
+
+    def _discard_invalid_head_locked(self) -> None:
+        while self._waiters:
+            waiter = self._waiters[0]
+            if waiter.state == "queued" and not waiter.future.cancelled() and not waiter.loop.is_closed():
+                return
+            self._waiters.popleft()
+            waiter.state = "cancelled"
+
+    def _handoff_or_free_locked(self) -> None:
+        while self._waiters:
+            waiter = self._waiters.popleft()
+            if waiter.state != "queued" or waiter.future.cancelled() or waiter.loop.is_closed():
+                waiter.state = "cancelled"
+                continue
+            waiter.state = "granted"
+            release = self._new_release()
+            try:
+                waiter.loop.call_soon_threadsafe(self._resolve_waiter, waiter, release)
+            except RuntimeError:
+                waiter.state = "cancelled"
+                continue
+            return
+        if self._in_use <= 0:
+            raise RuntimeError("limiter permit underflow")
+        self._in_use -= 1
+
+    @staticmethod
+    def _resolve_waiter(waiter: _LimiterWaiter, release: Callable[[], None]) -> None:
+        if waiter.state != "granted" or waiter.future.cancelled():
+            return
+        if not waiter.future.done():
+            waiter.future.set_result(release)
 
 
 class PortalStream:

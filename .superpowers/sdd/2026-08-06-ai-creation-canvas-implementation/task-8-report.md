@@ -120,3 +120,36 @@ Final verification:
 - `python3 -m compileall -q server` — passed
 - `./scripts/security-scan.sh` — passed
 - `git diff --check` — passed
+
+## Exception Round 6 follow-up (user-approved)
+
+- Legacy-result migration now uses one secure SQLite connection for WAL setup,
+  exclusive schema work, marker writes, checkpointing, and vacuuming.  The
+  committed `legacy_result_scrub_pending=1` marker survives a crash after the
+  schema commit; a later startup re-scrubs even when `result_ref` is already
+  gone and clears the marker only after checkpoint/vacuum/checkpoint succeeds.
+  Busy or locked initialization retries with bounded backoff and otherwise
+  refuses to start safely.
+- The shared Portal concurrency budget is now FIFO rather than sleep-polled.
+  Waiters retain their owner loop and future; permit release hands off to the
+  oldest valid waiter via `call_soon_threadsafe`.  Cancellation, closed loops,
+  and duplicate release calls cannot leak or underflow a permit.
+- `GenerationPort` now documents the invalid-success-result protocol.  Jobs
+  terminally CAS both `InvalidUpstreamResult` and adapter validation
+  `ValueError` to `INVALID_UPSTREAM_RESULT`; Portal network and HTTP poll
+  failures instead remain typed `PortalUpstreamError` values.
+
+TDD evidence:
+
+- RED: the initial focused run exposed the missing crash hook/marker recovery,
+  sleep-polling FIFO violation (`second` barged ahead of `first`), raw network
+  poll timeout, and generic poll `ValueError` being left queued.
+- GREEN: focused migration, limiter, generation, and Portal catalog suites —
+  61 passed.
+
+Final verification:
+
+- `PYTHONPATH=server:. .venv/bin/pytest -q` — 207 passed
+- `python3 -m compileall -q server` — passed
+- `./scripts/security-scan.sh` — passed
+- `git diff --check` — passed

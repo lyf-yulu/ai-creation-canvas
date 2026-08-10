@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import httpx
 import pytest
 
-from ai_creation_canvas.adapters.portal.client import CrossLoopLimiter, PortalClient, PortalStream
+from ai_creation_canvas.adapters.portal.client import CrossLoopLimiter, PortalClient, PortalStream, _LimiterWaiter
 from ai_creation_canvas.domain.models import PortalUser, RequestContext
 
 
@@ -178,3 +179,94 @@ async def test_stream_close_exception_still_releases_its_idempotent_permit():
         await stream.aclose()
     next_release = await asyncio.wait_for(limiter.acquire(), timeout=0.2)
     next_release()
+
+
+@pytest.mark.anyio
+async def test_limiter_never_sleep_polls_or_allows_new_work_to_barge_a_waiter(monkeypatch):
+    limiter = CrossLoopLimiter(1)
+    holder = await limiter.acquire()
+    order: list[str] = []
+
+    async def wait_for(name: str):
+        release = await limiter.acquire()
+        order.append(name)
+        release()
+
+    first = asyncio.create_task(wait_for("first"))
+    await asyncio.sleep(0)
+
+    async def no_sleep(*args, **kwargs):
+        raise AssertionError("limiter must queue instead of sleep polling")
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    second = asyncio.create_task(wait_for("second"))
+    holder()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=0.2)
+    assert order == ["first", "second"]
+
+
+def test_limiter_fifo_handoffs_across_threads_and_skips_a_cancelled_middle_waiter():
+    limiter = CrossLoopLimiter(1)
+    holder = asyncio.run(limiter.acquire())
+    order: list[str] = []
+    acquired = {name: threading.Event() for name in ("first", "second", "third")}
+    release = {name: threading.Event() for name in ("first", "second", "third")}
+    cancelled = threading.Event()
+    waiting: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task[object]]] = {}
+    waiting_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def worker(name: str) -> None:
+        async def run() -> None:
+            with waiting_lock:
+                waiting[name] = (asyncio.get_running_loop(), asyncio.current_task())
+            permit = await limiter.acquire()
+            order.append(name)
+            acquired[name].set()
+            await asyncio.to_thread(release[name].wait)
+            permit()
+        try:
+            asyncio.run(run())
+        except asyncio.CancelledError:
+            if name == "second":
+                cancelled.set()
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker, args=(name,)) for name in ("first", "second", "third")]
+    for expected, thread in enumerate(threads, start=1):
+        thread.start()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            with limiter._lock:
+                if len(limiter._waiters) >= expected:
+                    break
+            time.sleep(0.001)
+        else:
+            raise AssertionError("waiter was not queued")
+    with waiting_lock:
+        second_loop, second_task = waiting["second"]
+    second_loop.call_soon_threadsafe(second_task.cancel)
+    assert cancelled.wait(1)
+    holder()
+    assert acquired["first"].wait(1)
+    assert not acquired["second"].is_set()
+    release["first"].set()
+    assert acquired["third"].wait(1)
+    release["third"].set()
+    for thread in threads:
+        thread.join(1)
+    assert errors == []
+    assert order == ["first", "third"]
+
+
+def test_limiter_skips_a_closed_loop_waiter_without_leaking_its_permit():
+    limiter = CrossLoopLimiter(1)
+    holder = asyncio.run(limiter.acquire())
+    closed_loop = asyncio.new_event_loop()
+    waiter = _LimiterWaiter(closed_loop, closed_loop.create_future())
+    with limiter._lock:
+        limiter._waiters.append(waiter)
+    closed_loop.close()
+    holder()
+    release = asyncio.run(limiter.acquire())
+    release()

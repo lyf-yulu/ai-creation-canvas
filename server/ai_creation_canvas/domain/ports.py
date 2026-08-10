@@ -3,10 +3,18 @@
 from typing import Protocol
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.errors import InvalidUpstreamResult
 
 
 class GenerationPort(Protocol):
-    """submit MUST honor JobRequest.idempotency_key at the upstream boundary."""
+    """Trusted provider adapter.
+
+    ``submit`` MUST honor ``JobRequest.idempotency_key`` at the upstream
+    boundary.  ``poll`` MUST raise :class:`InvalidUpstreamResult` when an
+    upstream ``succeeded`` response has no valid opaque result identifier;
+    adapter validation failures use ``ValueError`` and transport failures use
+    a typed retryable upstream exception rather than ``ValueError``.
+    """
     service_id: str
 
     async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]: ...

@@ -1,4 +1,5 @@
 from ai_creation_canvas.storage.sqlite import CanvasStore
+import pytest
 import sqlite3
 import time
 
@@ -67,6 +68,36 @@ def test_legacy_migration_physically_scrubs_signed_urls_but_keeps_opaque_ids(tmp
         assert "result_ref" not in {row[1] for row in verify.execute("PRAGMA table_info(canvas_jobs)")}
         assert verify.execute("SELECT result_id FROM canvas_jobs WHERE id='bad'").fetchone()[0] is None
         assert verify.execute("SELECT result_id FROM canvas_jobs WHERE id='good'").fetchone()[0] == "opaque_result_1"
+    for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
+        if path.exists():
+            assert secret.encode() not in path.read_bytes()
+
+
+def test_pending_legacy_scrub_recovers_after_a_crash_between_schema_commit_and_vacuum(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    database = data / "canvas.sqlite3"
+    secret = "https://provider.test/private/result?signature=crash-window-secret"
+    db = sqlite3.connect(database)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("CREATE TABLE canvas_jobs (id TEXT PRIMARY KEY,user_id TEXT,service_id TEXT,upstream_job_id TEXT,operation TEXT,status TEXT,idempotency_key TEXT,request_hash TEXT,error_code TEXT,result_ref TEXT,created_at TEXT,updated_at TEXT)")
+    db.execute("INSERT INTO canvas_jobs VALUES ('bad','u','s','up','op','succeeded','k','h',NULL,?,'t','t')", (secret,))
+    db.commit(); db.close()
+
+    def crash_after_schema_commit(stage):
+        if stage == "after_schema_commit":
+            raise RuntimeError("simulated crash")
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        CanvasStore(data, migration_hook=crash_after_schema_commit)
+    pending = sqlite3.connect(database)
+    assert pending.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "1"
+    pending.close()
+
+    CanvasStore(data)
+    verify = sqlite3.connect(database)
+    assert verify.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "0"
+    assert verify.execute("SELECT result_id FROM canvas_jobs WHERE id='bad'").fetchone()[0] is None
+    verify.close()
     for path in (database, database.with_name(database.name + "-wal"), database.with_name(database.name + "-shm")):
         if path.exists():
             assert secret.encode() not in path.read_bytes()

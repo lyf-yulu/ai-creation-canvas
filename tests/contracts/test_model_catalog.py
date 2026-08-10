@@ -130,6 +130,24 @@ async def test_portal_submission_maps_http_failures_to_typed_errors(status, retr
 
 
 @pytest.mark.anyio
+async def test_portal_poll_maps_network_and_http_failures_to_typed_upstream_errors():
+    timeout = PortalClient(
+        "https://portal.test", allowed_mounts=("/image-service",),
+        transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("lost", request=request))),
+    )
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), timeout)
+    with pytest.raises(PortalUpstreamError) as timed_out:
+        await adapter.poll(context_for(), "upstream-1")
+    assert timed_out.value.retryable is True
+
+    unavailable = PortalClient("https://portal.test", allowed_mounts=("/image-service",), transport=httpx.MockTransport(lambda request: httpx.Response(503)))
+    adapter = PortalJobsAdapter(ServiceDeclaration("image-service", "/image-service", "image", ("image.generate",)), unavailable)
+    with pytest.raises(PortalUpstreamError) as failed:
+        await adapter.poll(context_for(), "upstream-1")
+    assert failed.value.retryable is True
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("result_ref", [None, "", "signed-result?token=secret"])
 async def test_portal_poll_rejects_missing_empty_or_nonopaque_succeeded_result_ids(result_ref):
     client = PortalClient(

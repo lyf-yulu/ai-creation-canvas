@@ -89,7 +89,7 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
             if not _RESULT_ID.fullmatch(result_id):
                 raise InvalidUpstreamResult("provider success result is invalid")
         return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_id=result_id)
-    except InvalidUpstreamResult:
+    except (InvalidUpstreamResult, ValueError):
         return request.app.state.canvas_store.fail_invalid_upstream_result(
             str(item["id"]), "INVALID_UPSTREAM_RESULT"
         )

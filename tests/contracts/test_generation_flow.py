@@ -315,6 +315,28 @@ def test_invalid_succeeded_result_fails_a_queued_job_once_and_stops_polling(tmp_
     assert adapter.poll_count == 1
 
 
+def test_value_error_from_adapter_success_protocol_fails_once_and_stops_polling(tmp_path):
+    class MissingResultGeneration(FakeGeneration):
+        def __init__(self):
+            super().__init__()
+            self.poll_count = 0
+        async def poll(self, context, upstream_job_id):
+            self.poll_count += 1
+            raise ValueError("succeeded result is missing")
+
+    adapter = MissingResultGeneration()
+    registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    app.state.canvas_store.reserve_job(user_id="u-a", job_id="job", service_id="images", operation="image.generate", idempotency_key="key", request_hash="a" * 64)
+    app.state.canvas_store.mark_submitted("job", "upstream-1", "queued")
+    client = TestClient(app, raise_server_exceptions=False)
+    first = client.get("/api/v1/jobs/job", headers=headers())
+    second = client.get("/api/v1/jobs/job", headers=headers())
+    assert first.json()["status"] == second.json()["status"] == "failed"
+    assert first.json()["error"]["code"] == "INVALID_UPSTREAM_RESULT"
+    assert adapter.poll_count == 1
+
+
 def test_nonopaque_result_returned_by_any_adapter_uses_the_same_cas_failure(tmp_path):
     class NonOpaqueResultGeneration(FakeGeneration):
         async def poll(self, context, upstream_job_id):

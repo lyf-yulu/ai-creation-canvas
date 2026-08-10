@@ -172,8 +172,16 @@ class PortalJobsAdapter:
         return await self._poll(context, upstream_job_id, cookie_header)
 
     async def _poll(self, context: RequestContext, upstream_job_id: str, cookie_header: str | None) -> JobState:
-        response = await self._client.request(context, "GET", f"api/jobs/{upstream_job_id}", mount=self._declaration.mount, cookie_header=cookie_header)
-        if response.status_code != 200: raise ValueError("generation poll failed")
+        try:
+            response = await self._client.request(context, "GET", f"api/jobs/{upstream_job_id}", mount=self._declaration.mount, cookie_header=cookie_header)
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPError as error:
+            raise PortalUpstreamError(retryable=True) from error
+        if response.status_code != 200:
+            if 400 <= response.status_code < 500:
+                raise PortalUpstreamError(retryable=response.status_code in {408, 429}, status_code=response.status_code)
+            raise PortalUpstreamError(retryable=True, status_code=response.status_code)
         try:
             payload = response.json(); status = payload["status"]
             result = payload.get("result_ref")

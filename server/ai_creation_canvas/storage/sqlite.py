@@ -18,6 +18,8 @@ def _now() -> str:
 
 
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_INIT_ATTEMPTS = 4
+_INIT_BACKOFF_SECONDS = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,9 +32,16 @@ class Reservation:
 class CanvasStore:
     """Metadata-only SQLite persistence with short immediate transactions."""
 
-    def __init__(self, data_dir: Path | str, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        data_dir: Path | str,
+        *,
+        clock: Callable[[], float] = time.time,
+        migration_hook: Callable[[str], None] | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self._clock = clock
+        self._migration_hook = migration_hook
         self._lock = threading.RLock()
         self._prepare_root()
         self.assets_dir = self.data_dir / "assets"
@@ -64,14 +73,8 @@ class CanvasStore:
         with self._lock:
             if self.database.is_symlink():
                 raise ValueError("database must not be a symlink")
-            connection = sqlite3.connect(self.database, timeout=5, isolation_level=None)
-            connection.row_factory = sqlite3.Row
+            connection = self._new_connection(timeout=5)
             try:
-                connection.execute("PRAGMA foreign_keys = ON")
-                connection.execute("PRAGMA busy_timeout = 5000")
-                connection.execute("PRAGMA secure_delete = ON")
-                if connection.execute("PRAGMA secure_delete").fetchone()[0] != 1:
-                    raise RuntimeError("SQLite secure deletion could not be enabled")
                 if immediate:
                     connection.execute("BEGIN IMMEDIATE")
                 yield connection
@@ -84,69 +87,140 @@ class CanvasStore:
             finally:
                 connection.close()
 
+    def _new_connection(self, *, timeout: float) -> sqlite3.Connection:
+        if self.database.is_symlink():
+            raise ValueError("database must not be a symlink")
+        connection = sqlite3.connect(self.database, timeout=timeout, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {max(1, int(timeout * 1000))}")
+            connection.execute("PRAGMA secure_delete = ON")
+            if connection.execute("PRAGMA secure_delete").fetchone()[0] != 1:
+                raise RuntimeError("SQLite secure deletion could not be enabled")
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
     def _init(self) -> None:
-        # journal_mode changes the database file and must not be run inside a txn.
-        with self._connection() as db:
-            mode = db.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            if str(mode).lower() != "wal":
-                raise RuntimeError("SQLite WAL could not be enabled")
-        migrated = False
-        with self._connection(immediate=True) as db:
-            db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
+        """Migrate and physically scrub legacy result URLs with crash recovery."""
+        last_busy: sqlite3.OperationalError | None = None
+        for attempt in range(_INIT_ATTEMPTS):
+            connection: sqlite3.Connection | None = None
+            try:
+                with self._lock:
+                    connection = self._new_connection(timeout=_INIT_BACKOFF_SECONDS)
+                    mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                    if str(mode).lower() != "wal":
+                        raise RuntimeError("SQLite WAL could not be enabled")
+                    connection.execute("BEGIN EXCLUSIVE")
+                    scrub_pending = self._migrate_schema(connection)
+                    connection.commit()
+                    if scrub_pending:
+                        if self._migration_hook is not None:
+                            self._migration_hook("after_schema_commit")
+                        self._scrub_pending_connection(connection)
+                return
+            except sqlite3.OperationalError as error:
+                last_busy = error
+                if connection is not None and connection.in_transaction:
+                    connection.rollback()
+                if not self._is_busy(error) or attempt == _INIT_ATTEMPTS - 1:
+                    raise RuntimeError("SQLite initialization could not acquire an exclusive scrub lock") from error
+                time.sleep(_INIT_BACKOFF_SECONDS * (2**attempt))
+            except BaseException:
+                if connection is not None and connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                if connection is not None:
+                    connection.close()
+        raise RuntimeError("SQLite initialization could not acquire an exclusive scrub lock") from last_busy
+
+    @staticmethod
+    def _is_busy(error: sqlite3.OperationalError) -> bool:
+        message = str(error).lower()
+        return "locked" in message or "busy" in message
+
+    def _migrate_schema(self, db: sqlite3.Connection) -> bool:
+        """Run all schema work inside the secure, exclusive migration transaction."""
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
                 mime_type TEXT NOT NULL, status TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
                 size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )""")
-            db.execute("""CREATE TABLE IF NOT EXISTS canvas_jobs (
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_meta (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_jobs (
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
                 error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
-            columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
-            if "result_ref" in columns:
-                migrated = True
-                # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
-                # Remove the legacy column itself.  SQLite has no portable DROP COLUMN
-                # for older supported versions; rebuild only from non-sensitive fields.
-                # Fixed canonical projection; absent legacy columns get inert defaults.
-                legacy_result = "result_ref"
-                projection = [
-                    "id", "user_id", "service_id", "upstream_job_id", "operation", "status",
-                    "idempotency_key", "request_hash", "error_code" if "error_code" in columns else "NULL",
-                    "result_id" if "result_id" in columns else legacy_result,
-                    "submission_token" if "submission_token" in columns else "NULL",
-                    "lease_until" if "lease_until" in columns else "NULL",
-                    "attempt" if "attempt" in columns else "0", "created_at", "updated_at",
-                ]
-                db.execute("ALTER TABLE canvas_jobs RENAME TO canvas_jobs_legacy")
-                db.execute("""CREATE TABLE canvas_jobs (
+        marker = db.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()
+        scrub_pending = bool(marker is not None and marker[0] == "1")
+        columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
+        if "result_ref" in columns:
+            scrub_pending = True
+            # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
+            # Remove the legacy column itself.  SQLite has no portable DROP COLUMN
+            # for older supported versions; rebuild only from non-sensitive fields.
+            # Fixed canonical projection; absent legacy columns get inert defaults.
+            legacy_result = "result_ref"
+            projection = [
+                "id", "user_id", "service_id", "upstream_job_id", "operation", "status",
+                "idempotency_key", "request_hash", "error_code" if "error_code" in columns else "NULL",
+                "result_id" if "result_id" in columns else legacy_result,
+                "submission_token" if "submission_token" in columns else "NULL",
+                "lease_until" if "lease_until" in columns else "NULL",
+                "attempt" if "attempt" in columns else "0", "created_at", "updated_at",
+            ]
+            db.execute("ALTER TABLE canvas_jobs RENAME TO canvas_jobs_legacy")
+            db.execute("""CREATE TABLE canvas_jobs (
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                     upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, error_code TEXT,
                     result_id TEXT, submission_token TEXT, lease_until REAL,
                     attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     UNIQUE(user_id,idempotency_key))""")
-                db.execute("INSERT INTO canvas_jobs SELECT " + ",".join(projection) + " FROM canvas_jobs_legacy")
-                db.execute("DROP TABLE canvas_jobs_legacy")
-                columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
+            db.execute("INSERT INTO canvas_jobs SELECT " + ",".join(projection) + " FROM canvas_jobs_legacy")
+            db.execute("DROP TABLE canvas_jobs_legacy")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-            for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
-                if name not in columns:
-                    db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
-            for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
-                if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
-                    db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
-        if migrated:
-            # The migration transaction committed above.  Truncate WAL first,
-            # then rebuild the main database so a removed signed URL is not
-            # retained in live, free, or WAL pages.
-            with self._connection() as db:
-                if db.execute("PRAGMA secure_delete").fetchone()[0] != 1:
-                    raise RuntimeError("SQLite secure deletion could not be enabled")
-                db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
-                db.execute("VACUUM")
+        for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in columns:
+                db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
+        for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
+            if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
+                scrub_pending = True
+                db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
+        if scrub_pending:
+            db.execute(
+                "INSERT INTO canvas_meta(key,value) VALUES ('legacy_result_scrub_pending','1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'"
+            )
+        return scrub_pending
+
+    def _scrub_pending_connection(self, db: sqlite3.Connection) -> None:
+        """Physically remove freed pages before clearing the durable pending marker."""
+        if db.execute("PRAGMA secure_delete").fetchone()[0] != 1:
+            raise RuntimeError("SQLite secure deletion could not be enabled")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        db.execute("VACUUM")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            db.execute(
+                "INSERT INTO canvas_meta(key,value) VALUES ('legacy_result_scrub_pending','0') "
+                "ON CONFLICT(key) DO UPDATE SET value='0'"
+            )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
 
     @staticmethod
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
