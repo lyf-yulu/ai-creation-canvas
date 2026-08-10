@@ -98,10 +98,11 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
     }, [node.id]);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || dragRef.current.active) return;
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || dragRef.current.active) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest(interactiveSelector)) return;
 
+        event.preventDefault();
         event.stopPropagation();
         event.currentTarget.setPointerCapture?.(event.pointerId);
         dragRef.current = {

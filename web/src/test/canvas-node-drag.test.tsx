@@ -100,6 +100,44 @@ it("ignores non-left pointer buttons", () => {
 });
 
 it.each([
+    ["Ctrl", { ctrlKey: true }],
+    ["Cmd", { metaKey: true }],
+])("reserves %s-left pointer down for selection and lets it propagate", (_name, modifier) => {
+    const onPositionChange = vi.fn();
+    const onParentPointerDown = vi.fn();
+    render(
+        <div onPointerDown={onParentPointerDown}>
+            <DraggableCanvasNode node={nodeAt(10, 20)} scale={1} onPositionChange={onPositionChange}>
+                <span>node content</span>
+            </DraggableCanvasNode>
+        </div>,
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("draggable-node-node-a"), { button: 0, pointerId: 1, clientX: 0, clientY: 0, ...modifier });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 50, clientY: 50 });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(onParentPointerDown).toHaveBeenCalledTimes(1);
+    expect(onPositionChange).not.toHaveBeenCalled();
+});
+
+it("prevents native image behavior when an image surface starts a node drag", () => {
+    const onPositionChange = vi.fn();
+    render(
+        <DraggableCanvasNode node={nodeAt(10, 20)} scale={1} onPositionChange={onPositionChange}>
+            <img src="/api/v1/results/result-a" alt="generated result" />
+        </DraggableCanvasNode>,
+    );
+
+    const eventAllowed = fireEvent.pointerDown(screen.getByRole("img", { name: "generated result" }), { button: 0, pointerId: 1, clientX: 10, clientY: 20 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 40, clientY: 60 });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(eventAllowed).toBe(false);
+    expect(onPositionChange).toHaveBeenLastCalledWith("node-a", { x: 40, y: 60 });
+});
+
+it.each([
     ["button", <button type="button">button</button>],
     ["input", <input aria-label="input" />],
     ["textarea", <textarea aria-label="textarea" />],
