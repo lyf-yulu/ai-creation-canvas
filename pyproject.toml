@@ -21,7 +21,7 @@ test = ["pytest==9.0.2"]
 packages = ["server/ai_creation_canvas"]
 
 [tool.pytest.ini_options]
-pythonpath = ["server"]
+pythonpath = [".", "server"]
 testpaths = ["tests"]
 filterwarnings = [
   "error",
