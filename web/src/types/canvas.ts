@@ -1,3 +1,5 @@
+import type { CanvasGraphNodeMetadata } from "@/features/graph/contracts";
+
 export type Position = {
     x: number;
     y: number;
@@ -26,6 +28,7 @@ export type CanvasGenerationMode = "text" | "image" | "video" | "audio";
 export type CanvasImageGenerationType = "generation" | "edit";
 
 export type CanvasNodeMetadata = {
+    graph?: CanvasGraphNodeMetadata;
     content?: string;
     composerContent?: string;
     prompt?: string;
@@ -86,7 +89,11 @@ export type CanvasNodeData = {
 export type CanvasConnection = {
     id: string;
     fromNodeId: string;
+    /** Optional only while reading projects created before graph schema v1. */
+    fromPortId?: string;
     toNodeId: string;
+    /** Optional only while reading projects created before graph schema v1. */
+    toPortId?: string;
 };
 
 export type CanvasAssistantReference = {

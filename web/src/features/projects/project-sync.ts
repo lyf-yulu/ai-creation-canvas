@@ -3,6 +3,7 @@ import type { StoreApi } from "zustand";
 
 import * as projectsApi from "@/api/projects";
 import { ApiRequestError } from "@/api/client";
+import { normalizeCanvasProject } from "@/features/graph/normalize-project";
 import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import {
     useCanvasStore,
@@ -94,47 +95,50 @@ export class ProjectSync {
             let recoveryCopies = 0;
 
             for (const item of serverEnvelopes) {
-                this.versions.set(item.project.id, item.version);
-                const serverSerialized = serialized(item.project);
-                const local = localById.get(item.project.id);
-                const metadata = previousMetadata[item.project.id];
-                localById.delete(item.project.id);
+                const serverProject = normalizeCanvasProject(item.project);
+                this.versions.set(serverProject.id, item.version);
+                const serverSerialized = canonicalJson(item.project) === canonicalJson(serverProject)
+                    ? serialized(serverProject)
+                    : serialized(item.project);
+                const local = localById.get(serverProject.id);
+                const metadata = previousMetadata[serverProject.id];
+                localById.delete(serverProject.id);
 
                 if (!local) {
                     if (metadata?.source === "server") {
                         // The local absence is a pending deletion. Keep its server snapshot only long enough to issue DELETE.
-                        this.snapshots.set(item.project.id, serverSerialized);
-                        nextMetadata[item.project.id] = metadata;
+                        this.snapshots.set(serverProject.id, serverSerialized);
+                        nextMetadata[serverProject.id] = metadata;
                     } else {
-                        this.snapshots.set(item.project.id, serverSerialized);
-                        nextMetadata[item.project.id] = serverMetadata(item.project, item.version);
-                        authoritative.push(item.project);
+                        this.snapshots.set(serverProject.id, serverSerialized);
+                        nextMetadata[serverProject.id] = serverMetadata(serverProject, item.version);
+                        authoritative.push(serverProject);
                     }
                     continue;
                 }
 
                 const localChanged = metadata?.source === "server" && baselineSnapshot(local) !== metadata.snapshot;
                 const serverChanged = metadata?.source === "server"
-                    && (item.version !== metadata.version || baselineSnapshot(item.project) !== metadata.snapshot);
+                    && (item.version !== metadata.version || baselineSnapshot(serverProject) !== metadata.snapshot);
 
                 if (metadata?.source === "server" && localChanged && !serverChanged) {
-                    this.snapshots.set(item.project.id, serverSerialized);
-                    nextMetadata[item.project.id] = metadata;
+                    this.snapshots.set(serverProject.id, serverSerialized);
+                    nextMetadata[serverProject.id] = metadata;
                     authoritative.push(local);
                     continue;
                 }
 
                 if ((metadata?.source === "server" && localChanged && serverChanged)
-                    || (metadata?.source !== "server" && baselineSnapshot(local) !== baselineSnapshot(item.project))) {
+                    || (metadata?.source !== "server" && baselineSnapshot(local) !== baselineSnapshot(serverProject))) {
                     const copy = localCopy(local, "冲突副本");
                     localFirst.push(copy);
                     nextMetadata[copy.id] = { source: "draft" };
                     conflictCopies += 1;
                 }
 
-                this.snapshots.set(item.project.id, serverSerialized);
-                nextMetadata[item.project.id] = serverMetadata(item.project, item.version);
-                authoritative.push(item.project);
+                this.snapshots.set(serverProject.id, serverSerialized);
+                nextMetadata[serverProject.id] = serverMetadata(serverProject, item.version);
+                authoritative.push(serverProject);
             }
 
             for (const local of localById.values()) {

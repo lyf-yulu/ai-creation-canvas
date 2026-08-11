@@ -3,6 +3,8 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { normalizeViewport } from "@/features/canvas/viewport";
+import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
+import { normalizeCanvasProject } from "@/features/graph/normalize-project";
 import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
 import type { ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -20,6 +22,7 @@ export type CanvasProject = {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     viewport: ViewportTransform;
+    graphSchemaVersion?: number;
 };
 
 export type ProjectSyncMetadata =
@@ -64,7 +67,7 @@ export function clearCanvasInMemory() {
 
 export function migrateCanvasPersistedState(persistedState: unknown, persistedVersion: number) {
     const state = persistedState && typeof persistedState === "object" ? persistedState as Partial<PersistedCanvasState> : {};
-    const projects = Array.isArray(state.projects) ? state.projects : [];
+    const projects = Array.isArray(state.projects) ? state.projects.map((project) => normalizeCanvasProject(project)) : [];
     if (persistedVersion >= 1 && state.projectSyncMetadata && typeof state.projectSyncMetadata === "object") {
         return { ...state, projects, projectSyncMetadata: state.projectSyncMetadata };
     }
@@ -122,6 +125,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: "lines",
                     showImageInfo: false,
                     viewport: initialViewport,
+                    graphSchemaVersion: GRAPH_SCHEMA_VERSION,
                 };
                 set((state) => ({
                     projects: [project, ...state.projects],
@@ -131,7 +135,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             importProject: (source) => {
                 const now = new Date().toISOString();
-                const project: CanvasProject = {
+                const project = normalizeCanvasProject({
                     id: nanoid(),
                     title: source.title || "导入画布",
                     createdAt: source.createdAt || now,
@@ -143,7 +147,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: normalizeViewport(source.viewport),
-                };
+                });
                 set((state) => ({
                     projects: [project, ...state.projects],
                     projectSyncMetadata: { ...state.projectSyncMetadata, [project.id]: { source: "draft" } },
@@ -166,7 +170,10 @@ export const useCanvasStore = create<CanvasStore>()(
                     }
                     return { projects, projectSyncMetadata };
                 }),
-            replaceProjects: (projects, projectSyncMetadata) => set(projectSyncMetadata ? { projects, projectSyncMetadata } : { projects }),
+            replaceProjects: (projects, projectSyncMetadata) => {
+                const normalized = projects.map((project) => normalizeCanvasProject(project));
+                set(projectSyncMetadata ? { projects: normalized, projectSyncMetadata } : { projects: normalized });
+            },
             setProjectSyncMetadata: (id, metadata) => set((state) => {
                 const projectSyncMetadata = { ...state.projectSyncMetadata };
                 if (metadata) projectSyncMetadata[id] = metadata;
@@ -183,7 +190,7 @@ export const useCanvasStore = create<CanvasStore>()(
         {
             name: CANVAS_STORE_KEY,
             storage: canvasStorage,
-            version: 1,
+            version: 2,
             migrate: migrateCanvasPersistedState,
             partialize: (state) =>
                 ({

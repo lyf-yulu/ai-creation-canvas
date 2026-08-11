@@ -69,10 +69,36 @@ export function normalizeConnection(firstNodeId: string, secondNodeId: string, n
     if (!first || !second || first.id === second.id) return null;
     if (first.type === CanvasNodeType.Group || second.type === CanvasNodeType.Group) return null;
     if (first.type === CanvasNodeType.Config && second.type === CanvasNodeType.Config) return null;
-    if (second.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };
-    if (first.type === CanvasNodeType.Config && firstHandleType === "target") return { fromNodeId: second.id, toNodeId: first.id };
-    if (first.type === CanvasNodeType.Config) return { fromNodeId: first.id, toNodeId: second.id };
-    return { fromNodeId: first.id, toNodeId: second.id };
+    const oriented = second.type === CanvasNodeType.Config
+        ? { from: first, to: second }
+        : first.type === CanvasNodeType.Config && firstHandleType === "target"
+          ? { from: second, to: first }
+          : { from: first, to: second };
+    const source = graphNodeKind(oriented.from);
+    const target = graphNodeKind(oriented.to);
+    const fromPortId = source.role === "prompt" ? "prompt" : source.role === "model" ? "result" : "media";
+    const toPortId = target.role === "model"
+        ? source.role === "prompt"
+            ? "prompt"
+            : source.mediaType === "video"
+              ? "reference_video"
+              : source.mediaType === "audio"
+                ? "reference_audio"
+                : "reference_images"
+        : "result";
+    return { fromNodeId: oriented.from.id, fromPortId, toNodeId: oriented.to.id, toPortId };
+}
+
+function graphNodeKind(node: CanvasNodeData): { role: "prompt" | "model" | "media"; mediaType?: "image" | "video" | "audio" } {
+    const graph = node.metadata?.graph;
+    if (graph?.role === "prompt") return { role: "prompt" };
+    if (graph?.role === "model") return { role: "model" };
+    if (graph?.role === "media-collection" || graph?.role === "result") return { role: "media", mediaType: graph.mediaType };
+    if (node.type === CanvasNodeType.Text) return { role: "prompt" };
+    if (node.type === CanvasNodeType.Config) return { role: "model" };
+    if (node.type === CanvasNodeType.Video) return { role: "media", mediaType: "video" };
+    if (node.type === CanvasNodeType.Audio) return { role: "media", mediaType: "audio" };
+    return { role: "media", mediaType: "image" };
 }
 
 export function isHiddenBatchChild(node: CanvasNodeData, nodes: CanvasNodeData[], collapsingBatchIds?: Set<string>) {

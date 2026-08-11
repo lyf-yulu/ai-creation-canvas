@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ProjectSync, type ProjectApi, type ProjectEnvelope } from "@/features/projects/project-sync";
+import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { captureAppStorageLease } from "@/lib/localforage-storage";
 import { clearCanvasInMemory, type CanvasProject, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
@@ -113,7 +114,53 @@ it("uses the authoritative remote refresh when a clean cached project has an unt
 
     await sync.activate(captureAppStorageLease()!);
 
-    expect(useCanvasStore.getState().projects).toEqual([remote]);
+    expect(useCanvasStore.getState().projects).toEqual([{ ...remote, graphSchemaVersion: GRAPH_SCHEMA_VERSION }]);
+    sync.stop();
+});
+
+it("saves a legacy server project once in canonical graph form without changing its timestamps", async () => {
+    vi.useFakeTimers();
+    const remote = projectFor("legacy-server", "旧服务端画布", "2026-08-10T00:00:10.000Z");
+    const api = mockApi({ list: vi.fn(async () => [envelope(remote, 7)]) });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+
+    await sync.activate(captureAppStorageLease()!);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(api.update).toHaveBeenCalledTimes(1);
+    expect(api.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+            id: "legacy-server",
+            createdAt: "2026-08-10T00:00:10.000Z",
+            updatedAt: "2026-08-10T00:00:10.000Z",
+            graphSchemaVersion: GRAPH_SCHEMA_VERSION,
+        }),
+        7,
+        expect.any(AbortSignal),
+    );
+    sync.stop();
+});
+
+it("does not resave an already-canonical graph only because JSON keys arrived in another order", async () => {
+    vi.useFakeTimers();
+    const remote: CanvasProject = {
+        ...projectFor("canonical-server"),
+        graphSchemaVersion: GRAPH_SCHEMA_VERSION,
+        nodes: [
+            { id: "prompt", type: "text", title: "Prompt", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } } },
+            { id: "model", type: "config", title: "Model", position: { x: 200, y: 0 }, width: 100, height: 100, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.generate", inputPortIds: ["prompt"], outputPortId: "result", parameters: {} } } },
+        ],
+        connections: [{ id: "edge", fromNodeId: "prompt", toNodeId: "model", fromPortId: "prompt", toPortId: "prompt" }],
+    };
+    const api = mockApi({ list: vi.fn(async () => [envelope(remote, 3)]) });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+
+    await sync.activate(captureAppStorageLease()!);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(api.update).not.toHaveBeenCalled();
     sync.stop();
 });
 
