@@ -47,6 +47,21 @@ class ProjectDocument(BaseModel):
             raise ValueError("unsupported graph schema version")
         return value
 
+    @field_validator("nodes")
+    @classmethod
+    def validate_node_graph_schema_versions(cls, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for node in nodes:
+            metadata = node.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            graph = metadata.get("graph")
+            if not isinstance(graph, dict) or "schemaVersion" not in graph:
+                continue
+            version = graph["schemaVersion"]
+            if type(version) is not int or version != 1:
+                raise ValueError("unsupported node graph schema version")
+        return nodes
+
 
 class ProjectUpdate(ProjectDocument):
     expected_version: int = Field(ge=1)

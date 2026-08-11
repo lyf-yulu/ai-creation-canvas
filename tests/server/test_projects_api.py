@@ -153,6 +153,34 @@ def test_project_graph_schema_version_is_strict_and_round_trips_on_create_and_up
     assert response.json()["code"] == "REQUEST_REJECTED"
 
 
+def test_project_node_graph_schema_version_is_strict_when_present(tmp_path) -> None:
+    app, user, headers, owner, user_b, headers_b, owner_b = project_clients(tmp_path)
+    del app, owner, user_b, headers_b, owner_b
+
+    valid = project_body("node-graph-valid", "Node graph valid")
+    valid["nodes"] = [
+        {"id": "prompt", "type": "text", "metadata": {"graph": {"schemaVersion": 1, "role": "prompt"}}},
+        {"id": "legacy", "type": "image", "metadata": {"status": "success"}},
+        {"id": "plugin", "type": "plugin:custom", "metadata": {"pluginData": {"schemaVersion": "opaque"}}},
+    ]
+    created = user.post("/api/v1/projects", headers=headers, json=valid)
+    assert created.status_code == 201
+    assert created.json()["project"]["nodes"] == valid["nodes"]
+
+    for index, value in enumerate([True, "1", 1.0, None, 0, 2]):
+        invalid = project_body(f"invalid-node-version-{index}", "Invalid node graph")
+        invalid["nodes"] = [{"id": "node", "metadata": {"graph": {"schemaVersion": value, "pluginField": "untouched"}}}]
+        response = user.post("/api/v1/projects", headers=headers, json=invalid)
+        assert response.status_code == 400, value
+        assert response.json()["code"] == "REQUEST_REJECTED"
+
+    invalid_update = {**valid, "title": "Rejected node update", "expected_version": created.json()["version"]}
+    invalid_update["nodes"] = [{"id": "node", "metadata": {"graph": {"schemaVersion": "1"}}}]
+    response = user.put("/api/v1/projects/node-graph-valid", headers=headers, json=invalid_update)
+    assert response.status_code == 400
+    assert response.json()["code"] == "REQUEST_REJECTED"
+
+
 def test_legacy_stored_project_without_graph_version_remains_listable_and_gettable(tmp_path) -> None:
     app, user, headers, owner, user_b, headers_b, owner_b = project_clients(tmp_path)
     del headers, user_b, headers_b, owner_b

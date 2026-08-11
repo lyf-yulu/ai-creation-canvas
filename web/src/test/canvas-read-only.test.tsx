@@ -7,6 +7,7 @@ import CanvasPage from "@/pages/canvas";
 import CanvasProjectPage from "@/pages/canvas/project";
 import { clearCanvasInMemory, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
+import { CanvasNodeType } from "@/types/canvas";
 
 function LocationProbe() {
     const location = useLocation();
@@ -68,6 +69,38 @@ it("shows a read-only banner and blocks project-page generation and node edits",
     expect(screen.getByLabelText("模型")).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
     expect(useCanvasStore.getState().openProject(id)?.nodes).toEqual([]);
+});
+
+it("does not expose or invoke the paid retry path for failed nodes in read-only mode", async () => {
+    const id = useCanvasStore.getState().createProject("Protected retry");
+    useCanvasStore.getState().updateProject(id, {
+        nodes: [{
+            id: "failed-result",
+            type: CanvasNodeType.Image,
+            title: "生成失败",
+            position: { x: 80, y: 80 },
+            width: 320,
+            height: 180,
+            metadata: { status: "error", errorDetails: "safe failure", idempotencyKey: "retry-paid-request" },
+        }],
+    });
+    protectCanvasStore();
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/api/v1/models")) return new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ id: "must-not-create" }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<MemoryRouter initialEntries={[`/canvas/${id}`]}><Routes>
+        <Route path="/canvas/:id" element={<CanvasProjectPage />} />
+    </Routes></MemoryRouter>);
+
+    const retry = screen.queryByRole("button", { name: "重试" });
+    if (retry) fireEvent.click(retry);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: "重试" })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([input, init]) => String(input).includes("/api/v1/jobs") && init?.method === "POST")).toHaveLength(0);
 });
 
 it("shows the load error instead of an endless loader when the protected project cannot be materialized", () => {
