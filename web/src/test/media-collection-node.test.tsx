@@ -150,7 +150,7 @@ it("retries a failed file into its original ordered slot and releases its previe
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:second.png");
     expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:first.png");
 
-    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试 first.png" }));
 
     await waitFor(() => expect(current.map((item) => item.assetId)).toEqual(["asset-first.png", "asset-second.png"]));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:first.png");
@@ -163,7 +163,7 @@ it("removes failed uploads on demand and releases retained previews on unmount",
     const view = render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={() => undefined} />);
     fireEvent.change(screen.getByLabelText("添加视频"), { target: { files: [new File(["a"], "remove.mp4", { type: "video/mp4" })] } });
     expect(await screen.findByText("remove.mp4 上传失败，请重试。")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "移除错误 remove.mp4" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除 remove.mp4" }));
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:remove.mp4");
 
     fireEvent.change(screen.getByLabelText("添加视频"), { target: { files: [new File(["b"], "unmount-failed.mp4", { type: "video/mp4" })] } });

@@ -9,17 +9,18 @@ from ai_creation_canvas.config import Settings
 from ai_creation_canvas.domain.models import AssetRef, JobState, ModelSpec, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.storage.sqlite import CanvasStore
 from tests.contracts.test_generation_flow import headers
 
 
 class Portrait:
     service_id = "portal-portrait"
     requires_portal_cookie = True
-    def __init__(self): self.received = None
+    def __init__(self): self.received = None; self.upload_calls = 0
     async def list_models(self, context): return (ModelSpec("portrait-video", self.service_id, "Portrait", ("video.image_to_video",), ("text", "image"), {}, "portrait"),)
     async def list_models_with_cookie(self, context, cookie): return await self.list_models(context)
     async def upload(self, context, asset): raise AssertionError
-    async def upload_with_cookie(self, context, asset, source, size, cookie): return AssetRef("upstream-1", "portrait", "processing", asset.mime_type)
+    async def upload_with_cookie(self, context, asset, source, size, cookie): self.upload_calls += 1; return AssetRef("upstream-1", "portrait", "processing", asset.mime_type)
     async def get(self, context, asset): raise AssertionError
     async def get_with_cookie(self, context, asset, cookie): return AssetRef(asset, "portrait", "active", "image/png")
     async def submit(self, context, request): raise AssertionError
@@ -41,6 +42,49 @@ def test_portrait_local_mapping_hides_upstream_and_enforces_owner(tmp_path):
     assert active.json()["status"] == "active" and "upstream" not in active.text
     response = client.post("/api/v1/jobs", json={"operation":"video.image_to_video","model_id":"portrait-video","prompt":"wave","params":{},"asset_ids":[local_id],"idempotency_key":"portrait-key"}, headers={**headers(), "Cookie": "s=a"})
     assert response.status_code == 201 and adapter.received == ("upstream-1",)
+    stored, _ = client.app.state.canvas_store.asset_for_owner(local_id, "u-a")
+    assert stored is not None and stored["service_id"] == "portal-portrait" and stored["upstream_asset_id"] == "upstream-1"
+
+
+def test_portrait_quota_is_reserved_before_any_upstream_call(tmp_path):
+    adapter = Portrait(); registry = AdapterRegistry(); registry.register_asset(adapter); registry.register_generation(adapter)
+    data_dir = tmp_path / "data"
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    settings = Settings("test", 8992, data_dir, "test-secret", user_asset_quota_bytes=len(png) - 1, total_asset_quota_bytes=len(png) - 1)
+    app = create_app(settings, registry=registry, model_catalog=ModelCatalog(registry))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/api/v1/assets", files={"file": ("portrait.png", png, "image/png")}, data={"kind": "portrait"}, headers={**headers(), "Cookie": "s=a"})
+
+    assert response.status_code == 413
+    assert adapter.upload_calls == 0
+    assert app.state.canvas_store.list_assets_for_owner("u-a") == ()
+    assert not list((data_dir / "assets").iterdir())
+
+
+def test_portrait_finalize_failure_keeps_reserved_file_and_durable_recovery_metadata(tmp_path):
+    adapter = Portrait(); registry = AdapterRegistry(); registry.register_asset(adapter); registry.register_generation(adapter)
+    data_dir = tmp_path / "data"
+    app = create_app(Settings("test", 8992, data_dir, "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    app.state.canvas_store._portrait_finalize_hook = lambda _phase: (_ for _ in ()).throw(RuntimeError("db unavailable"))
+    client = TestClient(app, raise_server_exceptions=False)
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+
+    response = client.post("/api/v1/assets", files={"file": ("portrait.png", png, "image/png")}, data={"kind": "portrait"}, headers={**headers(), "Cookie": "s=a"})
+
+    assert response.status_code == 503
+    records = app.state.canvas_store.list_assets_for_owner("u-a")
+    assert len(records) == 1 and records[0]["status"] == "processing"
+    stored, _ = app.state.canvas_store.asset_for_owner(str(records[0]["asset_id"]), "u-a")
+    assert stored is not None and stored["upstream_asset_id"] is None
+    assert (data_dir / str(stored["relative_path"])).is_file()
+    recovery = list((data_dir / "assets").glob(".portrait-recovery-*.pending"))
+    assert len(recovery) == 1 and "upstream-1" in recovery[0].read_text(encoding="ascii")
+
+    recovered_store = CanvasStore(data_dir)
+    recovered, _ = recovered_store.asset_for_owner(str(records[0]["asset_id"]), "u-a")
+    assert recovered is not None and recovered["upstream_asset_id"] == "upstream-1" and recovered["service_id"] == "portal-portrait"
+    assert not list((data_dir / "assets").glob(".portrait-recovery-*.pending"))
 
 
 class FailingPortrait(Portrait):
@@ -102,3 +146,6 @@ def test_portrait_api_maps_typed_upstream_failures_by_business_path(tmp_path, ac
     assert response.status_code == expected_status
     assert response.json()["code"] == expected_code
     assert response.json()["retryable"] is retryable
+    if action == "upload":
+        assert app.state.canvas_store.list_assets_for_owner("u-a") == ()
+        assert not list((app.state.canvas_store.data_dir / "assets").iterdir())

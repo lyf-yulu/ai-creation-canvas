@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
 from pathlib import Path
+import secrets
 import sqlite3
+import stat
 import threading
 import time
 import re
@@ -21,6 +23,8 @@ _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
+_TOMBSTONE_NAME = re.compile(r"\.[0-9a-f]{40}\.delete\Z")
+_PORTRAIT_RECOVERY_NAME = re.compile(r"\.portrait-recovery-([A-Za-z0-9_-]{1,128})\.pending\Z")
 
 
 class AssetQuotaExceeded(ValueError):
@@ -49,12 +53,14 @@ class CanvasStore:
         migration_hook: Callable[[str], None] | None = None,
         checkpoint_hook: Callable[[str, int], tuple[int, int, int] | None] | None = None,
         asset_delete_hook: Callable[[str], None] | None = None,
+        portrait_finalize_hook: Callable[[str], None] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self._clock = clock
         self._migration_hook = migration_hook
         self._checkpoint_hook = checkpoint_hook
         self._asset_delete_hook = asset_delete_hook
+        self._portrait_finalize_hook = portrait_finalize_hook
         self._lock = threading.RLock()
         self._prepare_root()
         self.assets_dir = self.data_dir / "assets"
@@ -62,10 +68,55 @@ class CanvasStore:
         if self.assets_dir.is_symlink():
             raise ValueError("asset root must not be a symlink")
         os.chmod(self.assets_dir, 0o700)
+        self._sweep_tombstones()
         self.database = self.data_dir / "canvas.sqlite3"
         if self.database.exists() and self.database.is_symlink():
             raise ValueError("database must not be a symlink")
         self._init()
+        self._recover_portrait_finalizations()
+
+    def _sweep_tombstones(self) -> None:
+        for candidate in self.assets_dir.iterdir():
+            if not _TOMBSTONE_NAME.fullmatch(candidate.name):
+                continue
+            try:
+                info = candidate.lstat()
+                if stat.S_ISREG(info.st_mode) and not candidate.is_symlink():
+                    candidate.unlink()
+            except OSError:
+                pass
+
+    def _tombstone_bytes(self) -> int:
+        total = 0
+        for candidate in self.assets_dir.iterdir():
+            if not _TOMBSTONE_NAME.fullmatch(candidate.name):
+                continue
+            try:
+                info = candidate.lstat()
+                if stat.S_ISREG(info.st_mode) and not candidate.is_symlink():
+                    total += info.st_size
+            except OSError:
+                continue
+        return total
+
+    def _recover_portrait_finalizations(self) -> None:
+        for candidate in self.assets_dir.iterdir():
+            matched = _PORTRAIT_RECOVERY_NAME.fullmatch(candidate.name)
+            if matched is None:
+                continue
+            try:
+                info = candidate.lstat()
+                if not stat.S_ISREG(info.st_mode) or candidate.is_symlink() or info.st_size > 512:
+                    continue
+                service_id, upstream_asset_id, status = candidate.read_text(encoding="ascii").splitlines()
+                if service_id != "portal-portrait" or not _RESULT_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+                    continue
+                with self._connection(immediate=True) as db:
+                    cursor = db.execute("UPDATE canvas_assets SET service_id=?,upstream_asset_id=?,status=?,updated_at=? WHERE asset_id=? AND kind='portrait' AND upstream_asset_id IS NULL", (service_id, upstream_asset_id, status, _now(), matched.group(1)))
+                if cursor.rowcount == 1:
+                    candidate.unlink()
+            except (OSError, UnicodeError, ValueError):
+                continue
 
     def _prepare_root(self) -> None:
         # Do this before resolve(): resolve would hide a lexical symlink component.
@@ -294,13 +345,45 @@ class CanvasStore:
             raise ValueError("media_type is invalid")
         with self._connection(immediate=True) as db:
             user_bytes = int(db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM canvas_assets WHERE user_id=?", (user_id,)).fetchone()[0])
-            total_bytes = int(db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM canvas_assets").fetchone()[0])
+            total_bytes = int(db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM canvas_assets").fetchone()[0]) + self._tombstone_bytes()
             if (user_quota_bytes is not None and user_bytes + size_bytes > user_quota_bytes) or (total_quota_bytes is not None and total_bytes + size_bytes > total_quota_bytes):
                 raise AssetQuotaExceeded("asset quota exceeded")
             db.execute("INSERT INTO canvas_assets (asset_id,user_id,kind,media_type,mime_type,status,relative_path,size_bytes,created_at,updated_at,service_id,upstream_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, safe_media_type, mime_type, status, relative_path, size_bytes, now, now, service_id, upstream_asset_id))
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         assert row is not None
         return dict(row)
+
+    def finalize_portrait_asset(self, asset_id: str, *, service_id: str, upstream_asset_id: str, status: str) -> dict[str, object]:
+        if service_id != "portal-portrait" or not _RESULT_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+            raise ValueError("portrait finalization is invalid")
+        with self._connection(immediate=True) as db:
+            if self._portrait_finalize_hook is not None:
+                self._portrait_finalize_hook("before_update")
+            cursor = db.execute("UPDATE canvas_assets SET service_id=?,upstream_asset_id=?,status=?,updated_at=? WHERE asset_id=? AND kind='portrait' AND upstream_asset_id IS NULL", (service_id, upstream_asset_id, status, _now(), asset_id))
+            if cursor.rowcount != 1:
+                raise KeyError(asset_id)
+            row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def delete_reserved_portrait_asset(self, asset_id: str, user_id: str) -> bool:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute("DELETE FROM canvas_assets WHERE asset_id=? AND user_id=? AND kind='portrait' AND upstream_asset_id IS NULL", (asset_id, user_id))
+        return cursor.rowcount == 1
+
+    def record_portrait_finalize_recovery(self, asset_id: str, *, upstream_asset_id: str, status: str) -> Path:
+        if not _RESULT_ID.fullmatch(asset_id) or not _RESULT_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+            raise ValueError("portrait recovery is invalid")
+        destination = self.assets_dir / f".portrait-recovery-{asset_id}.pending"
+        temporary = self.assets_dir / f".{secrets.token_hex(20)}.recovery"
+        try:
+            with temporary.open("x", encoding="ascii") as output:
+                output.write(f"portal-portrait\n{upstream_asset_id}\n{status}\n")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
 
     def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool) -> dict[str, object]:
         now = _now()

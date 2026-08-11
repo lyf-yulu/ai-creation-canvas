@@ -194,7 +194,23 @@ def test_asset_delete_commit_survives_tombstone_purge_failure(tmp_path, monkeypa
     assert response.status_code == 204
     assert not regular.exists()
     assert store.asset_for_owner("regular-reference", "u-a") == (None, False)
-    assert len(list((data_dir / "assets").glob(".*.delete"))) == 1
+    tombstones = list((data_dir / "assets").glob(".*.delete"))
+    assert len(tombstones) == 1
+    with pytest.raises(AssetQuotaExceeded):
+        store.create_asset(asset_id="quota-after-delete", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/quota.png", size_bytes=1, user_quota_bytes=100, total_quota_bytes=len(PNG))
+
+    outside = data_dir / "outside-tombstone"
+    outside.write_bytes(b"outside")
+    symlink = data_dir / "assets" / ("." + "a" * 40 + ".delete")
+    symlink.symlink_to(outside)
+    foreign = data_dir / "assets" / ".foreign.delete"
+    foreign.write_bytes(b"foreign")
+    monkeypatch.undo()
+    CanvasStore(data_dir)
+
+    assert not tombstones[0].exists()
+    assert symlink.is_symlink() and outside.read_bytes() == b"outside"
+    assert foreign.read_bytes() == b"foreign"
 
 
 def test_upload_enforces_each_configured_limit_from_stream_not_content_length(tmp_path):
@@ -303,6 +319,62 @@ async def test_chunked_multipart_bounds_huge_part_header_before_buffering_or_spo
 
     assert response.status_code == 400
     assert consumed <= 10_240
+    assert not list((data_dir / "assets").iterdir())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shape", ["preamble", "epilogue"])
+async def test_raw_multipart_budget_stops_unbounded_preamble_or_epilogue_within_one_chunk(tmp_path, shape):
+    client, data_dir = asset_client(tmp_path, image=64, video=64, audio=64)
+    boundary = "raw-budget"
+    valid = multipart_body(boundary, filename="frame.png", mime_type="image/png", payload=PNG)
+    chunk = b"x" * 4096
+    consumed = 0
+
+    async def chunks():
+        nonlocal consumed
+        if shape == "preamble":
+            oversized = b"x" * (70 * 1024)
+            consumed += len(oversized)
+            yield oversized
+            raise AssertionError("oversized preamble was yielded to the parser")
+        if shape == "epilogue":
+            consumed += len(valid)
+            yield valid
+        while consumed < 90_000:
+            consumed += len(chunk)
+            yield chunk
+        raise AssertionError("raw multipart stream was not stopped at its configured budget")
+
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        response = await async_client.post("/api/v1/assets", content=chunks(), headers={**headers(), "content-type": f"multipart/form-data; boundary={boundary}"})
+        assert not list((data_dir / "assets").iterdir())
+        followup = await async_client.post("/api/v1/assets", files={"file": ("frame.png", PNG, "image/png")}, data={"media_type": "image"}, headers=headers())
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "ASSET_TOO_LARGE"
+    maximum_consumed = 70 * 1024 if shape == "preamble" else 64 * 1024 + 64 + len(chunk)
+    assert consumed <= maximum_consumed
+    assert followup.status_code == 201
+
+
+def test_oversized_content_length_is_rejected_before_taking_upload_slot(tmp_path, monkeypatch):
+    client, _ = asset_client(tmp_path, image=64, video=64, audio=64)
+    monkeypatch.setattr("ai_creation_canvas.api.assets.LimitedMediaMultiPartParser", lambda *_args: pytest.fail("parser must not be constructed"))
+
+    response = client.post("/api/v1/assets", content=b"x", headers={**headers(), "content-type": "multipart/form-data; boundary=x", "content-length": str(70 * 1024)})
+
+    assert response.status_code == 413
+
+
+def test_invalid_multipart_boundary_maps_parser_failure_to_safe_400(tmp_path):
+    client, data_dir = asset_client(tmp_path)
+
+    response = client.post("/api/v1/assets", content=b"not-a-multipart-body", headers={**headers(), "content-type": "multipart/form-data; boundary=broken"})
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "ASSET_INVALID"
     assert not list((data_dir / "assets").iterdir())
 
 

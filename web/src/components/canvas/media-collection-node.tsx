@@ -284,7 +284,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
             })}
             {pending.map((entry) => <li key={entry.id} role={entry.failed ? "alert" : "status"} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${entry.failed ? "border-[#744038] bg-[#281411] text-[#ffc0b5]" : "border-[#355f43] bg-[#102319] text-[#bcebc9]"}`}>
                 <span className="min-w-0 flex-1 truncate">{entry.failed ? `${entry.name} 上传失败，请重试。` : `${entry.name} · ${entry.progress}%`}</span>
-                {!readOnly && entry.failed ? <><button type="button" onClick={() => retryEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">重试</button><button type="button" aria-label={`移除错误 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">移除错误</button></> : null}
+                {!readOnly && entry.failed ? <><button type="button" aria-label={`重试 ${entry.name}`} onClick={() => retryEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">重试</button><button type="button" aria-label={`移除 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">移除错误</button></> : null}
                 {!entry.failed && !readOnly ? <button type="button" aria-label={`取消上传 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded p-1 hover:bg-[#24452f]"><X className="size-3.5" /></button> : null}
             </li>)}
             {items.length === 0 && pending.length === 0 ? <li className="rounded-lg border border-dashed border-[#31523c] px-4 py-7 text-center text-xs text-[#829889]">添加一个或多个{details.noun}，顺序会决定 @引用编号。</li> : null}

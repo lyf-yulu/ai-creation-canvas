@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
+from python_multipart.exceptions import MultipartParseError
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import AssetRef
@@ -22,6 +23,7 @@ _CHUNK_SIZE = 64 * 1024
 _MAX_PART_HEADER_BYTES = 32 * 1024
 _MAX_SINGLE_HEADER_BYTES = 8 * 1024
 _MAX_PART_HEADERS = 32
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _MIME_MEDIA = {
     "image/png": "image",
     "image/jpeg": "image",
@@ -63,6 +65,28 @@ class MediaUploadHeadersTooLarge(MultiPartException):
     """Multipart header metadata exceeded its bounded parser budget."""
 
 
+class BoundedRequestStream:
+    """Count every raw multipart byte before it reaches python-multipart."""
+
+    def __init__(self, request: Request) -> None:
+        self._source = request.stream()
+        self._consumed = 0
+        self._budget = max(_upload_limit(request, media_type) for media_type in ("image", "video", "audio")) + _MULTIPART_OVERHEAD_BYTES
+
+    def select_file_limit(self, limit: int) -> None:
+        self._budget = limit + _MULTIPART_OVERHEAD_BYTES
+        if self._consumed > self._budget:
+            raise MediaUploadTooLarge("raw multipart request exceeded configured limit")
+
+    async def __aiter__(self):
+        async for chunk in self._source:
+            next_size = self._consumed + len(chunk)
+            if next_size > self._budget:
+                raise MediaUploadTooLarge("raw multipart request exceeded configured limit")
+            self._consumed = next_size
+            yield chunk
+
+
 def _safe_upload_basename(filename: str, mime_type: str) -> str:
     if not isinstance(filename, str) or any(ord(char) < 32 or ord(char) == 127 for char in filename):
         raise MediaUploadInvalid("invalid filename")
@@ -80,7 +104,8 @@ class LimitedMediaMultiPartParser(MultiPartParser):
     """Starlette parser with file limits enforced before each spool write."""
 
     def __init__(self, request: Request) -> None:
-        super().__init__(request.headers, request.stream(), max_files=1, max_fields=2, max_part_size=8 * 1024)
+        self._bounded_stream = BoundedRequestStream(request)
+        super().__init__(request.headers, self._bounded_stream, max_files=1, max_fields=2, max_part_size=8 * 1024)
         self._request = request
         self.file_mime_type: str | None = None
         self.file_media_type: str | None = None
@@ -131,6 +156,7 @@ class LimitedMediaMultiPartParser(MultiPartParser):
         self.file_mime_type = mime_type
         self.file_media_type = media_type
         self.file_limit = _upload_limit(self._request, media_type)
+        self._bounded_stream.select_file_limit(self.file_limit)
 
     def on_part_data(self, data: bytes, start: int, end: int) -> None:
         if self._current_part.file is not None:
@@ -193,6 +219,10 @@ def _upload_limit(request: Request, media_type: str) -> int:
 @router.post("/assets", status_code=201)
 async def upload_asset(request: Request) -> dict[str, object]:
     context_for(request)
+    stated = request.headers.get("content-length")
+    maximum = max(_upload_limit(request, media_type) for media_type in ("image", "video", "audio")) + _MULTIPART_OVERHEAD_BYTES
+    if stated and stated.isdecimal() and (len(stated) > 20 or int(stated) > maximum):
+        raise problem(request, "ASSET_TOO_LARGE", "The upload is too large.", status=413)
     async with request.app.state.upload_semaphore:
         return await _upload_asset(request)
 
@@ -211,6 +241,8 @@ async def _upload_asset(request: Request) -> dict[str, object]:
     except MediaUploadInvalid:
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415) from None
     except MultiPartException:
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
+    except (MultipartParseError, ValueError):
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
     file = form.get("file")
     kind = form.get("kind", "reference")
@@ -234,6 +266,7 @@ async def _upload_asset(request: Request) -> dict[str, object]:
     size = 0
     header = bytearray()
     tail = bytearray()
+    preserve_target = False
     try:
         with temporary.open("xb") as output:
             while True:
@@ -256,6 +289,8 @@ async def _upload_asset(request: Request) -> dict[str, object]:
         if kind == "portrait":
             if not request.headers.get("cookie"):
                 raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, status="processing", user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
+            preserve_target = True
             try:
                 adapter = request.app.state.adapter_registry.asset("portal-portrait")
                 upload = getattr(adapter, "upload_with_cookie", None)
@@ -263,14 +298,22 @@ async def _upload_asset(request: Request) -> dict[str, object]:
                     raise ValueError
                 upstream = await upload(context, AssetRef(asset_id, "portrait", "processing", mime), target, size, request.headers["cookie"])
             except AdapterNotFoundError:
+                preserve_target = not store.delete_reserved_portrait_asset(asset_id, context.user.user_id)
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
             except PortalUpstreamError as error:
+                preserve_target = not store.delete_reserved_portrait_asset(asset_id, context.user.user_id)
                 raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
             except InvalidUpstreamResult:
+                preserve_target = not store.delete_reserved_portrait_asset(asset_id, context.user.user_id)
                 raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
             except Exception:
+                preserve_target = not store.delete_reserved_portrait_asset(asset_id, context.user.user_id)
                 raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
-            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, status=upstream.status.value, service_id="portal-portrait", upstream_asset_id=upstream.asset_id, user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
+            try:
+                item = store.finalize_portrait_asset(asset_id, service_id="portal-portrait", upstream_asset_id=upstream.asset_id, status=upstream.status.value)
+            except Exception:
+                store.record_portrait_finalize_recovery(asset_id, upstream_asset_id=upstream.asset_id, status=upstream.status.value)
+                raise problem(request, "ASSET_FINALIZE_PENDING", "The asset is awaiting recovery.", status=503, retryable=True) from None
         else:
             item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
         return _asset(item)
@@ -280,7 +323,8 @@ async def _upload_asset(request: Request) -> dict[str, object]:
         raise problem(request, "ASSET_QUOTA_EXCEEDED", "The asset quota has been reached.", status=413) from None
     except BaseException:
         temporary.unlink(missing_ok=True)
-        target.unlink(missing_ok=True)
+        if not preserve_target:
+            target.unlink(missing_ok=True)
         raise
     finally:
         await form.close()
