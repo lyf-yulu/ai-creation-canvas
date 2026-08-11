@@ -8,9 +8,8 @@ export type CanvasCreationKind = "prompt" | "image" | "video" | "audio" | "image
 
 type Item = { kind: CanvasCreationKind; label: string; icon: ReactNode; disabled?: boolean; reason?: string };
 
-export function CanvasCreateContextMenu({ menu, promptDisabled, imageModelDisabled, videoModelDisabled, onClose, onCreate }: {
+export function CanvasCreateContextMenu({ menu, imageModelDisabled, videoModelDisabled, onClose, onCreate }: {
     menu: Extract<ContextMenuState, { type: "canvas" }>;
-    promptDisabled: boolean;
     imageModelDisabled: boolean;
     videoModelDisabled: boolean;
     onClose: (restoreFocus?: boolean) => void;
@@ -19,7 +18,7 @@ export function CanvasCreateContextMenu({ menu, promptDisabled, imageModelDisabl
     const menuRef = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ left: menu.x, top: menu.y });
     const items: Item[] = [
-        { kind: "prompt", label: "提示词", icon: <MessageSquareText className="size-4" />, disabled: promptDisabled, reason: "画布中只能有一个提示词节点" },
+        { kind: "prompt", label: "提示词", icon: <MessageSquareText className="size-4" /> },
         { kind: "image", label: "参考图片", icon: <ImagePlus className="size-4" /> },
         { kind: "video", label: "参考视频", icon: <Film className="size-4" /> },
         { kind: "audio", label: "参考音频", icon: <Music2 className="size-4" /> },

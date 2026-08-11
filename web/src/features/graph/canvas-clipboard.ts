@@ -16,7 +16,7 @@ type ClipboardSnapshot = {
 export type CopyCanvasSelectionResult = { ok: true; nodeCount: number } | { ok: false; reason: "empty-selection" | "no-scope" };
 export type PasteCanvasSelectionResult =
     | { ok: true; nodes: CanvasNodeData[]; connections: CanvasConnection[]; pastedNodeIds: string[] }
-    | { ok: false; reason: "empty" | "prompt-conflict" | "node-limit" | "connection-limit" };
+    | { ok: false; reason: "empty" | "node-limit" | "connection-limit" };
 
 let clipboard: ClipboardSnapshot | null = null;
 onStorageScopeCleared(() => {
@@ -73,10 +73,6 @@ export function pasteCanvasSelection(project: CanvasProject, createId: () => str
     }
     if (project.nodes.length + snapshot.nodes.length > MAX_PROJECT_NODES) return { ok: false, reason: "node-limit" };
     if (project.connections.length + snapshot.connections.length > MAX_PROJECT_CONNECTIONS) return { ok: false, reason: "connection-limit" };
-    const copiedHasPrompt = snapshot.nodes.some((node) => node.metadata?.graph?.role === "prompt");
-    const targetHasPrompt = project.nodes.some((node) => node.metadata?.graph?.role === "prompt");
-    if (copiedHasPrompt && targetHasPrompt) return { ok: false, reason: "prompt-conflict" };
-
     snapshot.pasteCount += 1;
     const offset = PASTE_OFFSET * snapshot.pasteCount;
     const idMap = new Map(snapshot.nodes.map((node) => [node.id, createId()]));

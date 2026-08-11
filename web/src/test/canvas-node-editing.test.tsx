@@ -512,23 +512,30 @@ describe("blank canvas creation menu", () => {
         expect(screen.getByTestId(`draggable-node-${created?.id}`)).toHaveAttribute("aria-selected", "true");
     });
 
-    it("offers all built-in node choices, enforces one prompt and supports keyboard creation", async () => {
+    it("offers all built-in node choices, allows another prompt and supports keyboard creation", async () => {
         const projectId = await renderProject([node("prompt", 80)]);
         const canvas = screen.getByTestId("infinite-canvas");
         fireEvent.contextMenu(canvas, { clientX: 240, clientY: 180 });
         const menu = screen.getByRole("menu", { name: "创建节点" });
 
-        expect(within(menu).getByRole("menuitem", { name: "提示词" })).toBeDisabled();
+        const prompt = within(menu).getByRole("menuitem", { name: "提示词" });
+        expect(prompt).toBeEnabled();
         expect(within(menu).getByRole("menuitem", { name: "参考图片" })).toBeVisible();
         expect(within(menu).getByRole("menuitem", { name: "参考视频" })).toBeVisible();
         expect(within(menu).getByRole("menuitem", { name: "参考音频" })).toBeVisible();
         expect(within(menu).getByRole("menuitem", { name: "图片生成" })).toBeDisabled();
         expect(within(menu).getByRole("menuitem", { name: "视频生成" })).toBeDisabled();
 
-        const firstEnabled = within(menu).getByRole("menuitem", { name: "参考图片" });
+        fireEvent.click(prompt);
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.filter((item) => item.metadata?.graph?.role === "prompt")).toHaveLength(2);
+
+        fireEvent.contextMenu(canvas, { clientX: 260, clientY: 200 });
+        const reopened = screen.getByRole("menu", { name: "创建节点" });
+        const firstEnabled = within(reopened).getByRole("menuitem", { name: "提示词" });
         await waitFor(() => expect(firstEnabled).toHaveFocus());
         fireEvent.keyDown(firstEnabled, { key: "ArrowDown" });
-        const video = within(menu).getByRole("menuitem", { name: "参考视频" });
+        fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+        const video = within(reopened).getByRole("menuitem", { name: "参考视频" });
         expect(video).toHaveFocus();
         fireEvent.keyDown(video, { key: "Enter" });
         expect(useCanvasStore.getState().openProject(projectId)?.nodes.at(-1)?.metadata?.graph).toMatchObject({ role: "media-collection", mediaType: "video" });
@@ -559,6 +566,17 @@ describe("blank canvas creation menu", () => {
 });
 
 describe("prompt node editing", () => {
+    it("creates multiple independent prompt nodes from the palette", async () => {
+        const projectId = await renderProject();
+        const create = screen.getByRole("button", { name: "提示词节点" });
+        fireEvent.click(create);
+        expect(create).toBeEnabled();
+        fireEvent.click(create);
+
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.filter((item) => item.metadata?.graph?.role === "prompt")).toHaveLength(2);
+        expect(screen.getAllByRole("textbox", { name: "提示词内容" })).toHaveLength(2);
+    });
+
     it("creates one blank editable prompt without starting a job or showing a spinner", async () => {
         const projectId = await renderProject();
         fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));

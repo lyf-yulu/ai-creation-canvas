@@ -116,9 +116,11 @@ describe("scoped canvas clipboard", () => {
         expect(pasted.nodes[0].metadata).not.toHaveProperty("phase");
     });
 
-    it("rejects the whole paste when it would create a second prompt or exceed bounds", () => {
+    it("allows prompt copies alongside other prompts but still enforces project bounds", () => {
         copyCanvasSelection(project([prompt("copied", 10)]), new Set(["copied"]));
-        expect(pasteCanvasSelection(project([prompt("existing", 20)]), () => "new")).toEqual({ ok: false, reason: "prompt-conflict" });
+        const pastedPrompt = pasteCanvasSelection(project([prompt("existing", 20)]), () => "new");
+        expect(pastedPrompt.ok).toBe(true);
+        if (pastedPrompt.ok) expect(pastedPrompt.nodes[0].metadata?.graph).toMatchObject({ role: "prompt" });
 
         clearCanvasClipboard();
         copyCanvasSelection(project([model("copied", 10)]), new Set(["copied"]));

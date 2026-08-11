@@ -321,7 +321,6 @@ export default function CanvasProjectPage() {
         if (!result.ok) {
             const messages = {
                 empty: "画布剪贴板为空。",
-                "prompt-conflict": "当前画布已经有提示词节点，不能再粘贴一个提示词。",
                 "node-limit": "粘贴后会超过画布节点上限。",
                 "connection-limit": "粘贴后会超过画布连接上限。",
             } as const;
@@ -537,7 +536,7 @@ export default function CanvasProjectPage() {
     const addPromptNode = useCallback((position?: Position) => {
         if (readOnly) return;
         const current = useCanvasStore.getState().openProject(id);
-        if (!current || current.nodes.some((node) => node.metadata?.graph?.role === "prompt")) return;
+        if (!current) return;
         const node: CanvasNodeData = {
             id: nanoid(),
             type: CanvasNodeType.Text,
@@ -706,7 +705,7 @@ export default function CanvasProjectPage() {
                         </div>
                         <div className="flex flex-wrap gap-2 lg:block lg:space-y-2">
                             <button
-                                disabled={readOnly || project.nodes.some((node) => node.metadata?.graph?.role === "prompt")}
+                                disabled={readOnly}
                                 type="button"
                                 onClick={() => addPromptNode()}
                                 className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
@@ -898,7 +897,6 @@ export default function CanvasProjectPage() {
                     {contextMenu?.type === "canvas" ? (
                         <CanvasCreateContextMenu
                             menu={contextMenu}
-                            promptDisabled={project.nodes.some((node) => node.metadata?.graph?.role === "prompt")}
                             imageModelDisabled={!models.some((model) => model.operations.includes("image.generate"))}
                             videoModelDisabled={!models.some((model) => model.operations.includes("video.generate"))}
                             onClose={closeContextMenu}
