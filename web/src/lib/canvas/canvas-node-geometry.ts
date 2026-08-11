@@ -1,4 +1,5 @@
 import { CanvasNodeType, type CanvasNodeData, type ConnectionHandle } from "@/types/canvas";
+import { getNodePorts, type GraphPortRef } from "@/features/graph/connect";
 
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
@@ -61,6 +62,24 @@ export function getConnectionTargetAnchor(node: CanvasNodeData, current: Connect
         x: current.handleType === "source" ? node.position.x : node.position.x + node.width,
         y: node.position.y + node.height / 2,
     };
+}
+
+export function getNodePortAnchor(node: CanvasNodeData, portId: string, direction: GraphPortRef["direction"]) {
+    const ports = getNodePorts(node);
+    const siblings = direction === "source" ? ports.sources : ports.targets;
+    const index = Math.max(0, siblings.findIndex((port) => port.portId === portId));
+    return {
+        x: direction === "source" ? node.position.x + node.width : node.position.x,
+        y: node.position.y + ((index + 1) * node.height) / (siblings.length + 1),
+    };
+}
+
+export function connectionPathData(from: CanvasNodeData, fromPortId: string, to: CanvasNodeData, toPortId: string) {
+    const start = getNodePortAnchor(from, fromPortId, "source");
+    const end = getNodePortAnchor(to, toPortId, "target");
+    const dx = Math.abs(end.x - start.x);
+    const curvature = Math.max(dx * 0.5, 50);
+    return `M ${start.x} ${start.y} C ${start.x + curvature} ${start.y}, ${end.x - curvature} ${end.y}, ${end.x} ${end.y}`;
 }
 
 export function normalizeConnection(firstNodeId: string, secondNodeId: string, nodes: CanvasNodeData[], firstHandleType: "source" | "target") {

@@ -1,5 +1,6 @@
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
 
+import { connectionPathData, getNodePortAnchor } from "@/lib/canvas/canvas-node-geometry";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
@@ -20,18 +21,22 @@ export function ConnectionPath({
     onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const startX = from.position.x + from.width;
-    const startY = from.position.y + from.height / 2;
-    const endX = to.position.x;
-    const endY = to.position.y + to.height / 2;
-    const dx = Math.abs(endX - startX);
-    const curvature = Math.max(dx * 0.5, 50);
-    const pathD = `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`;
+    const pathD = connectionPathData(from, connection.fromPortId, to, connection.toPortId);
+    const selectWithKeyboard = (event: ReactKeyboardEvent<SVGPathElement>) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect();
+    };
 
     return (
         <g>
             <path
                 data-connection-id={connection.id}
+                role="button"
+                aria-label={`连接：${from.title} 到 ${to.title}`}
+                aria-selected={active}
+                tabIndex={0}
                 d={pathD}
                 stroke="transparent"
                 strokeWidth="16"
@@ -41,6 +46,7 @@ export function ConnectionPath({
                     event.stopPropagation();
                     onSelect();
                 }}
+                onKeyDown={selectWithKeyboard}
                 onContextMenu={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -63,8 +69,9 @@ export function ActiveConnectionPath({ node, handle, mouseWorld, target }: { nod
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     if (!node) return null;
 
-    const startX = handle.handleType === "source" ? node.position.x + node.width : mouseWorld.x;
-    const startY = handle.handleType === "source" ? node.position.y + node.height / 2 : mouseWorld.y;
+    const namedAnchor = handle.portId ? getNodePortAnchor(node, handle.portId, handle.handleType) : null;
+    const startX = handle.handleType === "source" ? namedAnchor?.x ?? node.position.x + node.width : mouseWorld.x;
+    const startY = handle.handleType === "source" ? namedAnchor?.y ?? node.position.y + node.height / 2 : mouseWorld.y;
     const endX = handle.handleType === "source" ? mouseWorld.x : node.position.x;
     const endY = handle.handleType === "source" ? mouseWorld.y : node.position.y + node.height / 2;
     const snappedStartX = handle.handleType === "target" && target ? target.position.x + target.width : startX;

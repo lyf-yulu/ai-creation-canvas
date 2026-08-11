@@ -6,14 +6,17 @@ import { nanoid } from "nanoid";
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
 import { fetchModels } from "@/api/models";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
+import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { GenerationInspector, type GenerationInspectorValue } from "@/components/canvas/generation-inspector";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
+import { NodePort } from "@/components/canvas/node-port";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
+import { connectGraphPorts, getNodePorts, type GraphPortRef } from "@/features/graph/connect";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
@@ -30,12 +33,18 @@ function generationSource(prompt: string, model: string, operation: ModelOperati
 export default function CanvasProjectPage() {
     const { id = "" } = useParams();
     const containerRef = useRef<HTMLDivElement>(null);
-    const contextTriggerRef = useRef<HTMLDivElement | null>(null);
+    const contextTriggerRef = useRef<HTMLElement | SVGElement | null>(null);
     const [models, setModels] = useState<ModelSpec[]>([]);
     const [inspector, setInspector] = useState<GenerationInspectorValue>({ prompt: "", modelId: "", params: {} });
     const [operation, setOperation] = useState<ModelOperation>("image.generate");
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
+    const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+    const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
+    const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
+    const pendingPortRef = useRef<GraphPortRef | null>(null);
+    const pointerConnectionRef = useRef<number | null>(null);
+    const suppressPortClickRef = useRef<string | null>(null);
     const project = useCanvasStore((state) => state.openProject(id));
     const projectsLoaded = useCanvasStore((state) => state.projectsLoaded);
     const syncNotice = useCanvasStore((state) => state.syncNotice);
@@ -43,6 +52,24 @@ export default function CanvasProjectPage() {
     const readOnly = Boolean(loadError?.readOnly);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const viewport = normalizeViewport(project?.viewport);
+    const setPendingPort = useCallback((port: GraphPortRef | null) => {
+        pendingPortRef.current = port;
+        setPendingPortState(port);
+    }, []);
+    const clearPendingConnection = useCallback(() => {
+        pointerConnectionRef.current = null;
+        suppressPortClickRef.current = null;
+        setPendingPort(null);
+    }, [setPendingPort]);
+    const clientToWorld = useCallback((clientX: number, clientY: number) => {
+        const rect = containerRef.current?.getBoundingClientRect();
+        const left = rect?.left ?? 0;
+        const top = rect?.top ?? 0;
+        return {
+            x: (clientX - left - viewport.x) / viewport.k,
+            y: (clientY - top - viewport.y) / viewport.k,
+        };
+    }, [viewport.k, viewport.x, viewport.y]);
     const changeViewport = useCallback((next: ViewportTransform) => {
         updateProject(id, { viewport: normalizeViewport(next) });
     }, [id, updateProject]);
@@ -56,16 +83,20 @@ export default function CanvasProjectPage() {
 
     useEffect(() => {
         setSelectedNodeIds(new Set());
+        setSelectedConnectionId(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
-    }, [id]);
+        clearPendingConnection();
+    }, [clearPendingConnection, id]);
 
     useEffect(() => {
         if (!readOnly) return;
         setSelectedNodeIds(new Set());
+        setSelectedConnectionId(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
-    }, [readOnly]);
+        clearPendingConnection();
+    }, [clearPendingConnection, readOnly]);
 
     useEffect(() => {
         const existing = new Set(project?.nodes.map((node) => node.id) ?? []);
@@ -74,6 +105,33 @@ export default function CanvasProjectPage() {
             return new Set([...current].filter((nodeId) => existing.has(nodeId)));
         });
     }, [project?.nodes]);
+
+    useEffect(() => {
+        if (!selectedConnectionId || project?.connections.some((connection) => connection.id === selectedConnectionId)) return;
+        setSelectedConnectionId(null);
+    }, [project?.connections, selectedConnectionId]);
+
+    useEffect(() => {
+        const handlePointerMove = (event: PointerEvent) => {
+            if (pointerConnectionRef.current !== event.pointerId) return;
+            setConnectionPointerWorld(clientToWorld(event.clientX, event.clientY));
+        };
+        const finishOutsidePort = (event: PointerEvent) => {
+            if (pointerConnectionRef.current !== event.pointerId) return;
+            clearPendingConnection();
+        };
+        const cancel = () => clearPendingConnection();
+        window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointerup", finishOutsidePort);
+        window.addEventListener("pointercancel", finishOutsidePort);
+        window.addEventListener("blur", cancel);
+        return () => {
+            window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointerup", finishOutsidePort);
+            window.removeEventListener("pointercancel", finishOutsidePort);
+            window.removeEventListener("blur", cancel);
+        };
+    }, [clearPendingConnection, clientToWorld]);
 
     useEffect(() => { void fetchModels().then(setModels).catch(() => setModels([])); }, []);
 
@@ -106,17 +164,81 @@ export default function CanvasProjectPage() {
         setSelectedNodeIds((selected) => new Set([...selected].filter((nodeId) => !nodeIds.has(nodeId))));
         setContextMenu(null);
     }, [id, readOnly, updateProject]);
+    const deleteConnection = useCallback((connectionId: string) => {
+        if (readOnly) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        updateProject(id, { connections: current.connections.filter((connection) => connection.id !== connectionId) });
+        setSelectedConnectionId((selected) => selected === connectionId ? null : selected);
+        setContextMenu(null);
+    }, [id, readOnly, updateProject]);
 
     useEffect(() => {
         const handleDeleteShortcut = (event: KeyboardEvent) => {
             if (readOnly || (event.key !== "Delete" && event.key !== "Backspace") || isEditableEventTarget(event.target)) return;
-            if (selectedNodeIds.size === 0) return;
+            if (selectedNodeIds.size === 0 && !selectedConnectionId) return;
             event.preventDefault();
-            deleteNodes(selectedNodeIds);
+            if (selectedNodeIds.size > 0) deleteNodes(selectedNodeIds);
+            else if (selectedConnectionId) deleteConnection(selectedConnectionId);
         };
         window.addEventListener("keydown", handleDeleteShortcut);
         return () => window.removeEventListener("keydown", handleDeleteShortcut);
-    }, [deleteNodes, readOnly, selectedNodeIds]);
+    }, [deleteConnection, deleteNodes, readOnly, selectedConnectionId, selectedNodeIds]);
+
+    const finishPortConnection = useCallback((first: GraphPortRef, second: GraphPortRef) => {
+        if (readOnly) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return false;
+        const result = connectGraphPorts(first, second, current.nodes, current.connections, nanoid());
+        if (!result.ok) return false;
+        updateProject(id, { connections: [...current.connections, result.connection] });
+        setSelectedNodeIds(new Set());
+        setSelectedConnectionId(result.connection.id);
+        setPendingPort(null);
+        return true;
+    }, [id, readOnly, setPendingPort, updateProject]);
+
+    const handlePortPointerDown = useCallback((port: GraphPortRef, event: React.PointerEvent<HTMLButtonElement>) => {
+        if (readOnly || port.direction !== "source" || event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        pointerConnectionRef.current = event.pointerId;
+        setConnectionPointerWorld(clientToWorld(event.clientX, event.clientY));
+        setPendingPort(port);
+    }, [clientToWorld, readOnly, setPendingPort]);
+
+    const handlePortPointerUp = useCallback((port: GraphPortRef, event: React.PointerEvent<HTMLButtonElement>) => {
+        if (readOnly || pointerConnectionRef.current !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        pointerConnectionRef.current = null;
+        const first = pendingPortRef.current;
+        if (!first || (first.nodeId === port.nodeId && first.portId === port.portId && first.direction === port.direction)) return;
+        const suppressedPortKey = `${port.nodeId}\u0000${port.portId}\u0000${port.direction}`;
+        suppressPortClickRef.current = suppressedPortKey;
+        window.setTimeout(() => {
+            if (suppressPortClickRef.current === suppressedPortKey) suppressPortClickRef.current = null;
+        }, 0);
+        finishPortConnection(first, port);
+    }, [finishPortConnection, readOnly]);
+
+    const handlePortClick = useCallback((port: GraphPortRef, event: React.MouseEvent<HTMLButtonElement>) => {
+        if (readOnly) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const portKey = `${port.nodeId}\u0000${port.portId}\u0000${port.direction}`;
+        if (suppressPortClickRef.current === portKey) {
+            suppressPortClickRef.current = null;
+            return;
+        }
+        const first = pendingPortRef.current;
+        if (!first) {
+            if (port.direction === "source") setPendingPort(port);
+            return;
+        }
+        if (first.nodeId === port.nodeId && first.portId === port.portId && first.direction === port.direction) return;
+        finishPortConnection(first, port);
+    }, [finishPortConnection, readOnly, setPendingPort]);
 
     const submit = (model: ModelSpec, safeParams: Record<string, unknown>) => {
         if (readOnly) return;
@@ -173,7 +295,16 @@ export default function CanvasProjectPage() {
         if (readOnly) return;
         contextTriggerRef.current = trigger;
         setSelectedNodeIds(new Set([nodeId]));
+        setSelectedConnectionId(null);
         setContextMenu({ type: "node", nodeId, x: position.x, y: position.y });
+    }, [readOnly]);
+
+    const openConnectionContextMenu = useCallback((connectionId: string, position: { x: number; y: number }, trigger: SVGPathElement) => {
+        if (readOnly) return;
+        contextTriggerRef.current = trigger;
+        setSelectedNodeIds(new Set());
+        setSelectedConnectionId(connectionId);
+        setContextMenu({ type: "connection", connectionId, x: position.x, y: position.y });
     }, [readOnly]);
 
     const closeContextMenu = useCallback((restoreFocus = false) => {
@@ -200,11 +331,42 @@ export default function CanvasProjectPage() {
                     onViewportChange={changeViewport}
                     onCanvasDeselect={() => {
                         setSelectedNodeIds(new Set());
+                        setSelectedConnectionId(null);
                         setContextMenu(null);
+                        clearPendingConnection();
                     }}
                 >
+                    <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
+                        {project.connections.map((connection) => {
+                            const from = project.nodes.find((node) => node.id === connection.fromNodeId);
+                            const to = project.nodes.find((node) => node.id === connection.toNodeId);
+                            if (!from || !to) return null;
+                            return <ConnectionPath
+                                key={connection.id}
+                                connection={connection}
+                                from={from}
+                                to={to}
+                                active={selectedConnectionId === connection.id}
+                                onSelect={() => {
+                                    if (readOnly) return;
+                                    setSelectedNodeIds(new Set());
+                                    setSelectedConnectionId(connection.id);
+                                    setContextMenu(null);
+                                }}
+                                onContextMenu={readOnly ? undefined : (event) => openConnectionContextMenu(connection.id, { x: event.clientX, y: event.clientY }, event.currentTarget)}
+                            />;
+                        })}
+                        {pendingPort?.direction === "source" ? (
+                            <ActiveConnectionPath
+                                node={project.nodes.find((node) => node.id === pendingPort.nodeId)}
+                                handle={{ nodeId: pendingPort.nodeId, handleType: "source", portId: pendingPort.portId }}
+                                mouseWorld={connectionPointerWorld}
+                            />
+                        ) : null}
+                    </svg>
                     {project.nodes.map((node) => {
                         const promptNode = node.metadata?.graph?.role === "prompt";
+                        const ports = getNodePorts(node);
                         return (
                             <DraggableCanvasNode
                                 key={node.id}
@@ -212,13 +374,28 @@ export default function CanvasProjectPage() {
                                 scale={viewport.k}
                                 selected={selectedNodeIds.has(node.id)}
                                 disabled={readOnly}
-                                onSelect={readOnly ? undefined : (nodeId, additive) => setSelectedNodeIds((current) => selectNode(current, nodeId, additive))}
+                                onSelect={readOnly ? undefined : (nodeId, additive) => {
+                                    setSelectedConnectionId(null);
+                                    setSelectedNodeIds((current) => selectNode(current, nodeId, additive));
+                                }}
                                 onContextMenu={readOnly ? undefined : openNodeContextMenu}
                                 onPositionChange={moveNode}
                             >
                                 {promptNode
                                     ? <PromptNodeCard node={node} disabled={readOnly} onTextChange={(text) => updatePromptNode(node.id, text)} />
                                     : <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} />}
+                                {[...ports.targets, ...ports.sources].map((port) => (
+                                    <NodePort
+                                        key={`${port.direction}:${port.portId}`}
+                                        node={node}
+                                        port={port}
+                                        active={pendingPort?.nodeId === port.nodeId && pendingPort.portId === port.portId && pendingPort.direction === port.direction}
+                                        disabled={readOnly}
+                                        onClick={handlePortClick}
+                                        onPointerDown={handlePortPointerDown}
+                                        onPointerUp={handlePortPointerUp}
+                                    />
+                                ))}
                             </DraggableCanvasNode>
                         );
                     })}
@@ -229,6 +406,12 @@ export default function CanvasProjectPage() {
                         menu={contextMenu}
                         onClose={closeContextMenu}
                         onDelete={() => deleteNodes(new Set([contextMenu.nodeId]))}
+                    />
+                ) : contextMenu?.type === "connection" ? (
+                    <CanvasNodeContextMenu
+                        menu={contextMenu}
+                        onClose={closeContextMenu}
+                        onDelete={() => deleteConnection(contextMenu.connectionId)}
                     />
                 ) : null}
             </section>
