@@ -85,7 +85,9 @@ export function connectGraphPorts(
         && connection.toNodeId === target.nodeId
         && connection.toPortId === target.portId);
     if (duplicate) return { ok: false, reason: "duplicate" };
-    if (target.portId === GRAPH_PORT_IDS.prompt && connections.some((connection) => connection.toNodeId === target.nodeId && connection.toPortId === GRAPH_PORT_IDS.prompt)) {
+    if (target.portId === GRAPH_PORT_IDS.prompt && connections.some((connection) => connection.toNodeId === target.nodeId
+        && connection.toPortId === GRAPH_PORT_IDS.prompt
+        && isResolvedGraphConnectionValid(connection, nodes, registry))) {
         return { ok: false, reason: "prompt-occupied" };
     }
     return {
@@ -98,6 +100,19 @@ export function connectGraphPorts(
             toPortId: target.portId,
         },
     };
+}
+
+export function isResolvedGraphConnectionValid(
+    connection: CanvasConnection,
+    nodes: readonly CanvasNodeData[],
+    registry: Pick<NodeRegistry, "getNode">,
+) {
+    const sourceNode = nodes.find((node) => node.id === connection.fromNodeId);
+    const targetNode = nodes.find((node) => node.id === connection.toNodeId);
+    if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
+    const source = getNodePorts(sourceNode, registry).sources.find((port) => port.portId === connection.fromPortId);
+    const target = getNodePorts(targetNode, registry).targets.find((port) => port.portId === connection.toPortId);
+    return Boolean(source && target && portsAreCompatible(source, target, targetNode));
 }
 
 function sourcePort(nodeId: string, portId: string, valueType: GraphPortValueType): GraphPortRef {

@@ -189,6 +189,51 @@ describe("named-port graph rules", () => {
 
         expect(connectGraphPorts(spoofed, port("model", "reference_images", "target"), nodes, [], "spoofed", registry)).toEqual({ ok: false, reason: "incompatible" });
     });
+
+    it.each(["builtin", "typed-plugin"])("does not let opaque, dangling, any, or spoofed prompt edges block a new %s prompt", (sourceKind) => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.prompt", version: 1, title: "Typed Prompt", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.any", version: 1, title: "Any", inputs: [], outputs: ["out"], createMetadata: () => ({}), render: () => null });
+        const builtinPrompt = promptNode("builtin-prompt");
+        const typedPrompt = baseNode("typed-prompt", "plugin.prompt", 0, 0, {});
+        const unknown = baseNode("unknown", "plugin.unknown", 0, 0, {});
+        const any = baseNode("any", "plugin.any", 0, 0, {});
+        const image = mediaNode("image", "image");
+        const model = modelNode("model", ["prompt"]);
+        const nodes = [builtinPrompt, typedPrompt, unknown, any, image, model];
+        const invalidExisting: CanvasConnection[] = [
+            { id: "opaque", fromNodeId: "unknown", fromPortId: "mystery", toNodeId: "model", toPortId: "prompt" },
+            { id: "dangling", fromNodeId: "missing", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "any", fromNodeId: "any", fromPortId: "out", toNodeId: "model", toPortId: "prompt" },
+            { id: "spoof", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "prompt" },
+            { id: "missing-target-port", fromNodeId: "builtin-prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "removed_prompt" },
+        ];
+        const source = sourceKind === "builtin" ? port("builtin-prompt", "prompt", "source") : port("typed-prompt", "out", "source");
+
+        const first = connectGraphPorts(source, port("model", "prompt", "target"), nodes, invalidExisting, "valid", registry);
+        expect(first).toMatchObject({ ok: true });
+        const withValid = first.ok ? [...invalidExisting, first.connection] : invalidExisting;
+        const secondSource = sourceKind === "builtin" ? port("typed-prompt", "out", "source") : port("builtin-prompt", "prompt", "source");
+        expect(connectGraphPorts(secondSource, port("model", "prompt", "target"), nodes, withValid, "second", registry)).toEqual({ ok: false, reason: "prompt-occupied" });
+    });
+
+    it("re-evaluates prompt quota when a plugin registry is missing or changes", () => {
+        const typedRegistry = createNodeRegistry();
+        typedRegistry.registerNode({ id: "plugin.dynamic", version: 1, title: "Dynamic", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        const anyRegistry = createNodeRegistry();
+        anyRegistry.registerNode({ id: "plugin.dynamic", version: 1, title: "Dynamic", inputs: [], outputs: ["out"], createMetadata: () => ({}), render: () => null });
+        const missingRegistry = createNodeRegistry();
+        const plugin = baseNode("plugin", "plugin.dynamic", 0, 0, {});
+        const builtin = promptNode("builtin");
+        const model = modelNode("model", ["prompt"]);
+        const nodes = [plugin, builtin, model];
+        const existing: CanvasConnection[] = [{ id: "plugin-edge", fromNodeId: "plugin", fromPortId: "out", toNodeId: "model", toPortId: "prompt" }];
+        const attempt = (registry: ReturnType<typeof createNodeRegistry>) => connectGraphPorts(port("builtin", "prompt", "source"), port("model", "prompt", "target"), nodes, existing, "builtin-edge", registry);
+
+        expect(attempt(missingRegistry)).toMatchObject({ ok: true });
+        expect(attempt(anyRegistry)).toMatchObject({ ok: true });
+        expect(attempt(typedRegistry)).toEqual({ ok: false, reason: "prompt-occupied" });
+    });
 });
 
 describe("canvas named-port interactions", () => {
