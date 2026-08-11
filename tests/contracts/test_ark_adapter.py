@@ -183,6 +183,10 @@ def test_ark_declaration_rejects_unmapped_or_unknown_provider_parameters() -> No
     with pytest.raises(ValueError):
         ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), schema, parameter_mappings={"count": "shell_command"})
 
+    duplicate_schema = {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}, "additionalProperties": False}
+    with pytest.raises(ValueError, match="unique"):
+        ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), duplicate_schema, parameter_mappings={"width": "size", "height": "size"})
+
 
 def test_ark_adapter_forwards_every_declared_image_parameter_exactly(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration

@@ -54,6 +54,8 @@ class ArkModelDeclaration:
             raise ValueError("every Ark parameter requires an explicit provider mapping")
         if any(target not in _ARK_PARAMETER_TARGETS for target in self.parameter_mappings.values()):
             raise ValueError("Ark parameter mapping is unsupported")
+        if len(set(self.parameter_mappings.values())) != len(self.parameter_mappings):
+            raise ValueError("Ark provider parameter targets must be unique")
         ModelSpec(self.model_id, self.service_id, self.display_name, self.operations, ("text",), self.parameter_schema, None, self.input_ports, self.parameter_mappings)
 
 
