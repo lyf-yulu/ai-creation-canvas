@@ -234,7 +234,7 @@ export default function CanvasProjectPage() {
             const current = useCanvasStore.getState().openProject(projectId);
             if (!current) return;
             const source = current.nodes.find((node) => node.id === sourceNodeId);
-            const existing = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "error" as const, idempotencyKey: retryToken } } : node));
+            const existing = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "error" as const, jobStatus: "failed" as const, idempotencyKey: retryToken } } : node));
             const failed: CanvasNodeData = {
                 id: nanoid(),
                 type: CanvasNodeType.Image,

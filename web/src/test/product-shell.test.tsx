@@ -48,3 +48,12 @@ it("returns to the active canvas after visiting another product page and resets 
     act(() => useSessionStore.setState({ session: { user_id: "user-b", username: "普通用户 B", role: "user", must_change_password: false } }));
     expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas")).toBe(true);
 });
+
+it("does not adopt the previous user's canvas when the session changes on that route", () => {
+    render(<MemoryRouter initialEntries={["/canvas/project-a"]}><ProductShell><div>内容区域</div></ProductShell></MemoryRouter>);
+    expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas/project-a")).toBe(true);
+
+    act(() => useSessionStore.setState({ session: { user_id: "user-b", username: "普通用户 B", role: "user", must_change_password: false } }));
+
+    expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas")).toBe(true);
+});

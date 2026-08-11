@@ -160,6 +160,32 @@ it("writes a safe failure node for a rate-limited generation", async () => {
     expect(screen.getAllByText("请求过于频繁，请稍后重试。")).not.toHaveLength(0);
 });
 
+it("clears the queued state when an accepted job later fails", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const projectId = useCanvasStore.getState().createProject("Canvas");
+    vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "image", service_id: "s", display_name: "Image", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} }] }), { headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "failed-job", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: "failed-job", status: "failed", error: { code: "UPSTREAM_FAILED", message: "private upstream detail", retryable: true, request_id: "request-failed", phase: "generation" } }), { headers: { "content-type": "application/json" } })));
+    render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "safe prompt" } });
+    fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
+    act(() => {
+        const project = useCanvasStore.getState().openProject(projectId)!;
+        const prompt = project.nodes.find((node) => node.metadata?.graph?.role === "prompt")!;
+        const model = project.nodes.find((node) => node.metadata?.graph?.role === "model")!;
+        useCanvasStore.getState().updateProject(projectId, { connections: [{ id: "prompt-model", fromNodeId: prompt.id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" }] });
+    });
+    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("image"));
+    fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
+
+    await waitFor(() => expect(screen.getByText("任务状态：失败，可修改后重试")).toBeVisible());
+    const source = useCanvasStore.getState().openProject(projectId)!.nodes.find((node) => node.metadata?.graph?.role === "model");
+    expect(source?.metadata).toMatchObject({ status: "error", jobStatus: "failed", jobId: "failed-job" });
+    expect(screen.getByRole("button", { name: "运行模型" })).toBeEnabled();
+});
+
 it("restores a pending result into its source project instead of the currently open project", async () => {
     const sourceProjectId = useCanvasStore.getState().createProject("Source Canvas");
     const otherProjectId = useCanvasStore.getState().createProject("Other Canvas");

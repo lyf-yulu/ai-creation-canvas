@@ -22,15 +22,18 @@ export function ProductShell({ children }: { children: ReactNode }) {
     const logout = useSessionStore((state) => state.logout);
     const location = useLocation();
     const currentCanvasPath = /^\/canvas\/[^/]+$/.test(location.pathname) ? location.pathname : null;
-    const [rememberedCanvas, setRememberedCanvas] = useState(() => ({ userId: session?.user_id ?? null, path: currentCanvasPath ?? "/canvas" }));
-    const projectTarget = rememberedCanvas.userId === (session?.user_id ?? null) ? currentCanvasPath ?? rememberedCanvas.path : currentCanvasPath ?? "/canvas";
+    const [rememberedCanvas, setRememberedCanvas] = useState(() => ({ userId: session?.user_id ?? null, path: currentCanvasPath ?? "/canvas", ignoredPath: null as string | null }));
+    const sameUser = rememberedCanvas.userId === (session?.user_id ?? null);
+    const projectTarget = sameUser && currentCanvasPath !== rememberedCanvas.ignoredPath ? currentCanvasPath ?? rememberedCanvas.path : sameUser ? rememberedCanvas.path : "/canvas";
     const navigation = releasedNavigation.map((item) => item.to === "/canvas" ? { ...item, to: projectTarget } : item);
 
     useEffect(() => {
         const userId = session?.user_id ?? null;
         setRememberedCanvas((current) => {
-            const path = currentCanvasPath ?? (current.userId === userId ? current.path : "/canvas");
-            return current.userId === userId && current.path === path ? current : { userId, path };
+            if (current.userId !== userId) return { userId, path: "/canvas", ignoredPath: currentCanvasPath };
+            if (!currentCanvasPath) return current.ignoredPath ? { ...current, ignoredPath: null } : current;
+            if (currentCanvasPath === current.ignoredPath || current.path === currentCanvasPath) return current;
+            return { userId, path: currentCanvasPath, ignoredPath: null };
         });
     }, [currentCanvasPath, session?.user_id]);
 
