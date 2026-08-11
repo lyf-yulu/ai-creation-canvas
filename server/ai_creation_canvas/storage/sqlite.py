@@ -23,6 +23,10 @@ _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
 
 
+class AssetQuotaExceeded(ValueError):
+    """An atomic asset insert would exceed an administrator-owned quota."""
+
+
 @dataclass(frozen=True, slots=True)
 class Reservation:
     job: dict[str, object]
@@ -44,11 +48,13 @@ class CanvasStore:
         clock: Callable[[], float] = time.time,
         migration_hook: Callable[[str], None] | None = None,
         checkpoint_hook: Callable[[str, int], tuple[int, int, int] | None] | None = None,
+        asset_delete_hook: Callable[[str], None] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self._clock = clock
         self._migration_hook = migration_hook
         self._checkpoint_hook = checkpoint_hook
+        self._asset_delete_hook = asset_delete_hook
         self._lock = threading.RLock()
         self._prepare_root()
         self.assets_dir = self.data_dir / "assets"
@@ -281,12 +287,16 @@ class CanvasStore:
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
         return dict(row) if row is not None else None
 
-    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int, media_type: str | None = None, status: str = "active", service_id: str | None = None, upstream_asset_id: str | None = None) -> dict[str, object]:
+    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int, media_type: str | None = None, status: str = "active", service_id: str | None = None, upstream_asset_id: str | None = None, user_quota_bytes: int | None = None, total_quota_bytes: int | None = None) -> dict[str, object]:
         now = _now()
         safe_media_type = media_type or mime_type.split("/", 1)[0]
         if safe_media_type not in {"image", "video", "audio"}:
             raise ValueError("media_type is invalid")
         with self._connection(immediate=True) as db:
+            user_bytes = int(db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM canvas_assets WHERE user_id=?", (user_id,)).fetchone()[0])
+            total_bytes = int(db.execute("SELECT COALESCE(SUM(size_bytes),0) FROM canvas_assets").fetchone()[0])
+            if (user_quota_bytes is not None and user_bytes + size_bytes > user_quota_bytes) or (total_quota_bytes is not None and total_bytes + size_bytes > total_quota_bytes):
+                raise AssetQuotaExceeded("asset quota exceeded")
             db.execute("INSERT INTO canvas_assets (asset_id,user_id,kind,media_type,mime_type,status,relative_path,size_bytes,created_at,updated_at,service_id,upstream_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, safe_media_type, mime_type, status, relative_path, size_bytes, now, now, service_id, upstream_asset_id))
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         assert row is not None
@@ -489,25 +499,35 @@ class CanvasStore:
         item = self._row(row)
         return (item, bool(item and item["user_id"] != user_id))
 
-    def delete_owned_local_reference_asset(self, asset_id: str, user_id: str, delete_file: Callable[[dict[str, object]], None]) -> str:
-        """Delete one local reference file inside the same locked DB decision.
-
-        The row deletion is rolled back if the verified file removal fails. Portrait
-        and upstream-backed assets deliberately require a future provider workflow.
-        """
-        with self._connection(immediate=True) as db:
-            row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
-            if row is None:
-                return "not_found"
-            item = dict(row)
-            if item["user_id"] != user_id:
-                return "forbidden"
-            if item["kind"] != "reference" or item.get("service_id") is not None or item.get("upstream_asset_id") is not None:
-                return "unsupported"
-            cursor = db.execute("DELETE FROM canvas_assets WHERE asset_id=? AND user_id=?", (asset_id, user_id))
-            if cursor.rowcount != 1:
-                raise RuntimeError("asset delete lost its ownership lock")
-            delete_file(item)
+    def delete_owned_local_reference_asset(self, asset_id: str, user_id: str, stage_file: Callable[[dict[str, object]], object], restore_file: Callable[[dict[str, object], object], None], purge_file: Callable[[object], None]) -> str:
+        """Atomically tombstone a local file around the short metadata transaction."""
+        item: dict[str, object] | None = None
+        tombstone: object | None = None
+        try:
+            with self._connection(immediate=True) as db:
+                row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+                if row is None:
+                    return "not_found"
+                item = dict(row)
+                if item["user_id"] != user_id:
+                    return "forbidden"
+                if item["kind"] != "reference" or item.get("service_id") is not None or item.get("upstream_asset_id") is not None:
+                    return "unsupported"
+                tombstone = stage_file(item)
+                cursor = db.execute("DELETE FROM canvas_assets WHERE asset_id=? AND user_id=?", (asset_id, user_id))
+                if cursor.rowcount != 1:
+                    raise RuntimeError("asset delete lost its ownership lock")
+                if self._asset_delete_hook is not None:
+                    self._asset_delete_hook("before_commit")
+        except BaseException:
+            if item is not None and tombstone is not None:
+                restore_file(item, tombstone)
+            raise
+        if tombstone is not None:
+            try:
+                purge_file(tombstone)
+            except OSError:
+                pass  # A metadata-free tombstone is safe for a later maintenance sweep.
         return "deleted"
 
     def update_asset_status(self, asset_id: str, status: str) -> dict[str, object]:

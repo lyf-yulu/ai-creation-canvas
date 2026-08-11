@@ -59,10 +59,13 @@ PYTHONPATH=server python -m ai_creation_canvas \
   --max-image-upload-mib 10 \
   --max-video-upload-mib 64 \
   --max-audio-upload-mib 32 \
+  --upload-concurrency 4 \
+  --user-asset-quota-mib 2048 \
+  --total-asset-quota-mib 10240 \
   --static-dir web/dist
 ```
 
-三类上传上限由管理员在本地或生产启动入口中显式设置，单位为 MiB，可选范围均为 1–2048。默认值适合本地和轻量代理测试：图片 10 MiB、视频 64 MiB、音频 32 MiB；上调前应同时核对反向代理、Cloudflare 和服务器请求体限制。
+三类单文件上传上限由管理员在本地或生产启动入口中显式设置，单位为 MiB，可选范围均为 1–2048。默认值适合本地和轻量代理测试：图片 10 MiB、视频 64 MiB、音频 32 MiB。服务端默认同时解析最多 4 个上传请求，并对单用户和全站本地资产分别执行 2048 MiB、10240 MiB 的原子配额检查；上调前应同时核对反向代理、Cloudflare、磁盘容量和服务器请求体限制。前端每个媒体集合最多保留 30 个已提交、排队或失败待重试的条目，并在整个页面共享最多 3 个实际上传连接。
 
 `server/config/services.example.json` 仅是无密钥的声明模板，必须替换 mount 与服务标识并经审批。可使用同样的显式参数追加 `--check-config`，在启动 HTTP 服务前验证服务声明是否能被加载；该检查不会连接模型服务。
 

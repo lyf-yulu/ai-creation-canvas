@@ -132,6 +132,59 @@ it("keeps successful uploads, shows a safe error for failed files, and does not 
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-good"]);
 });
 
+it("retries a failed file into its original ordered slot and releases its preview after success", async () => {
+    const attempts = new Map<string, number>();
+    const upload = vi.fn(async (file: File, mediaType: GraphMediaType) => {
+        const attempt = (attempts.get(file.name) ?? 0) + 1;
+        attempts.set(file.name, attempt);
+        if (file.name === "first.png" && attempt === 1) throw new Error("temporary");
+        return { id: `asset-${file.name}`, kind: "reference" as const, status: "active" as const, media_type: mediaType, mime_type: file.type, size_bytes: file.size, content_url: `/api/v1/assets/asset-${file.name}/content` };
+    });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL });
+    let current: GraphMediaItem[] = [];
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(update) => { current = update(current); }} />);
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["a"], "first.png", { type: "image/png" }), new File(["b"], "second.png", { type: "image/png" })] } });
+    expect(await screen.findByText("first.png 上传失败，请重试。")).toBeVisible();
+    expect(current.map((item) => item.assetId)).toEqual(["asset-second.png"]);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:second.png");
+    expect(revokeObjectURL).not.toHaveBeenCalledWith("blob:first.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    await waitFor(() => expect(current.map((item) => item.assetId)).toEqual(["asset-first.png", "asset-second.png"]));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:first.png");
+});
+
+it("removes failed uploads on demand and releases retained previews on unmount", async () => {
+    const upload = vi.fn(async () => { throw new Error("failed"); });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL });
+    const view = render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={() => undefined} />);
+    fireEvent.change(screen.getByLabelText("添加视频"), { target: { files: [new File(["a"], "remove.mp4", { type: "video/mp4" })] } });
+    expect(await screen.findByText("remove.mp4 上传失败，请重试。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "移除错误 remove.mp4" }));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:remove.mp4");
+
+    fireEvent.change(screen.getByLabelText("添加视频"), { target: { files: [new File(["b"], "unmount-failed.mp4", { type: "video/mp4" })] } });
+    expect(await screen.findByText("unmount-failed.mp4 上传失败，请重试。")).toBeVisible();
+    view.unmount();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:unmount-failed.mp4");
+});
+
+it("caps each collection at 30 active and pending items with a visible truncation message", async () => {
+    const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => new Promise<OwnedMediaAsset>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true })));
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={() => undefined} />);
+    const files = Array.from({ length: 35 }, (_, index) => new File([String(index)], `limit-${index}.png`, { type: "image/png" }));
+
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files } });
+
+    expect(await screen.findByText("每个集合最多 30 个媒体文件，已忽略 5 个。")).toBeVisible();
+    expect(screen.getAllByRole("status")).toHaveLength(30);
+    expect(upload).toHaveBeenCalledTimes(3);
+});
+
 it("keeps previews available but removes all mutation controls in read-only mode", () => {
     render(<MediaCollectionNode node={collectionNode("audio", [{ ...items[0], mimeType: "audio/mpeg", displayName: "voice.mp3" }])} readOnly onItemsChange={() => { throw new Error("must not mutate"); }} />);
 
@@ -281,6 +334,29 @@ it("limits one 30-item batch to three active uploads and preserves selection ord
     expect(completed.slice(0, 3)).toEqual(["item-03.png", "item-02.png", "item-01.png"]);
 });
 
+it("shares the three-upload scheduler across multiple collection nodes", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const upload = vi.fn(async (file: File, mediaType: GraphMediaType) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return { id: `asset-${file.name}`, kind: "reference" as const, status: "active" as const, media_type: mediaType, mime_type: file.type, size_bytes: file.size, content_url: `/api/v1/assets/asset-${file.name}/content` };
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    let first: GraphMediaItem[] = [];
+    let second: GraphMediaItem[] = [];
+    const secondNode = { ...collectionNode("image", []), id: "second-image-collection", title: "第二组图片" };
+    render(<><MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(update) => { first = update(first); }} /><MediaCollectionNode node={secondNode} upload={upload} onItemsChange={(update) => { second = update(second); }} /></>);
+    const inputs = screen.getAllByLabelText("添加图片");
+    fireEvent.change(inputs[0], { target: { files: Array.from({ length: 6 }, (_, index) => new File(["a"], `a-${index}.png`, { type: "image/png" })) } });
+    fireEvent.change(inputs[1], { target: { files: Array.from({ length: 6 }, (_, index) => new File(["b"], `b-${index}.png`, { type: "image/png" })) } });
+
+    await waitFor(() => expect(first.length + second.length).toBe(12), { timeout: 5000 });
+    expect(maxActive).toBeLessThanOrEqual(3);
+});
+
 it("never starts a queued cancelled upload and releases repeated cancellation state", async () => {
     const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => new Promise<OwnedMediaAsset>((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
@@ -370,6 +446,26 @@ it("aborts active uploads when the node becomes read-only or its identity change
     expect(signals[1].aborted).toBe(true);
     await waitFor(() => expect(screen.queryByText(/changed\.png/)).not.toBeInTheDocument());
     expect(change).not.toHaveBeenCalled();
+});
+
+it("never writes an old upload through callbacks from a newly rendered node scope", async () => {
+    let finish: ((asset: OwnedMediaAsset) => void) | undefined;
+    const upload = vi.fn(() => new Promise<OwnedMediaAsset>((resolve) => { finish = resolve; }));
+    const removeAsset = vi.fn().mockResolvedValue(undefined);
+    const oldChange = vi.fn();
+    const newChange = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:scoped"), revokeObjectURL: vi.fn() });
+    const first = collectionNode("image", []);
+    const view = render(<MediaCollectionNode node={first} upload={upload} removeAsset={removeAsset} onItemsChange={oldChange} />);
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["a"], "scoped.png", { type: "image/png" })] } });
+    await waitFor(() => expect(upload).toHaveBeenCalledOnce());
+    view.rerender(<MediaCollectionNode node={{ ...first, id: "new-scope" }} upload={upload} removeAsset={removeAsset} onItemsChange={newChange} />);
+
+    finish?.({ id: "asset-scoped", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-scoped/content" });
+
+    await waitFor(() => expect(removeAsset).toHaveBeenCalledWith("asset-scoped"));
+    expect(oldChange).not.toHaveBeenCalled();
+    expect(newChange).not.toHaveBeenCalled();
 });
 
 it("deletes a late successful upload when unmounted or when project writeback declines it", async () => {

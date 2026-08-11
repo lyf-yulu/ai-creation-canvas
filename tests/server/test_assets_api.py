@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 import httpx
@@ -12,6 +13,7 @@ from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.domain.models import AssetRef
+from ai_creation_canvas.storage.sqlite import AssetQuotaExceeded, CanvasStore
 from tests.contracts.test_generation_flow import FakeGeneration, headers
 
 
@@ -38,6 +40,9 @@ def asset_client(tmp_path: Path, **limits: int) -> tuple[TestClient, Path]:
         max_image_upload_bytes=limits.get("image", 1024),
         max_video_upload_bytes=limits.get("video", 2048),
         max_audio_upload_bytes=limits.get("audio", 1024),
+        upload_concurrency=limits.get("concurrency", 4),
+        user_asset_quota_bytes=limits.get("user_quota", 2 * 1024 * 1024 * 1024),
+        total_asset_quota_bytes=limits.get("total_quota", 10 * 1024 * 1024 * 1024),
     )
     app = create_app(settings, registry=registry, model_catalog=ModelCatalog(registry))
     return TestClient(app, raise_server_exceptions=False), data_dir
@@ -133,7 +138,7 @@ def test_asset_delete_rejects_unsafe_path_and_keeps_record(tmp_path):
     assert store.asset_for_owner("unsafe-reference", "u-a")[0] is not None
 
 
-def test_asset_delete_refuses_symlink_and_rolls_back_record_when_unlink_fails(tmp_path, monkeypatch):
+def test_asset_delete_refuses_symlink_and_rename_failure_keeps_file_and_record(tmp_path, monkeypatch):
     client, data_dir = asset_client(tmp_path)
     store = client.app.state.canvas_store
     outside = data_dir / "outside.png"
@@ -151,13 +156,45 @@ def test_asset_delete_refuses_symlink_and_rolls_back_record_when_unlink_fails(tm
     regular = data_dir / "assets" / "regular.png"
     regular.write_bytes(PNG)
     store.create_asset(asset_id="regular-reference", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/regular.png", size_bytes=len(PNG))
-    monkeypatch.setattr("ai_creation_canvas.api.assets.os.unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")))
+    monkeypatch.setattr("ai_creation_canvas.api.assets.os.rename", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")))
 
     failed = client.delete("/api/v1/assets/regular-reference", headers=headers("u-a"))
 
     assert failed.status_code == 404
     assert regular.is_file()
     assert store.asset_for_owner("regular-reference", "u-a")[0] is not None
+
+
+def test_asset_delete_restores_original_on_db_commit_failure(tmp_path):
+    client, data_dir = asset_client(tmp_path)
+    store = client.app.state.canvas_store
+    regular = data_dir / "assets" / "regular.png"
+    regular.write_bytes(PNG)
+    store.create_asset(asset_id="regular-reference", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/regular.png", size_bytes=len(PNG))
+    store._asset_delete_hook = lambda _phase: (_ for _ in ()).throw(RuntimeError("commit failed"))
+
+    response = client.delete("/api/v1/assets/regular-reference", headers=headers("u-a"))
+
+    assert response.status_code == 500
+    assert regular.is_file()
+    assert store.asset_for_owner("regular-reference", "u-a")[0] is not None
+    assert not list((data_dir / "assets").glob("*.delete"))
+
+
+def test_asset_delete_commit_survives_tombstone_purge_failure(tmp_path, monkeypatch):
+    client, data_dir = asset_client(tmp_path)
+    store = client.app.state.canvas_store
+    regular = data_dir / "assets" / "regular.png"
+    regular.write_bytes(PNG)
+    store.create_asset(asset_id="regular-reference", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/regular.png", size_bytes=len(PNG))
+    monkeypatch.setattr("ai_creation_canvas.api.assets.os.unlink", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")))
+
+    response = client.delete("/api/v1/assets/regular-reference", headers=headers("u-a"))
+
+    assert response.status_code == 204
+    assert not regular.exists()
+    assert store.asset_for_owner("regular-reference", "u-a") == (None, False)
+    assert len(list((data_dir / "assets").glob(".*.delete"))) == 1
 
 
 def test_upload_enforces_each_configured_limit_from_stream_not_content_length(tmp_path):
@@ -237,6 +274,95 @@ async def test_chunked_multipart_rejects_unknown_mime_from_part_headers_before_b
     assert response.status_code == 415
     assert response.json()["code"] == "ASSET_INVALID"
     assert not list((data_dir / "assets").iterdir())
+
+
+@pytest.mark.anyio
+async def test_chunked_multipart_bounds_huge_part_header_before_buffering_or_spooling(tmp_path, monkeypatch):
+    client, data_dir = asset_client(tmp_path)
+    boundary = "huge-header"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"".encode()
+        + b"a" * 50_000
+        + b".png\"\r\nContent-Type: image/png\r\n\r\n"
+        + PNG
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    consumed = 0
+
+    async def chunks():
+        nonlocal consumed
+        for offset in range(0, len(body), 512):
+            consumed += min(512, len(body) - offset)
+            if consumed > 10_240:
+                raise AssertionError("oversized part header was buffered past its bound")
+            yield body[offset:offset + 512]
+
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        response = await async_client.post("/api/v1/assets", content=chunks(), headers={**headers(), "content-type": f"multipart/form-data; boundary={boundary}"})
+
+    assert response.status_code == 400
+    assert consumed <= 10_240
+    assert not list((data_dir / "assets").iterdir())
+
+
+@pytest.mark.anyio
+async def test_app_wide_upload_semaphore_limits_parsing_before_multipart_work(tmp_path, monkeypatch):
+    client, _ = asset_client(tmp_path, concurrency=1)
+    from ai_creation_canvas.api import assets as assets_api
+    real_parse = assets_api.LimitedMediaMultiPartParser.parse
+    active = 0
+    max_active = 0
+
+    async def tracking_parse(parser):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            return await real_parse(parser)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(assets_api.LimitedMediaMultiPartParser, "parse", tracking_parse)
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        responses = await asyncio.gather(*[
+            async_client.post("/api/v1/assets", files={"file": (f"frame-{index}.png", PNG, "image/png")}, data={"media_type": "image"}, headers=headers())
+            for index in range(2)
+        ])
+
+    assert [response.status_code for response in responses] == [201, 201]
+    assert max_active == 1
+
+
+def test_upload_quota_rejects_before_a_second_asset_record_and_cleans_file(tmp_path):
+    client, data_dir = asset_client(tmp_path, user_quota=len(PNG), total_quota=len(PNG))
+    request = {"files": {"file": ("frame.png", PNG, "image/png")}, "data": {"media_type": "image"}, "headers": headers()}
+
+    first = client.post("/api/v1/assets", **request)
+    second = client.post("/api/v1/assets", **request)
+
+    assert first.status_code == 201
+    assert second.status_code == 413
+    assert second.json()["code"] == "ASSET_QUOTA_EXCEEDED"
+    assert len([path for path in (data_dir / "assets").iterdir() if not path.name.startswith(".")]) == 1
+
+
+def test_asset_quota_sum_and_insert_are_atomic_under_concurrent_writers(tmp_path):
+    store = CanvasStore(tmp_path / "quota-store")
+
+    def create(index: int) -> str:
+        try:
+            store.create_asset(asset_id=f"asset-{index}", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path=f"assets/{index}.png", size_bytes=15, user_quota_bytes=20, total_quota_bytes=20)
+            return "created"
+        except AssetQuotaExceeded:
+            return "quota"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(create, (1, 2)))
+
+    assert sorted(outcomes) == ["created", "quota"]
 
 
 @pytest.mark.anyio

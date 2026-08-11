@@ -15,9 +15,13 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import AssetRef
 from ai_creation_canvas.errors import AdapterNotFoundError, PortalUpstreamError, InvalidUpstreamResult
+from ai_creation_canvas.storage.sqlite import AssetQuotaExceeded
 
 router = APIRouter(prefix="/api/v1")
 _CHUNK_SIZE = 64 * 1024
+_MAX_PART_HEADER_BYTES = 32 * 1024
+_MAX_SINGLE_HEADER_BYTES = 8 * 1024
+_MAX_PART_HEADERS = 32
 _MIME_MEDIA = {
     "image/png": "image",
     "image/jpeg": "image",
@@ -55,6 +59,10 @@ class MediaUploadTooLarge(MultiPartException):
     """The actual file-part bytes exceeded the MIME-specific configured limit."""
 
 
+class MediaUploadHeadersTooLarge(MultiPartException):
+    """Multipart header metadata exceeded its bounded parser budget."""
+
+
 def _safe_upload_basename(filename: str, mime_type: str) -> str:
     if not isinstance(filename, str) or any(ord(char) < 32 or ord(char) == 127 for char in filename):
         raise MediaUploadInvalid("invalid filename")
@@ -79,6 +87,36 @@ class LimitedMediaMultiPartParser(MultiPartParser):
         self.file_name: str | None = None
         self.file_bytes = 0
         self.file_limit: int | None = None
+        self._part_header_bytes = 0
+        self._single_header_bytes = 0
+        self._part_header_count = 0
+
+    def on_part_begin(self) -> None:
+        self._part_header_bytes = 0
+        self._single_header_bytes = 0
+        self._part_header_count = 0
+        super().on_part_begin()
+
+    def _count_header_fragment(self, size: int) -> None:
+        self._single_header_bytes += size
+        self._part_header_bytes += size
+        if self._single_header_bytes > _MAX_SINGLE_HEADER_BYTES or self._part_header_bytes > _MAX_PART_HEADER_BYTES:
+            raise MediaUploadHeadersTooLarge("multipart headers exceeded configured limit")
+
+    def on_header_field(self, data: bytes, start: int, end: int) -> None:
+        self._count_header_fragment(end - start)
+        super().on_header_field(data, start, end)
+
+    def on_header_value(self, data: bytes, start: int, end: int) -> None:
+        self._count_header_fragment(end - start)
+        super().on_header_value(data, start, end)
+
+    def on_header_end(self) -> None:
+        self._part_header_count += 1
+        if self._part_header_count > _MAX_PART_HEADERS:
+            raise MediaUploadHeadersTooLarge("multipart header count exceeded configured limit")
+        self._single_header_bytes = 0
+        super().on_header_end()
 
     def on_headers_finished(self) -> None:
         super().on_headers_finished()
@@ -154,12 +192,20 @@ def _upload_limit(request: Request, media_type: str) -> int:
 
 @router.post("/assets", status_code=201)
 async def upload_asset(request: Request) -> dict[str, object]:
+    context_for(request)
+    async with request.app.state.upload_semaphore:
+        return await _upload_asset(request)
+
+
+async def _upload_asset(request: Request) -> dict[str, object]:
     context = context_for(request)
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
     parser = LimitedMediaMultiPartParser(request)
     try:
         form = await parser.parse()
+    except MediaUploadHeadersTooLarge:
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
     except MediaUploadTooLarge:
         raise problem(request, "ASSET_TOO_LARGE", "The upload is too large.", status=413) from None
     except MediaUploadInvalid:
@@ -224,10 +270,14 @@ async def upload_asset(request: Request) -> dict[str, object]:
                 raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
             except Exception:
                 raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
-            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, status=upstream.status.value, service_id="portal-portrait", upstream_asset_id=upstream.asset_id)
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, status=upstream.status.value, service_id="portal-portrait", upstream_asset_id=upstream.asset_id, user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
         else:
-            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size)
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
         return _asset(item)
+    except AssetQuotaExceeded:
+        temporary.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
+        raise problem(request, "ASSET_QUOTA_EXCEEDED", "The asset quota has been reached.", status=413) from None
     except BaseException:
         temporary.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
@@ -246,13 +296,17 @@ def _owned_asset(asset_id: str, request: Request) -> dict[str, object]:
     return item
 
 
-def _unlink_safe_asset(item: dict[str, object], request: Request) -> None:
+def _asset_root_descriptor(request: Request) -> int:
     store = request.app.state.canvas_store
+    root_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    return os.open(store.assets_dir, root_flags)
+
+
+def _stage_safe_asset(item: dict[str, object], request: Request) -> str:
     relative = Path(str(item["relative_path"]))
     if relative.parent != Path("assets") or relative.name in {"", ".", ".."}:
         raise ValueError("unsafe asset path")
-    root_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    root_descriptor = os.open(store.assets_dir, root_flags)
+    root_descriptor = _asset_root_descriptor(request)
     descriptor: int | None = None
     try:
         descriptor = os.open(relative.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_descriptor)
@@ -265,10 +319,33 @@ def _unlink_safe_asset(item: dict[str, object], request: Request) -> None:
             or opened.st_size != int(item["size_bytes"])
         ):
             raise ValueError("unsafe asset file")
-        os.unlink(relative.name, dir_fd=root_descriptor)
+        tombstone = f".{secrets.token_hex(20)}.delete"
+        os.rename(relative.name, tombstone, src_dir_fd=root_descriptor, dst_dir_fd=root_descriptor)
+        return tombstone
     finally:
         if descriptor is not None:
             os.close(descriptor)
+        os.close(root_descriptor)
+
+
+def _restore_staged_asset(item: dict[str, object], tombstone: object, request: Request) -> None:
+    relative = Path(str(item["relative_path"]))
+    if not isinstance(tombstone, str) or relative.parent != Path("assets"):
+        raise ValueError("unsafe asset tombstone")
+    root_descriptor = _asset_root_descriptor(request)
+    try:
+        os.rename(tombstone, relative.name, src_dir_fd=root_descriptor, dst_dir_fd=root_descriptor)
+    finally:
+        os.close(root_descriptor)
+
+
+def _purge_staged_asset(tombstone: object, request: Request) -> None:
+    if not isinstance(tombstone, str) or not tombstone.startswith(".") or not tombstone.endswith(".delete"):
+        raise ValueError("unsafe asset tombstone")
+    root_descriptor = _asset_root_descriptor(request)
+    try:
+        os.unlink(tombstone, dir_fd=root_descriptor)
+    finally:
         os.close(root_descriptor)
 
 
@@ -280,7 +357,9 @@ async def delete_asset(asset_id: str, request: Request) -> Response:
         outcome = store.delete_owned_local_reference_asset(
             asset_id,
             context.user.user_id,
-            lambda item: _unlink_safe_asset(item, request),
+            lambda item: _stage_safe_asset(item, request),
+            lambda item, tombstone: _restore_staged_asset(item, tombstone, request),
+            lambda tombstone: _purge_staged_asset(tombstone, request),
         )
     except (OSError, ValueError):
         raise problem(request, "ASSET_NOT_FOUND", "The asset was not found.", status=404) from None

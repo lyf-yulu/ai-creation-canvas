@@ -107,6 +107,9 @@ class Settings:
     max_image_upload_bytes: int = 10 * 1024 * 1024
     max_video_upload_bytes: int = 64 * 1024 * 1024
     max_audio_upload_bytes: int = 32 * 1024 * 1024
+    upload_concurrency: int = 4
+    user_asset_quota_bytes: int = 2 * 1024 * 1024 * 1024
+    total_asset_quota_bytes: int = 10 * 1024 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -153,6 +156,14 @@ class Settings:
             value = getattr(self, field_name)
             if type(value) is not int or not 1 <= value <= 2 * 1024 * 1024 * 1024:
                 raise ValueError(f"{field_name} must be a positive bounded integer")
+        if type(self.upload_concurrency) is not int or not 1 <= self.upload_concurrency <= 32:
+            raise ValueError("upload_concurrency must be between 1 and 32")
+        for field_name in ("user_asset_quota_bytes", "total_asset_quota_bytes"):
+            value = getattr(self, field_name)
+            if type(value) is not int or not 1 <= value <= 1024 * 1024 * 1024 * 1024:
+                raise ValueError(f"{field_name} must be a positive bounded integer")
+        if self.total_asset_quota_bytes < self.user_asset_quota_bytes:
+            raise ValueError("total asset quota must not be smaller than user asset quota")
         if self.enable_ark_adapter:
             if self.ark_models_config_path is None or self.ark_models_config_root is None:
                 raise ValueError("Ark adapter requires an explicit administrator configuration")

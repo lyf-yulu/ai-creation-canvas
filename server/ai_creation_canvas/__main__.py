@@ -31,10 +31,33 @@ def _upload_mib(value: str) -> int:
     return amount * _MIB
 
 
+def _quota_mib(value: str) -> int:
+    try:
+        amount = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("asset quota must be an integer MiB value") from error
+    if not 1 <= amount <= 1024 * 1024:
+        raise argparse.ArgumentTypeError("asset quota must be between 1 and 1048576 MiB")
+    return amount * _MIB
+
+
+def _upload_concurrency(value: str) -> int:
+    try:
+        amount = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("upload concurrency must be an integer") from error
+    if not 1 <= amount <= 32:
+        raise argparse.ArgumentTypeError("upload concurrency must be between 1 and 32")
+    return amount
+
+
 def _add_upload_limit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-image-upload-mib", dest="max_image_upload_bytes", type=_upload_mib, default=10 * _MIB, metavar="MIB", help="maximum owned image upload size (1-2048 MiB; default: 10)")
     parser.add_argument("--max-video-upload-mib", dest="max_video_upload_bytes", type=_upload_mib, default=64 * _MIB, metavar="MIB", help="maximum owned video upload size (1-2048 MiB; default: 64)")
     parser.add_argument("--max-audio-upload-mib", dest="max_audio_upload_bytes", type=_upload_mib, default=32 * _MIB, metavar="MIB", help="maximum owned audio upload size (1-2048 MiB; default: 32)")
+    parser.add_argument("--upload-concurrency", type=_upload_concurrency, default=4, help="maximum concurrent multipart uploads (1-32; default: 4)")
+    parser.add_argument("--user-asset-quota-mib", dest="user_asset_quota_bytes", type=_quota_mib, default=2048 * _MIB, metavar="MIB", help="per-user local asset quota (default: 2048 MiB)")
+    parser.add_argument("--total-asset-quota-mib", dest="total_asset_quota_bytes", type=_quota_mib, default=10240 * _MIB, metavar="MIB", help="total local asset quota (default: 10240 MiB)")
 
 
 def initialize_local_accounts(data_dir: Path, *, initial_model_ids: tuple[str, ...] = (), output: Callable[[str], None] = print) -> bool:
@@ -55,7 +78,7 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origin = f"http://127.0.0.1:{port}"
     settings = Settings(
         environment="development",
@@ -71,6 +94,9 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_i
         max_image_upload_bytes=max_image_upload_bytes,
         max_video_upload_bytes=max_video_upload_bytes,
         max_audio_upload_bytes=max_audio_upload_bytes,
+        upload_concurrency=upload_concurrency,
+        user_asset_quota_bytes=user_asset_quota_bytes,
+        total_asset_quota_bytes=total_asset_quota_bytes,
     )
     app = create_app(settings, static_dir=static_dir)
     accounts: BootstrapResult | None = None
@@ -118,7 +144,7 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--ark-models", type=Path, help="administrator-owned Ark model declarations; requires ARK_API_KEY")
     _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"
@@ -166,6 +192,9 @@ def main() -> None:
         max_image_upload_bytes=args.max_image_upload_bytes,
         max_video_upload_bytes=args.max_video_upload_bytes,
         max_audio_upload_bytes=args.max_audio_upload_bytes,
+        upload_concurrency=args.upload_concurrency,
+        user_asset_quota_bytes=args.user_asset_quota_bytes,
+        total_asset_quota_bytes=args.total_asset_quota_bytes,
     )
     app = create_app(settings, static_dir=args.static_dir)
     if args.check_config:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import stat
 import uuid
@@ -135,6 +136,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
     app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.settings = settings
+    app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
     build_dir = build_dir.resolve(strict=False)
