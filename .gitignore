@@ -10,6 +10,7 @@ secrets/
 
 # Runtime and user data
 /.local-data/
+/.paid-acceptance/
 state/
 outputs/
 archives/

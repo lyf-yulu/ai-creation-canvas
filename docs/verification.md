@@ -43,7 +43,7 @@ npm run verify:release --prefix web
 
 ## 真实服务冒烟
 
-真实服务冒烟必须经用户书面批准后，使用独立数据目录、非生产端口与一次性测试账号执行。`scripts/run-real-media-local.sh` 是唯一的本地真实媒体入口；它需要服务端环境中的 `ARK_API_KEY`，默认隔离到 `127.0.0.1:8994` 和 `.local-real-media-data/`。
+真实服务冒烟必须经用户书面批准后，使用独立数据目录、非生产端口与一次性测试账号执行。交互式人工检查使用 `scripts/run-real-media-local.sh`；有界的自动付费验收只能使用 `scripts/acceptance-real-media.sh`。后者还要求精确设置 `AICC_ALLOW_PAID_ACCEPTANCE=YES`，默认隔离到一个全新数据目录和 `127.0.0.1:8998`，并锁定一次 Seedream 参考图编辑及一次复用该结果的 Seedance 5 秒 480p 视频。
 
 获批后的单次代表模型只允许记录到 Git 忽略的本地验证日志：时间、模型 ID、状态、短任务 ID、耗时、成本级别与安全错误码。禁止记录提示词、Cookie、密钥、资产内容、结果 URL、原始请求/响应；不得把该日志提交到仓库。
 
