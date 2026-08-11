@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Navigate, useParams } from "react-router-dom";
-import { Film, ImagePlus, MessageSquareText, Music2 } from "lucide-react";
+import { Link, Navigate, useParams } from "react-router-dom";
+import { ArrowLeft, Film, ImagePlus, MessageSquareText, Music2 } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
@@ -698,6 +698,9 @@ export default function CanvasProjectPage() {
                 <aside data-testid="studio-palette" className="shrink-0 border-b border-[#1d3d28] bg-[#08100b] p-2 lg:border-b-0 lg:border-r lg:p-3">
                     <div className="flex items-center justify-between gap-2 lg:block">
                         <div>
+                            <Link to="/canvas" aria-label="返回项目列表" className="mb-1 inline-flex items-center gap-1 px-2 text-[11px] text-[#8fa596] hover:text-[#dceee1] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]">
+                                <ArrowLeft className="size-3.5" />返回项目列表
+                            </Link>
                             <p className="px-2 text-xs tracking-[0.16em] text-[#58ed87] lg:pt-2">NODE PALETTE</p>
                             <h1 className="px-2 py-1 text-sm font-semibold lg:pb-4 lg:pt-2">{project.title}</h1>
                         </div>

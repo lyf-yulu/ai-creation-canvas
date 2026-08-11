@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -36,4 +36,15 @@ it("shows only released ordinary-user destinations", () => {
     expect(screen.queryByRole("link", { name: "管理员" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Skill" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "退出登录" })).toHaveLength(2);
+});
+
+it("returns to the active canvas after visiting another product page and resets for another user", () => {
+    render(<MemoryRouter initialEntries={["/canvas/project-a"]}><ProductShell><div>内容区域</div></ProductShell></MemoryRouter>);
+
+    expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas/project-a")).toBe(true);
+    fireEvent.click(screen.getAllByRole("link", { name: "资产" })[0]);
+    expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas/project-a")).toBe(true);
+
+    act(() => useSessionStore.setState({ session: { user_id: "user-b", username: "普通用户 B", role: "user", must_change_password: false } }));
+    expect(screen.getAllByRole("link", { name: "项目" }).every((link) => link.getAttribute("href") === "/canvas")).toBe(true);
 });

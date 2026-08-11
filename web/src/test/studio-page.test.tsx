@@ -40,6 +40,7 @@ it("assembles the released image and video generation studio around the infinite
     expect(screen.getByTestId("studio-palette")).toBeVisible();
     expect(screen.getByTestId("studio-canvas")).toBeVisible();
     expect(screen.getByTestId("studio-canvas")).toHaveClass("flex-1", "min-h-0");
+    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/canvas");
     expect(screen.queryByTestId("generation-inspector")).not.toBeInTheDocument();
     expect(screen.getByText("提示词节点")).toBeVisible();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeVisible();
