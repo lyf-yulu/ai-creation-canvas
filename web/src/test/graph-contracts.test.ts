@@ -54,7 +54,10 @@ describe("graph contracts", () => {
             role: "model",
             modelId: "seedream-test",
             operation: "image.edit",
-            inputPortIds: ["prompt", "reference_images"],
+            inputPorts: [
+                { id: "prompt", accepts: "prompt" },
+                { id: "reference_images", accepts: "image" },
+            ],
             outputPortId: "result",
             parameters: { count: 2, watermark: false, ratio: "16:9" },
         };
@@ -70,6 +73,7 @@ describe("graph contracts", () => {
         expect([prompt.role, collection.role, model.role, result.role]).toEqual(["prompt", "media-collection", "model", "result"]);
         expect(collection.items[0]).toMatchObject({ assetId: "asset-1", mimeType: "image/png", bytes: 42 });
         expect(model.parameters).toEqual({ count: 2, watermark: false, ratio: "16:9" });
+        expect(model.inputPorts).toEqual([{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }]);
     });
 
     it("creates an immutable submission snapshot independent from mutable editor values", () => {
@@ -146,6 +150,14 @@ describe("legacy graph normalization", () => {
         expect(normalized.nodes[4].metadata?.graph).toMatchObject({
             role: "model",
             modelId: "seedance-test",
+            inputPorts: [
+                { id: "prompt", accepts: "prompt" },
+                { id: "reference_images", accepts: "image" },
+                { id: "first_frame", accepts: "image" },
+                { id: "last_frame", accepts: "image" },
+                { id: "reference_video", accepts: "video" },
+                { id: "reference_audio", accepts: "audio" },
+            ],
             parameters: { ratio: "16:9", duration: 5 },
         });
         expect(normalized.connections).toEqual([
@@ -181,7 +193,7 @@ describe("legacy graph normalization", () => {
         const plugin = node("plugin", "example:processor", { content: "opaque" });
         const secondPlugin = node("plugin-2", "example:sink", { content: "opaque-2" });
         const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } });
-        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "custom", inputPortIds: ["custom_input", "prompt"], outputPortId: "result", parameters: {} } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "custom", inputPorts: [{ id: "custom_input", accepts: "any" }, { id: "prompt", accepts: "prompt" }], outputPortId: "result", parameters: {} } });
         const source = project([plugin, secondPlugin, prompt, model], [
             { id: "plugin-plugin", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" },
             { id: "plugin-model", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" },
@@ -202,7 +214,7 @@ describe("legacy graph normalization", () => {
     it("validates explicit built-in roles and ports before consuming a model prompt slot", () => {
         const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } });
         const image = node("image", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
-        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.edit", inputPortIds: ["prompt", "reference_images"], outputPortId: "result", parameters: {} } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.edit", inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }], outputPortId: "result", parameters: {} } });
         const result = node("result", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
         const source = project([prompt, image, model, result], [
             { id: "invalid-prompt-role", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "prompt" },
@@ -215,6 +227,31 @@ describe("legacy graph normalization", () => {
         ]);
 
         expect(normalizeCanvasProject(source).connections.map((edge) => edge.id)).toEqual(["valid-prompt", "valid-image"]);
+    });
+
+    it("migrates legacy model inputPortIds to typed descriptors and deep-clones canonical descriptors", () => {
+        const legacyModel = node("legacy-model", CanvasNodeType.Config, {
+            graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "legacy", operation: "custom", inputPortIds: ["prompt", "custom_input"], outputPortId: "result", parameters: {} } as never,
+        });
+        const canonicalModel = node("canonical-model", CanvasNodeType.Config, {
+            graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "canonical", operation: "custom", inputPorts: [{ id: "reference_audio", accepts: "audio" }, { id: "custom_input", accepts: "any" }], outputPortId: "result", parameters: {} },
+        });
+        const source = project([legacyModel, canonicalModel]);
+
+        const normalized = normalizeCanvasProject(source);
+        const canonicalSource = canonicalModel.metadata!.graph!;
+        if (canonicalSource.role !== "model") throw new Error("expected model metadata");
+        canonicalSource.inputPorts[0].accepts = "image";
+
+        expect(normalized.nodes[0].metadata?.graph).toMatchObject({
+            role: "model",
+            inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "custom_input", accepts: "any" }],
+        });
+        expect(normalized.nodes[1].metadata?.graph).toMatchObject({
+            role: "model",
+            inputPorts: [{ id: "reference_audio", accepts: "audio" }, { id: "custom_input", accepts: "any" }],
+        });
+        expect(normalized.nodes[0].metadata?.graph).not.toHaveProperty("inputPortIds");
     });
 
     it("rebuilds malformed current-version metadata from bounded legacy fields", () => {

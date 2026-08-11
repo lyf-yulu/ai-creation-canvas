@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
 import CanvasProjectPage from "@/pages/canvas/project";
+import { getNodePorts } from "@/features/graph/connect";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -27,6 +28,20 @@ it("submits canvas image generation through jobs and writes its result node", as
     expect(request.method).toBe("POST");
     expect(JSON.parse(request.body).model_id).toBe("real-video-looking-image");
     expect(JSON.parse(request.body).params.steps).toBe(6);
+    const source = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.type === CanvasNodeType.Config);
+    expect(source?.metadata?.graph).toMatchObject({
+        schemaVersion: 1,
+        role: "model",
+        modelId: "real-video-looking-image",
+        operation: "image.generate",
+        inputPorts: [{ id: "prompt", accepts: "prompt" }],
+        outputPortId: "result",
+    });
+    expect(source && getNodePorts(source).targets.map((port) => port.portId)).toEqual(["prompt"]);
+    const serialized = JSON.parse(JSON.stringify(useCanvasStore.getState().openProject(projectId)!));
+    useCanvasStore.getState().replaceProjects([serialized]);
+    const reloadedSource = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.type === CanvasNodeType.Config);
+    expect(reloadedSource && getNodePorts(reloadedSource).targets.map((port) => port.portId)).toEqual(["prompt"]);
 });
 
 it("submits canvas video generation through jobs and writes a video result node", async () => {

@@ -3,6 +3,35 @@ export const GRAPH_SCHEMA_VERSION = 1 as const;
 export type GraphParameterValue = string | number | boolean | null;
 export type GraphMediaType = "image" | "video" | "audio";
 export type GraphNodeRole = "prompt" | "media-collection" | "model" | "result";
+export type GraphPortValueType = "prompt" | GraphMediaType | "any";
+
+export type GraphInputPortDescriptor = {
+    id: string;
+    accepts: GraphPortValueType;
+};
+
+export type GraphOutputPortDescriptor = {
+    id: string;
+    provides: GraphPortValueType;
+};
+
+const standardModelInputPorts = {
+    prompt: { id: "prompt", accepts: "prompt" },
+    reference_images: { id: "reference_images", accepts: "image" },
+    first_frame: { id: "first_frame", accepts: "image" },
+    last_frame: { id: "last_frame", accepts: "image" },
+    reference_video: { id: "reference_video", accepts: "video" },
+    reference_audio: { id: "reference_audio", accepts: "audio" },
+} as const satisfies Record<string, GraphInputPortDescriptor>;
+
+export const STANDARD_MODEL_INPUT_PORTS: Readonly<Record<string, Readonly<GraphInputPortDescriptor>>> = Object.freeze(
+    Object.fromEntries(Object.entries(standardModelInputPorts).map(([id, descriptor]) => [id, Object.freeze({ ...descriptor })])),
+);
+
+export function graphInputPortDescriptor(portId: string): GraphInputPortDescriptor {
+    const standard = STANDARD_MODEL_INPUT_PORTS[portId];
+    return standard ? { ...standard } : { id: portId, accepts: "any" };
+}
 
 export type GraphMediaItem = Readonly<{
     id: string;
@@ -35,7 +64,7 @@ export type GraphModelMetadata = {
     role: "model";
     modelId: string;
     operation: string;
-    inputPortIds: string[];
+    inputPorts: GraphInputPortDescriptor[];
     outputPortId: string;
     parameters: Record<string, GraphParameterValue>;
 };

@@ -44,12 +44,18 @@ it("does not expose mutable registry collections and returns undefined for unkno
 it("defensively freezes nested node data instead of retaining caller-owned objects", () => {
     const nodes = createNodeRegistry();
     const size = { width: 320, height: 200 };
-    nodes.registerNode({ id: "test.sized", version: 1, title: "测试", inputs: ["image"], outputs: ["video"], defaultSize: size, createMetadata: () => ({}), render: () => null });
+    const inputs = [{ id: "reference", accepts: "image" as const }];
+    const outputs = [{ id: "clip", provides: "video" as const }];
+    nodes.registerNode({ id: "test.sized", version: 1, title: "测试", inputs, outputs, defaultSize: size, createMetadata: () => ({}), render: () => null });
     size.width = 999;
+    inputs[0].accepts = "audio" as never;
+    outputs[0].provides = "image" as never;
     const stored = nodes.getNode("test.sized");
     try { (stored?.defaultSize as { width: number }).width = 888; } catch { /* frozen definitions may throw in strict mode */ }
 
     expect(nodes.getNode("test.sized")?.defaultSize).toEqual({ width: 320, height: 200 });
+    expect(nodes.getNode("test.sized")?.inputs).toEqual([{ id: "reference", accepts: "image" }]);
+    expect(nodes.getNode("test.sized")?.outputs).toEqual([{ id: "clip", provides: "video" }]);
     expect(nodes.listNodes()[0]?.defaultSize).toEqual({ width: 320, height: 200 });
 });
 

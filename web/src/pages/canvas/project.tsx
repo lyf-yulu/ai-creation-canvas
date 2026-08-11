@@ -16,7 +16,7 @@ import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { connectGraphPorts, getNodePorts, type GraphPortRef } from "@/features/graph/connect";
+import { connectGraphPorts, getNodePorts, graphConnectionRejectionMessage, type GraphPortRef } from "@/features/graph/connect";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
@@ -27,7 +27,29 @@ import type { CanvasNodeData, ContextMenuState, Position, ViewportTransform } fr
 
 function generationSource(prompt: string, model: string, operation: ModelOperation, position: number): CanvasNodeData {
     const video = operation.startsWith("video.");
-    return { id: nanoid(), type: CanvasNodeType.Config, title: video ? "视频生成" : "图片生成", position: { x: 80 + position * 24, y: 160 + position * 24 }, width: 300, height: 140, metadata: { prompt, model, status: "loading", generationMode: video ? "video" : "image" } };
+    return {
+        id: nanoid(),
+        type: CanvasNodeType.Config,
+        title: video ? "视频生成" : "图片生成",
+        position: { x: 80 + position * 24, y: 160 + position * 24 },
+        width: 300,
+        height: 140,
+        metadata: {
+            prompt,
+            model,
+            status: "loading",
+            generationMode: video ? "video" : "image",
+            graph: {
+                schemaVersion: GRAPH_SCHEMA_VERSION,
+                role: "model",
+                modelId: model,
+                operation,
+                inputPorts: [{ id: "prompt", accepts: "prompt" }],
+                outputPortId: "result",
+                parameters: {},
+            },
+        },
+    };
 }
 
 export default function CanvasProjectPage() {
@@ -41,6 +63,7 @@ export default function CanvasProjectPage() {
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
+    const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
     const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
     const pendingPortRef = useRef<GraphPortRef | null>(null);
     const pointerConnectionRef = useRef<number | null>(null);
@@ -60,6 +83,7 @@ export default function CanvasProjectPage() {
         pointerConnectionRef.current = null;
         suppressPortClickRef.current = null;
         setPendingPort(null);
+        setConnectionMessage(null);
     }, [setPendingPort]);
     const clientToWorld = useCallback((clientX: number, clientY: number) => {
         const rect = containerRef.current?.getBoundingClientRect();
@@ -110,6 +134,17 @@ export default function CanvasProjectPage() {
         if (!selectedConnectionId || project?.connections.some((connection) => connection.id === selectedConnectionId)) return;
         setSelectedConnectionId(null);
     }, [project?.connections, selectedConnectionId]);
+
+    useEffect(() => {
+        if (!pendingPort || pendingPort.direction !== "source") return;
+        const sourceNode = project?.nodes.find((node) => node.id === pendingPort.nodeId);
+        const sourceStillDeclared = sourceNode && getNodePorts(sourceNode).sources.some((port) => port.portId === pendingPort.portId);
+        if (sourceStillDeclared) return;
+        pointerConnectionRef.current = null;
+        suppressPortClickRef.current = null;
+        setPendingPort(null);
+        setConnectionMessage("连接起点已失效。");
+    }, [pendingPort, project?.nodes, setPendingPort]);
 
     useEffect(() => {
         const handlePointerMove = (event: PointerEvent) => {
@@ -190,11 +225,15 @@ export default function CanvasProjectPage() {
         const current = useCanvasStore.getState().openProject(id);
         if (!current) return false;
         const result = connectGraphPorts(first, second, current.nodes, current.connections, nanoid());
-        if (!result.ok) return false;
+        if (!result.ok) {
+            setConnectionMessage(graphConnectionRejectionMessage(result.reason));
+            return false;
+        }
         updateProject(id, { connections: [...current.connections, result.connection] });
         setSelectedNodeIds(new Set());
         setSelectedConnectionId(result.connection.id);
         setPendingPort(null);
+        setConnectionMessage("连接已创建。");
         return true;
     }, [id, readOnly, setPendingPort, updateProject]);
 
@@ -203,6 +242,7 @@ export default function CanvasProjectPage() {
         event.preventDefault();
         event.stopPropagation();
         pointerConnectionRef.current = event.pointerId;
+        setConnectionMessage(null);
         setConnectionPointerWorld(clientToWorld(event.clientX, event.clientY));
         setPendingPort(port);
     }, [clientToWorld, readOnly, setPendingPort]);
@@ -233,7 +273,10 @@ export default function CanvasProjectPage() {
         }
         const first = pendingPortRef.current;
         if (!first) {
-            if (port.direction === "source") setPendingPort(port);
+            if (port.direction === "source") {
+                setConnectionMessage(null);
+                setPendingPort(port);
+            }
             return;
         }
         if (first.nodeId === port.nodeId && first.portId === port.portId && first.direction === port.direction) return;
@@ -353,7 +396,8 @@ export default function CanvasProjectPage() {
                                     setSelectedConnectionId(connection.id);
                                     setContextMenu(null);
                                 }}
-                                onContextMenu={readOnly ? undefined : (event) => openConnectionContextMenu(connection.id, { x: event.clientX, y: event.clientY }, event.currentTarget)}
+                                interactive={!readOnly}
+                                onOpenContextMenu={readOnly ? undefined : (position, trigger) => openConnectionContextMenu(connection.id, position, trigger)}
                             />;
                         })}
                         {pendingPort?.direction === "source" ? (
@@ -401,6 +445,7 @@ export default function CanvasProjectPage() {
                     })}
                 </InfiniteCanvas>
                 <CanvasNavigationControls viewport={viewport} onViewportChange={changeViewport} />
+                {connectionMessage ? <p data-testid="connection-status" role="status" aria-live="polite" className="pointer-events-none absolute bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-[#356b48] bg-[#08100b]/95 px-3 py-2 text-xs text-[#bcebc9] shadow-xl">{connectionMessage}</p> : null}
                 {contextMenu?.type === "node" ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}

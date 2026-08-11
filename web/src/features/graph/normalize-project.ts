@@ -1,4 +1,4 @@
-import { GRAPH_SCHEMA_VERSION, type CanvasGraphNodeMetadata, type GraphMediaType, type GraphParameterValue } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, graphInputPortDescriptor, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
@@ -120,6 +120,17 @@ function isBuiltInGraphNode(type: CanvasNodeData["type"]) {
 
 function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInput["metadata"]): CanvasGraphNodeMetadata {
     if (isCurrentGraphMetadata(metadata?.graph)) return cloneGraphMetadata(metadata.graph);
+    if (isLegacyGraphModelMetadata(metadata?.graph)) {
+        return {
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "model",
+            modelId: metadata.graph.modelId,
+            operation: metadata.graph.operation,
+            inputPorts: metadata.graph.inputPortIds.map(graphInputPortDescriptor),
+            outputPortId: metadata.graph.outputPortId,
+            parameters: { ...metadata.graph.parameters },
+        };
+    }
     if (node.type === CanvasNodeType.Text) {
         return {
             schemaVersion: GRAPH_SCHEMA_VERSION,
@@ -134,7 +145,7 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
             role: "model",
             modelId: metadata?.model ?? "",
             operation: inferLegacyOperation(metadata),
-            inputPortIds: ["prompt", "reference_images", "first_frame", "last_frame", "reference_video", "reference_audio"],
+            inputPorts: ["prompt", "reference_images", "first_frame", "last_frame", "reference_video", "reference_audio"].map(graphInputPortDescriptor),
             outputPortId: "result",
             parameters: scalarParameters(metadata?.params),
         };
@@ -164,8 +175,8 @@ function isCurrentGraphMetadata(value: unknown): value is CanvasGraphNodeMetadat
         return typeof candidate.modelId === "string"
             && typeof candidate.operation === "string"
             && typeof candidate.outputPortId === "string"
-            && Array.isArray(candidate.inputPortIds)
-            && candidate.inputPortIds.every((port) => typeof port === "string")
+            && Array.isArray(candidate.inputPorts)
+            && candidate.inputPorts.every(isGraphInputPortDescriptor)
             && isParameterRecord(candidate.parameters);
     }
     if (candidate.role === "result") {
@@ -175,6 +186,37 @@ function isCurrentGraphMetadata(value: unknown): value is CanvasGraphNodeMetadat
             && (candidate.jobId === undefined || typeof candidate.jobId === "string");
     }
     return false;
+}
+
+function isLegacyGraphModelMetadata(value: unknown): value is {
+    schemaVersion: typeof GRAPH_SCHEMA_VERSION;
+    role: "model";
+    modelId: string;
+    operation: string;
+    inputPortIds: string[];
+    outputPortId: string;
+    parameters: Record<string, GraphParameterValue>;
+} {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Record<string, unknown>;
+    return candidate.schemaVersion === GRAPH_SCHEMA_VERSION
+        && candidate.role === "model"
+        && typeof candidate.modelId === "string"
+        && typeof candidate.operation === "string"
+        && typeof candidate.outputPortId === "string"
+        && Array.isArray(candidate.inputPortIds)
+        && candidate.inputPortIds.every((port) => typeof port === "string")
+        && isParameterRecord(candidate.parameters);
+}
+
+function isGraphInputPortDescriptor(value: unknown): value is GraphInputPortDescriptor {
+    if (!value || typeof value !== "object") return false;
+    const descriptor = value as Record<string, unknown>;
+    return typeof descriptor.id === "string" && descriptor.id.length > 0 && isGraphPortValueType(descriptor.accepts);
+}
+
+function isGraphPortValueType(value: unknown): value is GraphPortValueType {
+    return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "any";
 }
 
 function isMediaType(value: unknown): value is GraphMediaType {
@@ -204,7 +246,7 @@ function isParameterRecord(value: unknown): value is Record<string, GraphParamet
 
 function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeMetadata {
     if (metadata.role === "media-collection") return { ...metadata, items: metadata.items.map((item) => ({ ...item })) };
-    if (metadata.role === "model") return { ...metadata, inputPortIds: [...metadata.inputPortIds], parameters: { ...metadata.parameters } };
+    if (metadata.role === "model") return { ...metadata, inputPorts: metadata.inputPorts.map((port) => ({ ...port })), parameters: { ...metadata.parameters } };
     return { ...metadata };
 }
 
@@ -264,27 +306,30 @@ function isValidExplicitConnection(from: CanvasNodeData, fromPortId: string, to:
     const target = to.metadata?.graph;
     if (!source && !target) return !isBuiltInGraphNode(from.type) && !isBuiltInGraphNode(to.type);
     if (!source && target?.role === "model") {
-        return !isBuiltInGraphNode(from.type) && target.inputPortIds.includes(toPortId) && !isReservedModelInput(toPortId);
+        const input = target.inputPorts.find((port) => port.id === toPortId);
+        return Boolean(!isBuiltInGraphNode(from.type) && input && !STANDARD_MODEL_INPUT_PORTS[toPortId]);
     }
     if (!source || fromPortId !== source.outputPortId) return false;
     if (!target) return !isBuiltInGraphNode(to.type);
     if (target.role === "model") {
-        if (!target.inputPortIds.includes(toPortId)) return false;
-        if (toPortId === "prompt") return source.role === "prompt";
-        if (toPortId === "reference_images" || toPortId === "first_frame" || toPortId === "last_frame") return isMediaSource(source, "image");
-        if (toPortId === "reference_video") return isMediaSource(source, "video");
-        if (toPortId === "reference_audio") return isMediaSource(source, "audio");
-        return true;
+        const input = target.inputPorts.find((port) => port.id === toPortId);
+        if (!input) return false;
+        const standard = STANDARD_MODEL_INPUT_PORTS[toPortId];
+        if (standard?.accepts === "prompt") return source.role === "prompt";
+        if (standard && standard.accepts !== "any") return isMediaSource(source, standard.accepts);
+        return input.accepts === "any" || graphSourceValueType(source) === "any" || graphSourceValueType(source) === input.accepts;
     }
     return target.role === "result" && toPortId === "result" && source.role === "model";
 }
 
-function isReservedModelInput(portId: string) {
-    return ["prompt", "reference_images", "first_frame", "last_frame", "reference_video", "reference_audio"].includes(portId);
-}
-
 function isMediaSource(metadata: CanvasGraphNodeMetadata, mediaType: GraphMediaType) {
     return (metadata.role === "media-collection" || metadata.role === "result") && metadata.mediaType === mediaType;
+}
+
+function graphSourceValueType(metadata: CanvasGraphNodeMetadata): GraphPortValueType {
+    if (metadata.role === "prompt") return "prompt";
+    if (metadata.role === "media-collection" || metadata.role === "result") return metadata.mediaType;
+    return "any";
 }
 
 function inferLegacyPorts(from: CanvasNodeData, to: CanvasNodeData) {

@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { connectGraphPorts, getNodePorts, type GraphPortRef } from "@/features/graph/connect";
+import { createNodeRegistry } from "@/features/nodes/registry";
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
@@ -22,6 +23,14 @@ function promptNode(id: string, x = 40, y = 50) {
 }
 
 function modelNode(id: string, inputPortIds: string[], x = 420, y = 80) {
+    const accepts: Record<string, "prompt" | "image" | "video" | "audio" | "any"> = {
+        prompt: "prompt",
+        reference_images: "image",
+        first_frame: "image",
+        last_frame: "image",
+        reference_video: "video",
+        reference_audio: "audio",
+    };
     return baseNode(id, CanvasNodeType.Config, x, y, {
         status: "idle",
         graph: {
@@ -29,7 +38,7 @@ function modelNode(id: string, inputPortIds: string[], x = 420, y = 80) {
             role: "model",
             modelId: "declared-model",
             operation: "video.generate",
-            inputPortIds,
+            inputPorts: inputPortIds.map((portId) => ({ id: portId, accepts: accepts[portId] ?? "any" })),
             outputPortId: "result",
             parameters: {},
         },
@@ -86,13 +95,32 @@ describe("named-port graph rules", () => {
         const model = modelNode("model", ["prompt", "first_frame", "reference_audio"]);
 
         expect(getNodePorts(model)).toEqual({
-            sources: [{ nodeId: "model", portId: "result", direction: "source", mediaType: undefined }],
+            sources: [{ nodeId: "model", portId: "result", direction: "source", valueType: "any" }],
             targets: [
-                { nodeId: "model", portId: "prompt", direction: "target", mediaType: undefined },
-                { nodeId: "model", portId: "first_frame", direction: "target", mediaType: "image" },
-                { nodeId: "model", portId: "reference_audio", direction: "target", mediaType: "audio" },
+                { nodeId: "model", portId: "prompt", direction: "target", valueType: "prompt" },
+                { nodeId: "model", portId: "first_frame", direction: "target", valueType: "image" },
+                { nodeId: "model", portId: "reference_audio", direction: "target", valueType: "audio" },
             ],
         });
+    });
+
+    it("resolves custom plugin ports from an isolated typed registry without title-based rules", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.source", version: 1, title: "可改名来源", inputs: [], outputs: [{ id: "custom_image", provides: "image" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.pipe", version: 1, title: "可改名处理", inputs: ["anything"], outputs: ["processed"], createMetadata: () => ({}), render: () => null });
+        const pluginSource = baseNode("plugin-source", "plugin.source", 0, 0, {});
+        const pluginPipe = baseNode("plugin-pipe", "plugin.pipe", 0, 0, {});
+        const image = mediaNode("image", "image");
+        const model = modelNode("model", ["custom_input"]);
+        const modelGraph = model.metadata!.graph!;
+        if (modelGraph.role !== "model") throw new Error("expected model metadata");
+        modelGraph.inputPorts = [{ id: "custom_input", accepts: "image" }];
+        const nodes = [pluginSource, pluginPipe, image, model];
+
+        expect(getNodePorts(pluginSource, registry).sources).toEqual([{ nodeId: "plugin-source", portId: "custom_image", direction: "source", valueType: "image" }]);
+        expect(connectGraphPorts(port("plugin-source", "custom_image", "source"), port("model", "custom_input", "target"), nodes, [], "plugin-model", registry)).toMatchObject({ ok: true });
+        expect(connectGraphPorts(port("image", "media", "source"), port("plugin-pipe", "anything", "target"), nodes, [], "builtin-plugin", registry)).toMatchObject({ ok: true });
+        expect(connectGraphPorts(port("plugin-source", "custom_image", "source"), port("plugin-pipe", "anything", "target"), nodes, [], "plugin-plugin", registry)).toMatchObject({ ok: true });
     });
 
     it("accepts compatible named ports and rejects self, duplicate, incompatible and second-prompt edges", () => {
@@ -109,6 +137,20 @@ describe("named-port graph rules", () => {
         expect(connectGraphPorts(port("image", "media", "source"), port("model", "reference_audio", "target"), nodes, existing, "wrong-media")).toEqual({ ok: false, reason: "incompatible" });
         expect(connectGraphPorts(port("prompt-b", "prompt", "source"), port("model", "prompt", "target"), nodes, existing, "second-prompt")).toEqual({ ok: false, reason: "prompt-occupied" });
         expect(connectGraphPorts(port("image", "media", "source"), port("model", "first_frame", "target"), nodes, existing, "first-frame")).toMatchObject({ ok: true });
+    });
+
+    it("keeps reserved model ports strict even when persisted descriptors claim any", () => {
+        const prompt = promptNode("prompt");
+        const image = mediaNode("image", "image");
+        const model = modelNode("model", ["prompt", "reference_audio"]);
+        const graph = model.metadata!.graph!;
+        if (graph.role !== "model") throw new Error("expected model metadata");
+        graph.inputPorts = [{ id: "prompt", accepts: "any" }, { id: "reference_audio", accepts: "any" }];
+        const nodes = [prompt, image, model];
+
+        expect(connectGraphPorts(port("image", "media", "source"), port("model", "prompt", "target"), nodes, [], "image-prompt")).toEqual({ ok: false, reason: "incompatible" });
+        expect(connectGraphPorts(port("image", "media", "source"), port("model", "reference_audio", "target"), nodes, [], "image-audio")).toEqual({ ok: false, reason: "incompatible" });
+        expect(connectGraphPorts(port("prompt", "prompt", "source"), port("model", "prompt", "target"), nodes, [], "prompt-model")).toMatchObject({ ok: true });
     });
 });
 
@@ -203,6 +245,105 @@ describe("canvas named-port interactions", () => {
         expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual([]);
     });
 
+    it.each([
+        ["self", "model：结果输出端口", "model：提示词输入端口", "不能连接同一个节点。"],
+        ["duplicate", "prompt-a：提示词输出端口", "model：提示词输入端口", "这两个端口已经连接。"],
+        ["incompatible", "image：媒体输出端口", "model：参考音频输入端口", "这两个端口类型不兼容。"],
+        ["prompt-occupied", "prompt-b：提示词输出端口", "model：提示词输入端口", "该模型已有提示词连接，每个模型只允许一个提示词节点。"],
+    ])("announces the %s rejection while keeping a valid source available for retry", async (kind, sourceLabel, targetLabel, message) => {
+        const promptA = promptNode("prompt-a");
+        const promptB = promptNode("prompt-b", 40, 240);
+        const image = mediaNode("image", "image", 40, 430);
+        const model = modelNode("model", ["prompt", "reference_audio"]);
+        const existing: CanvasConnection[] = kind === "duplicate" || kind === "prompt-occupied"
+            ? [{ id: "existing", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" }]
+            : [];
+        await renderProject([promptA, promptB, image, model], existing);
+        const source = screen.getByRole("button", { name: sourceLabel });
+
+        fireEvent.click(source);
+        fireEvent.click(screen.getByRole("button", { name: targetLabel }));
+
+        expect(screen.getByTestId("connection-status")).toHaveTextContent(message);
+        expect(source).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("announces an incompatible pointer drop and keeps the source active for another target", async () => {
+        await renderProject([mediaNode("image", "image"), modelNode("model", ["reference_audio"])]);
+        const source = screen.getByRole("button", { name: "image：媒体输出端口" });
+        const target = screen.getByRole("button", { name: "model：参考音频输入端口" });
+
+        fireEvent.pointerDown(source, { button: 0, pointerId: 27, clientX: 100, clientY: 320 });
+        fireEvent.pointerUp(target, { button: 0, pointerId: 27, clientX: 420, clientY: 160 });
+
+        expect(screen.getByTestId("connection-status")).toHaveTextContent("这两个端口类型不兼容。");
+        expect(source).toHaveAttribute("aria-pressed", "true");
+
+        fireEvent.pointerDown(screen.getByTestId("infinite-canvas"), { button: 0, pointerId: 28 });
+        fireEvent.pointerUp(window, { pointerId: 28 });
+        expect(screen.queryByTestId("connection-status")).not.toBeInTheDocument();
+        expect(source).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("clears a pending source immediately when the source node is deleted", async () => {
+        const { projectId } = await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])]);
+        const source = screen.getByRole("button", { name: "prompt：提示词输出端口" });
+        source.focus();
+        fireEvent.click(source);
+
+        fireEvent.keyDown(window, { key: "Delete" });
+
+        await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((node) => node.id)).toEqual(["model"]));
+        await waitFor(() => expect(screen.getByTestId("connection-status")).toHaveTextContent("连接起点已失效。"));
+        expect(document.querySelector("path[stroke-dasharray]")).not.toBeInTheDocument();
+    });
+
+    it("clears a pending source when a remote-shaped project replacement removes it", async () => {
+        const prompt = promptNode("prompt");
+        const model = modelNode("model", ["prompt"]);
+        const { projectId } = await renderProject([prompt, model]);
+        fireEvent.click(screen.getByRole("button", { name: "prompt：提示词输出端口" }));
+        const current = useCanvasStore.getState().openProject(projectId)!;
+
+        useCanvasStore.getState().replaceProjects([{ ...current, nodes: [model], connections: [] }]);
+
+        await waitFor(() => expect(screen.getByTestId("connection-status")).toHaveTextContent("连接起点已失效。"));
+        expect(document.querySelector("path[stroke-dasharray]")).not.toBeInTheDocument();
+    });
+
+    it("clears a pending model output when that declared port is revoked", async () => {
+        const model = modelNode("model", ["prompt"]);
+        const { projectId } = await renderProject([model]);
+        fireEvent.click(screen.getByRole("button", { name: "model：结果输出端口" }));
+        const graph = model.metadata!.graph!;
+        if (graph.role !== "model") throw new Error("expected model metadata");
+
+        useCanvasStore.getState().updateProject(projectId, { nodes: [{ ...model, metadata: { ...model.metadata, graph: { ...graph, outputPortId: "replacement_result" } } }] });
+
+        await waitFor(() => expect(screen.getByTestId("connection-status")).toHaveTextContent("连接起点已失效。"));
+        expect(screen.queryByRole("button", { name: "model：结果输出端口" })).not.toBeInTheDocument();
+        expect(document.querySelector("path[stroke-dasharray]")).not.toBeInTheDocument();
+    });
+
+    it.each([
+        ["ContextMenu", { key: "ContextMenu" }],
+        ["Shift+F10", { key: "F10", shiftKey: true }],
+    ])("opens an edge menu with %s and restores focus on Escape", async (_name, shortcut) => {
+        const edge: CanvasConnection = { id: "edge", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" };
+        await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])], [edge]);
+        const trigger = screen.getByRole("button", { name: "连接：prompt 到 model" });
+        trigger.focus();
+
+        fireEvent.keyDown(trigger, shortcut);
+
+        const menu = screen.getByRole("menu", { name: "连接操作" });
+        expect(menu).toBeVisible();
+        const deleteItem = screen.getByRole("menuitem", { name: "删除" });
+        await waitFor(() => expect(deleteItem).toHaveFocus());
+        fireEvent.keyDown(deleteItem, { key: "Escape" });
+        expect(trigger).toHaveFocus();
+    });
+
     it("does not expose an enabled connection gesture in read-only mode", async () => {
         const prompt = promptNode("prompt");
         prompt.title = "只读提示词";
@@ -218,5 +359,14 @@ describe("canvas named-port interactions", () => {
         fireEvent.click(source);
         fireEvent.click(target);
         expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual([]);
+    });
+
+    it("renders existing edges as non-focusable presentation in read-only mode", async () => {
+        const edge: CanvasConnection = { id: "edge", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" };
+        await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])], [edge]);
+        useCanvasStore.setState({ loadError: { code: "CANVAS_LOAD_FAILED", message: "只读保护", readOnly: true } });
+
+        await waitFor(() => expect(screen.queryByRole("button", { name: "连接：prompt 到 model" })).not.toBeInTheDocument());
+        expect(document.querySelector("[data-connection-id='edge']")).toBeInTheDocument();
     });
 });

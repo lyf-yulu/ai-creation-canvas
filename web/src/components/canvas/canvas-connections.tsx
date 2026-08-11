@@ -1,4 +1,4 @@
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { connectionPathData, getNodePortAnchor } from "@/lib/canvas/canvas-node-geometry";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -10,19 +10,28 @@ export function ConnectionPath({
     from,
     to,
     active,
+    interactive = true,
     onSelect,
-    onContextMenu,
+    onOpenContextMenu,
 }: {
     connection: CanvasConnection;
     from: CanvasNodeData;
     to: CanvasNodeData;
     active: boolean;
+    interactive?: boolean;
     onSelect: () => void;
-    onContextMenu?: (event: ReactMouseEvent<SVGPathElement>) => void;
+    onOpenContextMenu?: (position: { x: number; y: number }, trigger: SVGPathElement) => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const pathD = connectionPathData(from, connection.fromPortId, to, connection.toPortId);
     const selectWithKeyboard = (event: ReactKeyboardEvent<SVGPathElement>) => {
+        if ((event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) && onOpenContextMenu) {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onOpenContextMenu({ x: rect.left + Math.min(rect.width, 24), y: rect.top + Math.min(rect.height, 24) }, event.currentTarget);
+            return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         event.stopPropagation();
@@ -31,7 +40,7 @@ export function ConnectionPath({
 
     return (
         <g>
-            <path
+            {interactive ? <path
                 data-connection-id={connection.id}
                 role="button"
                 aria-label={`连接：${from.title} 到 ${to.title}`}
@@ -50,10 +59,12 @@ export function ConnectionPath({
                 onContextMenu={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    onContextMenu?.(event);
+                    onOpenContextMenu?.({ x: event.clientX, y: event.clientY }, event.currentTarget);
                 }}
-            />
+            /> : null}
             <path
+                data-connection-id={interactive ? undefined : connection.id}
+                aria-hidden="true"
                 d={pathD}
                 stroke={active ? theme.node.activeStroke : theme.node.muted}
                 strokeWidth={active ? 3 : 2}

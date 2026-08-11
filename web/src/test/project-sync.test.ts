@@ -196,7 +196,7 @@ it("does not resave an already-canonical graph only because JSON keys arrived in
         graphSchemaVersion: GRAPH_SCHEMA_VERSION,
         nodes: [
             { id: "prompt", type: "text", title: "Prompt", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } } },
-            { id: "model", type: "config", title: "Model", position: { x: 200, y: 0 }, width: 100, height: 100, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.generate", inputPortIds: ["prompt"], outputPortId: "result", parameters: {} } } },
+            { id: "model", type: "config", title: "Model", position: { x: 200, y: 0 }, width: 100, height: 100, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.generate", inputPorts: [{ id: "prompt", accepts: "prompt" }], outputPortId: "result", parameters: {} } } },
         ],
         connections: [{ id: "edge", fromNodeId: "prompt", toNodeId: "model", fromPortId: "prompt", toPortId: "prompt" }],
     };
