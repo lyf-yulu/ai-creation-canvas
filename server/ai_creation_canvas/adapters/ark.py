@@ -32,7 +32,7 @@ _MAX_RESULT_BYTES = 256 * 1024 * 1024
 _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
 _VIDEO_MIME = frozenset({"video/mp4", "video/webm"})
 _MAX_CONFIG_BYTES = 64 * 1024
-_ARK_PARAMETER_TARGETS = frozenset({"size", "quality", "n", "strength", "watermark", "ratio", "duration", "resolution", "generate_audio", "camera_fixed"})
+_ARK_PARAMETER_TARGETS = frozenset({"size", "quality", "n", "strength", "watermark", "ratio", "duration", "resolution", "generate_audio", "camera_fixed", "output_format", "return_last_frame"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,8 +133,8 @@ class ArkGenerationAdapter:
             await self._record_pending(upstream_id, str(items[0]["url"]), "image")
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         if request.operation is ModelOperation.VIDEO_GENERATE:
-            prompt = self._video_prompt(request.prompt, provider_params)
-            response = await self._api("POST", "/api/v3/contents/generations/tasks", json={"model": request.model_id, "content": [{"type": "text", "text": prompt}]})
+            content = self._video_content(declaration, request)
+            response = await self._api("POST", "/api/v3/contents/generations/tasks", json={"model": request.model_id, "content": content, **provider_params})
             body = self._json(response)
             upstream_id = body.get("id")
             if not isinstance(upstream_id, str) or not upstream_id.startswith("cgt-"):
@@ -148,14 +148,32 @@ class ArkGenerationAdapter:
         port = next((candidate for candidate in declaration.input_ports if candidate.port_id == "reference_images"), None)
         if unknown or values and (port is None or len(values) > port.max_items) or values and self._asset_loader is None:
             raise ValueError("Ark image inputs are invalid")
-        encoded: list[str] = []
-        for asset_id in values:
-            assert self._asset_loader is not None
-            body, mime = self._asset_loader(asset_id)
-            if mime not in _IMAGE_MIME or not body or len(body) > 20 * 1024 * 1024:
-                raise ValueError("Ark image input is invalid")
-            encoded.append(f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}")
-        return encoded
+        return [self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024) for asset_id in values]
+
+    def _asset_data_url(self, asset_id: str, allowed_mime: frozenset[str], maximum: int) -> str:
+        if self._asset_loader is None:
+            raise ValueError("Ark asset loader is unavailable")
+        body, mime = self._asset_loader(asset_id)
+        if mime not in allowed_mime or not body or len(body) > maximum:
+            raise ValueError("Ark media input is invalid")
+        return f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}"
+
+    def _video_content(self, declaration: ArkModelDeclaration, request: JobRequest) -> list[dict[str, object]]:
+        declared = {port.port_id: port for port in declaration.input_ports}
+        supported = {"first_frame", "last_frame", "reference_images"}
+        if set(request.inputs) - supported:
+            # Video/audio references require the provider asset-upload flow; never pretend to submit them.
+            raise ValueError("Ark video input requires an unsupported asset flow")
+        content: list[dict[str, object]] = [{"type": "text", "text": request.prompt}]
+        roles = (("first_frame", "first_frame"), ("last_frame", "last_frame"), ("reference_images", "reference_image"))
+        for port_id, role in roles:
+            values = tuple(request.inputs.get(port_id, ()))
+            port = declared.get(port_id)
+            if values and (port is None or len(values) > port.max_items):
+                raise ValueError("Ark video image inputs are invalid")
+            for asset_id in values:
+                content.append({"type": "image_url", "image_url": {"url": self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024)}, "role": role})
+        return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
@@ -244,13 +262,6 @@ class ArkGenerationAdapter:
                 raise ValueError("Ark parameters are invalid")
             result[key] = value
         return result
-
-    @staticmethod
-    def _video_prompt(prompt: str, params: Mapping[str, object]) -> str:
-        suffix = []
-        if isinstance(params.get("ratio"), str): suffix.append(f"--ratio {params['ratio']}")
-        if isinstance(params.get("duration"), int): suffix.append(f"--dur {params['duration']}")
-        return " ".join((prompt, *suffix))
 
     async def _record_pending(self, job_id: str, url: str, kind: str) -> None:
         self._safe_result_url(url)

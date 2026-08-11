@@ -67,7 +67,7 @@ def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(t
         requests.append(request)
         if request.method == "POST":
             assert request.url.path == "/api/v3/contents/generations/tasks"
-            assert json.loads(request.content) == {"model": "video-endpoint", "content": [{"type": "text", "text": "clouds drift --ratio 16:9 --dur 3"}]}
+            assert json.loads(request.content) == {"model": "video-endpoint", "content": [{"type": "text", "text": "clouds drift"}], "ratio": "16:9", "duration": 3}
             return httpx.Response(200, json={"id": "cgt-safe-1"})
         if request.url.host == "download.volces.com":
             assert request.headers.get("authorization") is None
@@ -91,6 +91,34 @@ def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(t
         assert "download.volces.com" not in state.result.asset_id
 
     asyncio.run(scenario())
+
+
+def test_seedance_maps_named_image_roles_and_top_level_parameters_exactly(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    payloads: list[dict[str, object]] = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content)); return httpx.Response(200, json={"id": "cgt-images"})
+    schema = {"type": "object", "properties": {"resolution": {"type": "string"}, "generate_audio": {"type": "boolean"}, "watermark": {"type": "boolean"}}, "additionalProperties": False}
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "seedance", "ark-video", "Seedance", ("video.generate",), schema,
+            (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("first_frame", "image", 0, 1), ModelInputPort("last_frame", "image", 0, 1), ModelInputPort("reference_images", "image", 0, 9)),
+            {"resolution": "resolution", "generate_audio": "generate_audio", "watermark": "watermark"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: (asset_id.encode(), "image/png"))
+        await adapter.submit(context(), JobRequest("video.generate", "seedance", "animate", "roles", {"resolution": "720p", "generate_audio": False, "watermark": False}, inputs={"first_frame": ("first",), "last_frame": ("last",), "reference_images": ("ref-2", "ref-1")}))
+
+    asyncio.run(scenario())
+    assert payloads == [{"model": "seedance", "content": [
+        {"type": "text", "text": "animate"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,Zmlyc3Q="}, "role": "first_frame"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,bGFzdA=="}, "role": "last_frame"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cmVmLTI="}, "role": "reference_image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cmVmLTE="}, "role": "reference_image"},
+    ], "resolution": "720p", "generate_audio": False, "watermark": False}]
 
 
 def test_ark_declaration_rejects_unmapped_or_unknown_provider_parameters() -> None:
