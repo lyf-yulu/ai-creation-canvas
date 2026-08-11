@@ -100,6 +100,16 @@ afterEach(() => {
 });
 
 describe("project-scoped node selection and deletion", () => {
+    it("lets content-sized nodes ignore their persisted minimum height", () => {
+        render(
+            <DraggableCanvasNode node={resultNode("adaptive", 80)} scale={1} contentSized onPositionChange={() => undefined}>
+                <div style={{ height: 90 }}>adaptive</div>
+            </DraggableCanvasNode>,
+        );
+
+        expect(screen.getByTestId("draggable-node-adaptive")).not.toHaveStyle({ minHeight: "220px" });
+    });
+
     it("selects one node, adds another with a modifier, and clears selection on a background click", async () => {
         await renderProject([node("a", 80), node("b", 400)]);
 

@@ -50,6 +50,24 @@ it("derives stable numbered labels from the persisted order", () => {
     expect(safeMediaDisplayName("../../private\\frame\u0000.png", "image")).toBe("frame.png");
 });
 
+it("grows naturally through eight media items and only scrolls larger collections", () => {
+    const expanded = Array.from({ length: 9 }, (_, index): GraphMediaItem => ({
+        id: `item-${index}`,
+        assetId: `asset-${index}`,
+        displayName: `${index + 1}.png`,
+        mimeType: "image/png",
+        bytes: index + 1,
+    }));
+    const view = render(<MediaCollectionNode node={collectionNode("image", expanded.slice(0, 8))} onItemsChange={() => undefined} />);
+    const list = view.container.querySelector("ol");
+    expect(list).not.toHaveClass("max-h-80", "overflow-y-auto");
+    expect(list).toHaveAttribute("data-overflowing", "false");
+
+    view.rerender(<MediaCollectionNode node={collectionNode("image", expanded)} onItemsChange={() => undefined} />);
+    expect(list).toHaveClass("max-h-80", "overflow-y-auto");
+    expect(list).toHaveAttribute("data-overflowing", "true");
+});
+
 it("previews, removes, drags, and keyboard-reorders one ordered image collection", () => {
     const changes: GraphMediaItem[][] = [];
     let current = items;

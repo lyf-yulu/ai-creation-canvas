@@ -240,6 +240,8 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
         void drainQueueRef.current();
     };
 
+    const overflowing = items.length + pending.length > 8;
+
     return <article className="overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[#dceee1] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
         <header className="flex items-center justify-between border-b border-[#203e2c] px-3 py-2">
             <div><p className="text-[10px] tracking-[0.16em] text-[#58ed87]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
@@ -252,7 +254,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                 }} />
             </label> : null}
         </header>
-        <ol className="max-h-80 space-y-2 overflow-y-auto p-2">
+        <ol data-overflowing={String(overflowing)} className={`${overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
             {selectionError ? <li role="alert" className="rounded-lg border border-[#744038] bg-[#281411] px-3 py-2 text-xs text-[#ffc0b5]">{selectionError}</li> : null}
             {items.map((item, index) => {
                 const label = mediaItemLabel(mediaType, index);

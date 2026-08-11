@@ -822,6 +822,7 @@ export default function CanvasProjectPage() {
                                     scale={viewport.k}
                                     selected={selectedNodeIds.has(node.id)}
                                     disabled={readOnly}
+                                    contentSized={mediaCollectionNode}
                                     onSelect={
                                         readOnly
                                             ? undefined

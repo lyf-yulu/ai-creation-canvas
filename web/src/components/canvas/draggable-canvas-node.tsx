@@ -9,6 +9,7 @@ type DraggableCanvasNodeProps = {
     onMeasuredSize?: (nodeId: string, size: { width: number; height: number }) => void;
     selected?: boolean;
     disabled?: boolean;
+    contentSized?: boolean;
     onSelect?: (nodeId: string, additive: boolean) => void;
     onContextMenu?: (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => void;
     children: ReactNode;
@@ -35,7 +36,7 @@ function normalizedScale(scale: number) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredSize, selected = false, disabled = false, onSelect, onContextMenu, children }: DraggableCanvasNodeProps) {
+export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredSize, selected = false, disabled = false, contentSized = false, onSelect, onContextMenu, children }: DraggableCanvasNodeProps) {
     const elementRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<DragState>({
         active: false,
@@ -228,7 +229,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
             aria-disabled={disabled || undefined}
             tabIndex={0}
             className={`absolute rounded-xl outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7bff9f] ${selected ? "outline outline-2 outline-[#58ed87] shadow-[0_0_0_4px_rgba(88,237,135,0.18)]" : ""}`}
-            style={{ left: node.position.x, top: node.position.y, width: node.width, minHeight: node.height }}
+            style={{ left: node.position.x, top: node.position.y, width: node.width, minHeight: contentSized ? undefined : node.height }}
             onPointerDownCapture={handlePointerDownCapture}
             onPointerDown={handlePointerDown}
             onFocusCapture={handleFocusCapture}
