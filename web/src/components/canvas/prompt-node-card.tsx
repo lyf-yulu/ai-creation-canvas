@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type PointerEvent } from "react";
 import { FileText } from "lucide-react";
 
 import type { CanvasNodeData } from "@/types/canvas";
@@ -15,32 +15,54 @@ export function PromptNodeCard({ node, disabled = false, onTextChange }: PromptN
     const graph = node.metadata?.graph;
     const text = graph?.role === "prompt" ? graph.text : node.metadata?.content ?? "";
     const [error, setError] = useState<string | null>(null);
+    const mountedRef = useRef(true);
+    const importSequenceRef = useRef(0);
+    const nodeIdRef = useRef(node.id);
+
+    useLayoutEffect(() => {
+        if (nodeIdRef.current === node.id) return;
+        nodeIdRef.current = node.id;
+        importSequenceRef.current += 1;
+    }, [node.id]);
+
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            importSequenceRef.current += 1;
+        };
+    }, []);
 
     const importTxt = async (event: ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         event.target.value = "";
         if (!file || disabled) return;
+        const sequence = importSequenceRef.current + 1;
+        importSequenceRef.current = sequence;
+        const sourceNodeId = node.id;
+        const isLatest = () => mountedRef.current && importSequenceRef.current === sequence && nodeIdRef.current === sourceNodeId;
         setError(null);
         if (!file.name.toLocaleLowerCase().endsWith(".txt") || (file.type && file.type !== "text/plain")) {
-            setError("请选择纯文本 TXT 文件。");
+            if (isLatest()) setError("请选择纯文本 TXT 文件。");
             return;
         }
         if (file.size > MAX_PROMPT_FILE_BYTES) {
-            setError("TXT 文件不能超过 1 MB。");
+            if (isLatest()) setError("TXT 文件不能超过 1 MB。");
             return;
         }
         let bytes: ArrayBuffer;
         try {
             bytes = await file.arrayBuffer();
         } catch {
-            setError("无法读取这个 TXT 文件，请重新选择。");
+            if (isLatest()) setError("无法读取这个 TXT 文件，请重新选择。");
             return;
         }
+        if (!isLatest()) return;
         try {
             const imported = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-            onTextChange(imported.replace(/^\uFEFF/, ""));
+            if (isLatest()) onTextChange(imported.replace(/^\uFEFF/, ""));
         } catch {
-            setError("TXT 文件必须使用 UTF-8 编码。");
+            if (isLatest()) setError("TXT 文件必须使用 UTF-8 编码。");
         }
     };
 

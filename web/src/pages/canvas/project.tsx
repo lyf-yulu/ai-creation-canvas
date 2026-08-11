@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { ImagePlus, MessageSquareText } from "lucide-react";
 import { nanoid } from "nanoid";
@@ -30,6 +30,7 @@ function generationSource(prompt: string, model: string, operation: ModelOperati
 export default function CanvasProjectPage() {
     const { id = "" } = useParams();
     const containerRef = useRef<HTMLDivElement>(null);
+    const contextTriggerRef = useRef<HTMLDivElement | null>(null);
     const [models, setModels] = useState<ModelSpec[]>([]);
     const [inspector, setInspector] = useState<GenerationInspectorValue>({ prompt: "", modelId: "", params: {} });
     const [operation, setOperation] = useState<ModelOperation>("image.generate");
@@ -56,7 +57,15 @@ export default function CanvasProjectPage() {
     useEffect(() => {
         setSelectedNodeIds(new Set());
         setContextMenu(null);
+        contextTriggerRef.current = null;
     }, [id]);
+
+    useEffect(() => {
+        if (!readOnly) return;
+        setSelectedNodeIds(new Set());
+        setContextMenu(null);
+        contextTriggerRef.current = null;
+    }, [readOnly]);
 
     useEffect(() => {
         const existing = new Set(project?.nodes.map((node) => node.id) ?? []);
@@ -160,11 +169,17 @@ export default function CanvasProjectPage() {
         updateProject(id, { nodes });
     }, [id, readOnly, updateProject]);
 
-    const openNodeContextMenu = useCallback((nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    const openNodeContextMenu = useCallback((nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
         if (readOnly) return;
+        contextTriggerRef.current = trigger;
         setSelectedNodeIds(new Set([nodeId]));
-        setContextMenu({ type: "node", nodeId, x: event.clientX, y: event.clientY });
+        setContextMenu({ type: "node", nodeId, x: position.x, y: position.y });
     }, [readOnly]);
+
+    const closeContextMenu = useCallback((restoreFocus = false) => {
+        setContextMenu(null);
+        if (restoreFocus) contextTriggerRef.current?.focus();
+    }, []);
 
     if (!project) {
         if (loadError) return <main role="alert" className="flex h-full items-center justify-center bg-[#050806] px-6 text-center text-[#ffbd73]">{loadError.message}</main>;
@@ -197,8 +212,8 @@ export default function CanvasProjectPage() {
                                 scale={viewport.k}
                                 selected={selectedNodeIds.has(node.id)}
                                 disabled={readOnly}
-                                onSelect={(nodeId, additive) => setSelectedNodeIds((current) => selectNode(current, nodeId, additive))}
-                                onContextMenu={openNodeContextMenu}
+                                onSelect={readOnly ? undefined : (nodeId, additive) => setSelectedNodeIds((current) => selectNode(current, nodeId, additive))}
+                                onContextMenu={readOnly ? undefined : openNodeContextMenu}
                                 onPositionChange={moveNode}
                             >
                                 {promptNode
@@ -212,7 +227,7 @@ export default function CanvasProjectPage() {
                 {contextMenu?.type === "node" ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}
-                        onClose={() => setContextMenu(null)}
+                        onClose={closeContextMenu}
                         onDelete={() => deleteNodes(new Set([contextMenu.nodeId]))}
                     />
                 ) : null}

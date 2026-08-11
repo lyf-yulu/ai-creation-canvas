@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import type { CanvasNodeData, Position } from "@/types/canvas";
 
@@ -9,7 +9,7 @@ type DraggableCanvasNodeProps = {
     selected?: boolean;
     disabled?: boolean;
     onSelect?: (nodeId: string, additive: boolean) => void;
-    onContextMenu?: (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => void;
+    onContextMenu?: (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => void;
     children: ReactNode;
 };
 
@@ -52,11 +52,11 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
     }, []);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || dragRef.current.active) return;
+        if (disabled || event.button !== 0 || dragRef.current.active) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest(interactiveSelector)) return;
         onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
-        if (disabled || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        if (event.ctrlKey || event.metaKey || event.shiftKey) return;
 
         event.preventDefault();
         event.stopPropagation();
@@ -134,7 +134,16 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
     };
 
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+        if (disabled || event.target !== event.currentTarget) return;
+        if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+            if (!onContextMenu) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onContextMenu(node.id, { x: rect.left + Math.min(rect.width, 24), y: rect.top + Math.min(rect.height, 24) }, event.currentTarget);
+            return;
+        }
+        if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
     };
@@ -153,10 +162,11 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
             onPointerDown={handlePointerDown}
             onKeyDown={handleKeyDown}
             onContextMenu={(event) => {
-                if (!onContextMenu) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (disabled || target?.closest(interactiveSelector) || !onContextMenu) return;
                 event.preventDefault();
                 event.stopPropagation();
-                onContextMenu(node.id, event);
+                onContextMenu(node.id, { x: event.clientX, y: event.clientY }, event.currentTarget);
             }}
         >
             {children}
