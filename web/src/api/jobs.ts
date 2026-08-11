@@ -3,6 +3,7 @@ import type { JobRequest, JobState } from "./contracts";
 
 export const createJob = (job: JobRequest, signal?: AbortSignal) => apiFetch<JobState>("/api/v1/jobs", { method: "POST", signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify(job) });
 export const fetchJob = (id: string, signal?: AbortSignal) => apiFetch<JobState>(`/api/v1/jobs/${encodeURIComponent(id)}`, { signal });
+export const cancelJob = (id: string) => apiFetch<JobState>(`/api/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
 type AssetLike = { asset_id?: string; [key: string]: unknown };
 export function assetIdsForReferences(references: AssetLike[]) {
     return references.map((reference) => {

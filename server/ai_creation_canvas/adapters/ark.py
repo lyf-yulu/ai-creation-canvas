@@ -28,6 +28,7 @@ from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUps
 
 _ARK_URL = "https://ark.cn-beijing.volces.com"
 _RESULT_ID = re.compile(r"ark_result_[0-9a-f]{64}\Z")
+_CONTENT_TASK_ID = re.compile(r"cgt-[A-Za-z0-9_-]{1,120}\Z")
 _MAX_RESULT_BYTES = 256 * 1024 * 1024
 _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
 _AUDIO_MIME = frozenset({"audio/wav", "audio/mpeg"})
@@ -198,7 +199,7 @@ class ArkGenerationAdapter:
             results = tuple([await self._download(upstream_job_id if index == 0 else f"{upstream_job_id}\n{index}", url, pending["kind"]) for index, url in enumerate(pending["urls"])])
             await self._clear_pending(upstream_job_id)
             return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
-        if not upstream_job_id.startswith("cgt-"):
+        if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
             raise ValueError("Ark job is invalid")
         response = await self._api("GET", f"/api/v3/contents/generations/tasks/{upstream_job_id}")
         body = self._json(response)
@@ -210,6 +211,13 @@ class ArkGenerationAdapter:
         if status != "succeeded" or not isinstance(body.get("content"), Mapping) or not isinstance(body["content"].get("video_url"), str):
             raise InvalidUpstreamResult("Ark video poll response is invalid")
         return JobState(upstream_job_id, JobStatus.SUCCEEDED, await self._download(upstream_job_id, str(body["content"]["video_url"]), "video"))
+
+    async def cancel(self, context: RequestContext, upstream_job_id: str) -> None:
+        """Cancel an Ark content task that the caller has already proven is queued."""
+        del context
+        if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
+            raise ValueError("Ark job is invalid")
+        await self._api("DELETE", f"/api/v3/contents/generations/tasks/{upstream_job_id}")
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -235,7 +243,10 @@ class ArkGenerationAdapter:
     async def _api(self, method: str, path: str, *, json: Mapping[str, object] | None = None) -> httpx.Response:
         try:
             async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
-                response = await client.request(method, path, json=json, headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"})
+                kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}}
+                if json is not None:
+                    kwargs["json"] = json
+                response = await client.request(method, path, **kwargs)
         except httpx.TimeoutException as error:
             raise PortalUpstreamError("UPSTREAM_TIMEOUT", retryable=True) from error
         except httpx.HTTPError as error:

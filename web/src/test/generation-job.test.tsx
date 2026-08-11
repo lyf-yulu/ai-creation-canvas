@@ -28,6 +28,26 @@ it("resumes an existing job without submitting another job", async () => {
     expect(api.fetch).toHaveBeenCalledWith("j-1", expect.any(Object));
 });
 
+it("cancels a queued job through the server and stops local polling", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    let pollSignal: AbortSignal | undefined;
+    const api = {
+        create: vi.fn(),
+        fetch: vi.fn((_id: string, signal?: AbortSignal) => { pollSignal = signal; return new Promise(() => undefined); }),
+        cancel: vi.fn().mockResolvedValue({ id: "j-queued", status: "failed", error: { code: "TASK_CANCELLED", message: "The job was cancelled.", retryable: false, request_id: "r", phase: "generation" } }),
+    };
+    const onCancelled = vi.fn();
+    const { result } = renderHook(() => useGenerationJob({ api: api as any, onCancelled }));
+    void result.current.resume("j-queued");
+    await waitFor(() => expect(api.fetch).toHaveBeenCalled());
+
+    await act(async () => result.current.cancelQueued("j-queued"));
+    expect(api.cancel).toHaveBeenCalledWith("j-queued");
+    expect(pollSignal?.aborted).toBe(true);
+    expect(result.current.state).toMatchObject({ status: "failed", jobId: "j-queued", retryable: false });
+    expect(onCancelled).toHaveBeenCalledWith(expect.objectContaining({ jobId: "j-queued" }));
+});
+
 it("reuses the pending idempotency key after an ambiguous submit failure", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const api = {

@@ -75,6 +75,8 @@ export type CanvasNodeMetadata = {
     params?: Record<string, unknown>;
     assetIds?: string[];
     idempotencyKey?: string;
+    jobId?: string;
+    jobStatus?: "uploading" | "submitting" | "queued" | "running" | "succeeded" | "failed";
 };
 
 export type CanvasNodeData = {

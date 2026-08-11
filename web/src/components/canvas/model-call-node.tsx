@@ -15,13 +15,14 @@ type Props = {
     onChange: (graph: GraphModelMetadata) => void;
     onRun: () => void;
     onRetry?: (token: string) => void;
+    onCancel?: (jobId: string) => void;
 };
 
 function defaults(model: ModelSpec) {
     return Object.fromEntries(parameterControls(model.parameter_schema).flatMap((control) => (control.default === undefined ? [] : [[control.name, control.default]]))) as Record<string, GraphParameterValue>;
 }
 
-export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun, onRetry }: Props) {
+export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun, onRetry, onCancel }: Props) {
     const graph = node.metadata?.graph;
     if (graph?.role !== "model") return null;
     const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
@@ -41,7 +42,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
             </header>
             <div className="space-y-3 p-3" data-canvas-no-zoom>
                 <p role="status" className="text-[11px] text-[#9fb5a5]">
-                    任务状态：{node.metadata?.status === "loading" ? "运行中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
+                    任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中（平台不支持取消运行中任务）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
                 </p>
                 <label className="block text-[11px] text-[#9fb5a5]">
                     模型
@@ -106,6 +107,11 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                     <Play className="size-3.5" />
                     {node.metadata?.status === "error" && node.metadata.idempotencyKey ? "使用原任务键重试" : "运行模型"}
                 </button>
+                {node.metadata?.jobStatus === "queued" && node.metadata.jobId && onCancel ? (
+                    <button type="button" disabled={disabled} onClick={() => onCancel(node.metadata!.jobId!)} className="w-full rounded-lg border border-[#6b4b2c] px-3 py-2 text-[#ffbd73] disabled:opacity-40">
+                        取消排队任务
+                    </button>
+                ) : null}
                 {message ? (
                     <p role="status" className="text-[#ffbd73]">
                         {message}

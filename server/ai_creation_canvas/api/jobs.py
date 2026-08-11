@@ -272,7 +272,9 @@ async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
     if item["status"] == "failed" and item.get("error_code") == "TASK_CANCELLED":
         return _response(item, request)
-    if item["status"] not in {"queued", "running"} or not item.get("upstream_job_id"):
+    if item["status"] == "running":
+        raise problem(request, "JOB_NOT_CANCELLABLE", "A running provider task cannot be cancelled.", status=409)
+    if item["status"] != "queued" or not item.get("upstream_job_id"):
         raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
     adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
     cancel = getattr(adapter, "cancel", None)
@@ -280,6 +282,10 @@ async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
     try:
         await cancel(context, str(item["upstream_job_id"]))
+    except PortalUpstreamError as error:
+        if not error.retryable:
+            raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409) from None
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True) from None
     except Exception:
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True) from None
     return _response(store.mark_cancelled(job_id), request)

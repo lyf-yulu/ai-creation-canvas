@@ -65,4 +65,17 @@ describe("ModelCallNode", () => {
         fireEvent.click(screen.getByRole("button", { name: "使用原任务键重试" }));
         expect(onRetry).toHaveBeenCalledWith("same-key");
     });
+
+    it("only offers provider cancellation while the task is queued", () => {
+        const onCancel = vi.fn();
+        const queued: CanvasNodeData = { ...node, metadata: { ...node.metadata, status: "loading", jobId: "job-queued", jobStatus: "queued" } };
+        const { rerender } = render(<ModelCallNode node={queued} models={models} onChange={vi.fn()} onRun={vi.fn()} onCancel={onCancel} />);
+        fireEvent.click(screen.getByRole("button", { name: "取消排队任务" }));
+        expect(onCancel).toHaveBeenCalledWith("job-queued");
+
+        const running: CanvasNodeData = { ...node, metadata: { ...node.metadata, status: "loading", jobId: "job-running", jobStatus: "running" } };
+        rerender(<ModelCallNode node={running} models={models} onChange={vi.fn()} onRun={vi.fn()} onCancel={onCancel} />);
+        expect(screen.queryByRole("button", { name: "取消排队任务" })).not.toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveTextContent("平台不支持取消运行中任务");
+    });
 });

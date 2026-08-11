@@ -166,7 +166,7 @@ def test_server_cancel_is_owned_adapter_backed_and_terminal(tmp_path):
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
     store = app.state.canvas_store
     store.reserve_job(user_id="u-a", job_id="cancel-job", service_id="images", operation="image.generate", idempotency_key="cancel", request_hash="a" * 64)
-    store.mark_submitted("cancel-job", "upstream-cancel", "running")
+    store.mark_submitted("cancel-job", "upstream-cancel", "queued")
     client = TestClient(app, raise_server_exceptions=False)
 
     assert client.post("/api/v1/jobs/cancel-job/cancel", headers=headers("u-b")).status_code == 404
@@ -176,6 +176,42 @@ def test_server_cancel_is_owned_adapter_backed_and_terminal(tmp_path):
     assert adapter.cancelled == [("u-a", "upstream-cancel")]
     assert client.post("/api/v1/jobs/cancel-job/cancel", headers=headers()).json()["error"]["code"] == "TASK_CANCELLED"
     assert adapter.cancelled == [("u-a", "upstream-cancel")]
+
+
+def test_server_never_deletes_a_running_provider_task_as_cancellation(tmp_path):
+    class Cancellable(FakeGeneration):
+        def __init__(self): super().__init__(); self.cancelled = []
+        async def cancel(self, context, upstream_job_id): self.cancelled.append(upstream_job_id)
+
+    adapter = Cancellable(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="running-job", service_id="images", operation="image.generate", idempotency_key="cancel", request_hash="a" * 64)
+    store.mark_submitted("running-job", "cgt-running", "running")
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs/running-job/cancel", headers=headers())
+    assert response.status_code == 409
+    assert response.json()["code"] == "JOB_NOT_CANCELLABLE"
+    assert "running" in response.json()["message"].lower()
+    assert adapter.cancelled == []
+    assert store.job_for_owner("running-job", "u-a")[0]["status"] == "running"
+
+
+def test_successful_queued_cancel_wins_over_a_stale_running_poll(tmp_path):
+    class RacingCancel(FakeGeneration):
+        async def cancel(self, context, upstream_job_id):
+            app.state.canvas_store._update("race-job", status="running")
+
+    adapter = RacingCancel(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="race-job", service_id="images", operation="image.generate", idempotency_key="cancel", request_hash="a" * 64)
+    store.mark_submitted("race-job", "cgt-race", "queued")
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs/race-job/cancel", headers=headers())
+    assert response.status_code == 200
+    assert response.json()["error"]["code"] == "TASK_CANCELLED"
+    assert store.job_for_owner("race-job", "u-a")[0]["status"] == "failed"
 
 
 def test_server_cancel_fails_closed_when_adapter_does_not_support_it(tmp_path):

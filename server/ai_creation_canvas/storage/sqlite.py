@@ -720,7 +720,7 @@ class CanvasStore:
         return dict(row)
 
     def mark_cancelled(self, job_id: str) -> dict[str, object]:
-        """Transition only a non-terminal submitted job to a local cancelled failure."""
+        """Record a successful queued-provider cancellation despite a stale running poll."""
         with self._connection(immediate=True) as db:
             db.execute(
                 "UPDATE canvas_jobs SET status='failed',error_code='TASK_CANCELLED',updated_at=? "

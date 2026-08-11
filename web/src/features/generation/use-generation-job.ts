@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createJob, fetchJob } from "@/api/jobs";
+import { cancelJob, createJob, fetchJob } from "@/api/jobs";
 import type { JobRequest, JobState } from "@/api/contracts";
 import { captureScopedStore, isStorageLeaseActive, onStorageScopeChanged, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import { generationErrorMessage, safeFailureMetadata } from "./error-message";
@@ -19,15 +19,15 @@ export const useGenerationTasks = create<GenerationTaskStore>()((set) => ({
 }));
 export function clearGenerationTasks() { useGenerationTasks.getState().clear(); }
 export function dismissGenerationTask(jobId: string) { useGenerationTasks.getState().remove(jobId); }
-type GenerationApi = { create: (job: JobRequest, signal?: AbortSignal) => Promise<JobState>; fetch: (id: string, signal?: AbortSignal) => Promise<JobState> };
+type GenerationApi = { create: (job: JobRequest, signal?: AbortSignal) => Promise<JobState>; fetch: (id: string, signal?: AbortSignal) => Promise<JobState>; cancel?: (id: string) => Promise<JobState> };
 type SubmitInput = Omit<JobRequest, "idempotency_key"> & { projectId: string; sourceNodeId?: string };
-type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onFailed?: (details: { request: JobRequest; projectId?: string; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
+type Options = { api?: GenerationApi; pollDelayMs?: number; idempotencyKey?: () => string; onStateChanged?: (job: JobState, ref?: PendingRef) => void; onSucceeded?: (job: JobState, ref?: PendingRef) => void; onCancelled?: (details: { jobId: string; projectId?: string; sourceNodeId?: string }) => void; onFailed?: (details: { request: JobRequest; projectId?: string; sourceNodeId?: string; message: string; requestId?: string; phase?: string; retryToken?: string }) => void };
 const REFS_KEY = "generation-job-refs";
 const delay = (ms: number, signal: AbortSignal) => new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); }, { once: true }); });
 const stateFor = (job: JobState): GenerationStatus => job.status === "uploading" || job.status === "submitting" ? "submitting" : job.status;
 
 export function useGenerationJob(options: Options = {}) {
-    const apiRef = useRef<GenerationApi>(options.api ?? { create: createJob, fetch: fetchJob });
+    const apiRef = useRef<GenerationApi>(options.api ?? { create: createJob, fetch: fetchJob, cancel: cancelJob });
     const optionsRef = useRef(options);
     apiRef.current = options.api ?? apiRef.current;
     optionsRef.current = options;
@@ -74,6 +74,7 @@ export function useGenerationJob(options: Options = {}) {
             while (!signal.signal.aborted && (!captured || isStorageLeaseActive(captured))) {
                 const job = await apiRef.current.fetch(jobId, signal.signal);
                 const status = stateFor(job);
+                optionsRef.current.onStateChanged?.(job, refs.current.get(jobId));
                 publish({ status, jobId }, captured);
                 const taskRef = refs.current.get(jobId);
                 useGenerationTasks.getState().upsert({ jobId, title: taskRef?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: taskRef?.sourceNodeId });
@@ -113,6 +114,7 @@ export function useGenerationJob(options: Options = {}) {
             const ref = refs.current.get(request.idempotency_key); refs.current.delete(request.idempotency_key); refs.current.set(job.id, { request, projectId: ref?.projectId, jobId: job.id, sourceNodeId: ref?.sourceNodeId }); await persist();
             useGenerationTasks.getState().remove(request.idempotency_key);
             useGenerationTasks.getState().upsert({ jobId: job.id, title: request.prompt.slice(0, 32), status: stateFor(job), sourceNodeId });
+            optionsRef.current.onStateChanged?.(job, refs.current.get(job.id));
             publish({ status: stateFor(job), jobId: job.id }, captured);
             await poll(job.id, captured);
         } catch (error) {
@@ -137,6 +139,21 @@ export function useGenerationJob(options: Options = {}) {
         } catch (error) { controllers.current.delete(request.idempotency_key); throw error; }
     }, [persist, poll, restore]);
     const resume = useCallback(async (jobId: string) => { const captured = lease.current = captureScopedStore(REFS_KEY); await poll(jobId, captured); }, [poll]);
+    const cancelQueued = useCallback(async (jobId: string) => {
+        const cancel = apiRef.current.cancel;
+        if (!cancel) throw new Error("This generation cannot be cancelled");
+        const captured = lease.current;
+        const ref = refs.current.get(jobId);
+        const job = await cancel(jobId);
+        stop(jobId);
+        refs.current.delete(jobId);
+        await persist();
+        useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status: "failed", sourceNodeId: ref?.sourceNodeId });
+        publish({ status: "failed", jobId, message: "任务已取消。", retryable: false }, captured);
+        optionsRef.current.onStateChanged?.(job, ref);
+        optionsRef.current.onCancelled?.({ jobId, projectId: ref?.projectId, sourceNodeId: ref?.sourceNodeId });
+        return job;
+    }, [persist, publish, stop]);
     useEffect(() => { active.current = true; const activate = () => { stop(); clearGenerationTasks(); refs.current.clear(); completed.current.clear(); restoredVersion.current = null; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); }; const clear = () => { stop(); clearGenerationTasks(); }; activate(); const unsubscribe = onStorageScopeCleared(clear); const unsubscribeScope = onStorageScopeChanged(activate); return () => { active.current = false; unsubscribe(); unsubscribeScope(); stop(); }; }, [poll, restore, stop]);
-    return { state, submit, retry, resume, cancel: stop, failureMetadata: safeFailureMetadata };
+    return { state, submit, retry, resume, cancelQueued, cancel: stop, failureMetadata: safeFailureMetadata };
 }

@@ -8,10 +8,56 @@ import httpx
 import pytest
 
 from ai_creation_canvas.domain.models import JobRequest, PortalRole, PortalUser, RequestContext
+from ai_creation_canvas.errors import PortalUpstreamError
 
 
 def context() -> RequestContext:
     return RequestContext(PortalUser("user-a", "Alice", PortalRole.USER), "request-a", "trace-a")
+
+
+def test_ark_cancel_uses_official_delete_without_a_body(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204)
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path,
+            models=(ArkModelDeclaration("video-endpoint", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {}}),),
+            transport=httpx.MockTransport(handler),
+        )
+        await adapter.cancel(context(), "cgt-safe_123")
+        assert len(seen) == 1
+        assert seen[0].method == "DELETE"
+        assert seen[0].url.path == "/api/v3/contents/generations/tasks/cgt-safe_123"
+        assert seen[0].content == b""
+        with pytest.raises(ValueError):
+            await adapter.cancel(context(), "ark_image_unsafe")
+        assert len(seen) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status,retryable", [(429, True), (500, True), (400, False), (404, False)])
+def test_ark_cancel_maps_provider_failures_safely(tmp_path: Path, status: int, retryable: bool) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path,
+            models=(ArkModelDeclaration("video-endpoint", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {}}),),
+            transport=httpx.MockTransport(lambda request: httpx.Response(status)),
+        )
+        with pytest.raises(PortalUpstreamError) as caught:
+            await adapter.cancel(context(), "cgt-safe")
+        assert caught.value.retryable is retryable
+        assert caught.value.status_code == status
+
+    asyncio.run(scenario())
 
 
 def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Path) -> None:

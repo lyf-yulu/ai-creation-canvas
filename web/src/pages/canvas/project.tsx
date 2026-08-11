@@ -24,6 +24,7 @@ import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphC
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
+import { generationErrorMessage } from "@/features/generation/error-message";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
@@ -237,7 +238,27 @@ export default function CanvasProjectPage() {
         [updateProject],
     );
 
-    const generation = useGenerationJob({ onSucceeded, onFailed });
+    const onGenerationStateChanged = useCallback(
+        (job: JobState, ref?: PendingRef) => {
+            if (!ref?.projectId || !ref.sourceNodeId || !["queued", "running"].includes(job.status)) return;
+            const current = useCanvasStore.getState().openProject(ref.projectId);
+            if (!current) return;
+            updateProject(ref.projectId, { nodes: current.nodes.map((node) => node.id === ref.sourceNodeId ? { ...node, metadata: { ...node.metadata, status: "loading" as const, jobId: job.id, jobStatus: job.status } } : node) });
+        },
+        [updateProject],
+    );
+    const onCancelled = useCallback(
+        ({ projectId, sourceNodeId }: { jobId: string; projectId?: string; sourceNodeId?: string }) => {
+            if (!projectId || !sourceNodeId) return;
+            const current = useCanvasStore.getState().openProject(projectId);
+            if (!current) return;
+            updateProject(projectId, { nodes: current.nodes.map((node) => node.id === sourceNodeId ? { ...node, metadata: { ...node.metadata, status: "idle" as const, jobStatus: "failed" as const, idempotencyKey: undefined } } : node) });
+            setModelMessages((messages) => ({ ...messages, [sourceNodeId]: "任务已取消，输入和参数已保留。" }));
+        },
+        [updateProject],
+    );
+
+    const generation = useGenerationJob({ onSucceeded, onFailed, onStateChanged: onGenerationStateChanged, onCancelled });
     const deleteNodes = useCallback(
         (nodeIds: ReadonlySet<string>) => {
             if (readOnly || nodeIds.size === 0) return;
@@ -698,6 +719,7 @@ export default function CanvasProjectPage() {
                                             onChange={(graph) => updateModelNode(node.id, graph)}
                                             onRun={() => runModelNode(node.id)}
                                             onRetry={(token) => void generation.retry(token).catch(() => undefined)}
+                                            onCancel={(jobId) => void generation.cancelQueued(jobId).catch((error) => setModelMessages((messages) => ({ ...messages, [node.id]: generationErrorMessage(error) })))}
                                         />
                                     ) : (
                                         <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} onDelete={readOnly ? undefined : () => deleteNodes(new Set([node.id]))} />
