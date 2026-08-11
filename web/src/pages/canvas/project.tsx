@@ -386,7 +386,9 @@ export default function CanvasProjectPage() {
         (nodeId: string) => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
-            const graph = current?.nodes.find((node) => node.id === nodeId)?.metadata?.graph;
+            const sourceNode = current?.nodes.find((node) => node.id === nodeId);
+            if (sourceNode?.metadata?.status === "loading" || sourceNode?.metadata?.jobStatus === "queued" || sourceNode?.metadata?.jobStatus === "running") return;
+            const graph = sourceNode?.metadata?.graph;
             const model = graph?.role === "model" ? models.find((candidate) => candidate.model_id === graph.modelId) : undefined;
             if (!current || !model) return;
             try {

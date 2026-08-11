@@ -78,4 +78,13 @@ describe("ModelCallNode", () => {
         expect(screen.queryByRole("button", { name: "取消排队任务" })).not.toBeInTheDocument();
         expect(screen.getByRole("status")).toHaveTextContent("平台不支持取消运行中任务");
     });
+
+    it("locks model parameters and run action while a snapshot is active", () => {
+        const active: CanvasNodeData = { ...node, metadata: { ...node.metadata, status: "loading", jobStatus: "queued" } };
+        render(<ModelCallNode node={active} models={models} onChange={vi.fn()} onRun={vi.fn()} />);
+        expect(screen.getByLabelText("模型")).toBeDisabled();
+        expect(screen.getByLabelText("quality")).toBeDisabled();
+        expect(screen.getByLabelText("count")).toBeDisabled();
+        expect(screen.getByRole("button", { name: "运行模型" })).toBeDisabled();
+    });
 });

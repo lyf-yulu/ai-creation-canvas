@@ -48,6 +48,45 @@ it("cancels a queued job through the server and stops local polling", async () =
     expect(onCancelled).toHaveBeenCalledWith(expect.objectContaining({ jobId: "j-queued" }));
 });
 
+it("preserves a success that wins the cancellation race", async () => {
+    const saved = { jobId: "j-race", projectId: "project-a", sourceNodeId: "model-a", request: { operation: "image.generate" as const, model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "key" } };
+    setScopedStoreFactoryForTest(() => ({ getItem: async () => [saved], setItem: async () => undefined, removeItem: async () => undefined, iterate: async () => undefined }) as never);
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const api = {
+        create: vi.fn(),
+        fetch: vi.fn(() => new Promise(() => undefined)),
+        cancel: vi.fn().mockResolvedValue({ id: "j-race", status: "succeeded", result_url: "/api/v1/results/j-race" }),
+    };
+    const onSucceeded = vi.fn();
+    const onCancelled = vi.fn();
+    const { result } = renderHook(() => useGenerationJob({ api: api as any, onSucceeded, onCancelled }));
+    await waitFor(() => expect(api.fetch).toHaveBeenCalled());
+
+    await act(async () => result.current.cancelQueued("j-race"));
+    expect(result.current.state.status).toBe("succeeded");
+    expect(onSucceeded).toHaveBeenCalledWith(expect.objectContaining({ id: "j-race", operation: "image.generate" }), expect.objectContaining({ projectId: "project-a", sourceNodeId: "model-a" }));
+    expect(onCancelled).not.toHaveBeenCalled();
+});
+
+it.each(["queued", "running"] as const)("keeps polling when cancellation returns %s", async (status) => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    let pollSignal: AbortSignal | undefined;
+    const api = {
+        create: vi.fn(),
+        fetch: vi.fn((_id: string, signal?: AbortSignal) => { pollSignal = signal; return new Promise(() => undefined); }),
+        cancel: vi.fn().mockResolvedValue({ id: "j-active", status }),
+    };
+    const onCancelled = vi.fn();
+    const { result } = renderHook(() => useGenerationJob({ api: api as any, onCancelled }));
+    void result.current.resume("j-active");
+    await waitFor(() => expect(api.fetch).toHaveBeenCalled());
+
+    await act(async () => result.current.cancelQueued("j-active"));
+    expect(pollSignal?.aborted).toBe(false);
+    expect(result.current.state.status).toBe(status);
+    expect(onCancelled).not.toHaveBeenCalled();
+});
+
 it("reuses the pending idempotency key after an ambiguous submit failure", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const api = {

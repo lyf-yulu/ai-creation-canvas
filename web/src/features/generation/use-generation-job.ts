@@ -145,15 +145,45 @@ export function useGenerationJob(options: Options = {}) {
         const captured = lease.current;
         const ref = refs.current.get(jobId);
         const job = await cancel(jobId);
-        stop(jobId);
-        refs.current.delete(jobId);
-        await persist();
-        useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status: "failed", sourceNodeId: ref?.sourceNodeId });
-        publish({ status: "failed", jobId, message: "任务已取消。", retryable: false }, captured);
         optionsRef.current.onStateChanged?.(job, ref);
-        optionsRef.current.onCancelled?.({ jobId, projectId: ref?.projectId, sourceNodeId: ref?.sourceNodeId });
-        return job;
-    }, [persist, publish, stop]);
+        const status = stateFor(job);
+        if (status === "queued" || status === "running") {
+            publish({ status, jobId }, captured);
+            useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: ref?.sourceNodeId });
+            void poll(jobId, captured);
+            return job;
+        }
+        if (status === "succeeded") {
+            stop(jobId);
+            refs.current.delete(jobId);
+            await persist();
+            const completeJob = { ...job, operation: job.operation ?? ref?.request.operation };
+            useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: ref?.sourceNodeId });
+            publish({ status, jobId }, captured);
+            if (!completed.current.has(jobId) && (!captured || isStorageLeaseActive(captured))) { completed.current.add(jobId); optionsRef.current.onSucceeded?.(completeJob, ref); }
+            return completeJob;
+        }
+        if (status === "failed" && job.error?.code === "TASK_CANCELLED") {
+            stop(jobId);
+            refs.current.delete(jobId);
+            await persist();
+            useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: ref?.sourceNodeId });
+            publish({ status, jobId, message: "任务已取消。", retryable: false }, captured);
+            optionsRef.current.onCancelled?.({ jobId, projectId: ref?.projectId, sourceNodeId: ref?.sourceNodeId });
+            return job;
+        }
+        if (status === "failed") {
+            stop(jobId);
+            refs.current.delete(jobId);
+            await persist();
+            const message = generationErrorMessage(job.error ? new ApiRequestError(job.error) : new Error("failed"));
+            publish({ status, jobId, message, retryable: job.error?.retryable }, captured);
+            useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status, sourceNodeId: ref?.sourceNodeId });
+            if (ref) optionsRef.current.onFailed?.({ request: ref.request, projectId: ref.projectId, sourceNodeId: ref.sourceNodeId, message, requestId: job.error?.request_id, phase: job.error?.phase });
+            return job;
+        }
+        throw new Error("The cancellation response was invalid");
+    }, [persist, poll, publish, stop]);
     useEffect(() => { active.current = true; const activate = () => { stop(); clearGenerationTasks(); refs.current.clear(); completed.current.clear(); restoredVersion.current = null; lease.current = captureScopedStore(REFS_KEY); const captured = lease.current; void (async () => { await restore(captured); if (!captured || !isStorageLeaseActive(captured)) return; for (const ref of refs.current.values()) if (ref.jobId) void poll(ref.jobId, captured); })(); }; const clear = () => { stop(); clearGenerationTasks(); }; activate(); const unsubscribe = onStorageScopeCleared(clear); const unsubscribeScope = onStorageScopeChanged(activate); return () => { active.current = false; unsubscribe(); unsubscribeScope(); stop(); }; }, [poll, restore, stop]);
     return { state, submit, retry, resume, cancelQueued, cancel: stop, failureMetadata: safeFailureMetadata };
 }

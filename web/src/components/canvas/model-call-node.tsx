@@ -27,6 +27,8 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     if (graph?.role !== "model") return null;
     const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
     const controls = useMemo(() => parameterControls(selected?.parameter_schema ?? {}), [selected]);
+    const busy = node.metadata?.status === "loading" || node.metadata?.jobStatus === "queued" || node.metadata?.jobStatus === "running";
+    const editDisabled = disabled || busy;
     if (!selected) return <article className="rounded-xl border border-[#6b4b2c] bg-[#171008] p-3 text-xs text-[#ffbd73]">暂无可用模型。</article>;
     const updateParameter = (name: string, value: GraphParameterValue) => onChange({ ...graph, parameters: { ...graph.parameters, [name]: value } });
     const choose = (modelId: string) => {
@@ -46,7 +48,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                 </p>
                 <label className="block text-[11px] text-[#9fb5a5]">
                     模型
-                    <select aria-label="模型" disabled={disabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
+                    <select aria-label="模型" disabled={editDisabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
                         {models.map((model) => (
                             <option key={model.model_id} value={model.model_id}>
                                 {model.display_name}
@@ -67,7 +69,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         {control.type === "enum" ? (
                             <select
                                 aria-label={control.name}
-                                disabled={disabled}
+                                disabled={editDisabled}
                                 value={String(control.enum?.findIndex((value) => Object.is(value, graph.parameters[control.name])) ?? 0)}
                                 onChange={(event) => updateParameter(control.name, control.enum?.[Number(event.target.value)] ?? null)}
                                 className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
@@ -81,7 +83,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         ) : control.type === "boolean" ? (
                             <input
                                 aria-label={control.name}
-                                disabled={disabled}
+                                disabled={editDisabled}
                                 type="checkbox"
                                 checked={graph.parameters[control.name] === true}
                                 onChange={(event) => updateParameter(control.name, event.target.checked)}
@@ -90,7 +92,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         ) : (
                             <input
                                 aria-label={control.name}
-                                disabled={disabled}
+                                disabled={editDisabled}
                                 value={String(graph.parameters[control.name] ?? "")}
                                 onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? Number(event.target.value) : event.target.value)}
                                 className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
@@ -100,7 +102,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                 ))}
                 <button
                     type="button"
-                    disabled={disabled}
+                    disabled={editDisabled}
                     onClick={node.metadata?.status === "error" && node.metadata.idempotencyKey && onRetry ? () => onRetry(node.metadata!.idempotencyKey!) : onRun}
                     className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#47d978] px-3 py-2 font-semibold text-[#041008] disabled:opacity-40"
                 >

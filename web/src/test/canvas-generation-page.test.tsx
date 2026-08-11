@@ -27,7 +27,9 @@ it("submits canvas image generation through jobs and writes its result node", as
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("real-video-looking-image"));
     await waitFor(() => expect(screen.getByLabelText("steps")).toHaveValue("4"));
     fireEvent.change(screen.getByLabelText("steps"), { target: { value: "6" } });
-    fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
+    const run = screen.getByRole("button", { name: "运行模型" });
+    fireEvent.click(run);
+    fireEvent.click(run);
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-1")).toBe(true));
     expect(await screen.findByTestId("result-node-job-1")).toBeVisible();
     expect(screen.getAllByTestId("result-node-job-1")).toHaveLength(1);
@@ -36,6 +38,7 @@ it("submits canvas image generation through jobs and writes its result node", as
     expect(request.method).toBe("POST");
     expect(JSON.parse(request.body).model_id).toBe("real-video-looking-image");
     expect(JSON.parse(request.body).params.steps).toBe(6);
+    expect((fetch as any).mock.calls.filter(([path]: [string]) => path === "/api/v1/jobs")).toHaveLength(1);
     const source = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.type === CanvasNodeType.Config);
     expect(source?.metadata?.graph).toMatchObject({
         schemaVersion: 1,
