@@ -34,11 +34,16 @@ export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: 
     useLayoutEffect(() => {
         updatePosition();
         const viewport = window.visualViewport;
+        const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updatePosition);
+        if (menuRef.current) resizeObserver?.observe(menuRef.current);
         window.addEventListener("resize", updatePosition);
         viewport?.addEventListener("resize", updatePosition);
+        viewport?.addEventListener("scroll", updatePosition);
         return () => {
             window.removeEventListener("resize", updatePosition);
             viewport?.removeEventListener("resize", updatePosition);
+            viewport?.removeEventListener("scroll", updatePosition);
+            resizeObserver?.disconnect();
         };
     }, [updatePosition]);
 

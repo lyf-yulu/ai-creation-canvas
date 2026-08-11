@@ -23,6 +23,11 @@ type DragState = {
     previousCursor: string;
 };
 
+type InteractivePointerGesture = {
+    pointerId: number;
+    target: Element;
+};
+
 const interactiveSelector = "button,input,textarea,select,a,video,audio,[contenteditable]:not([contenteditable='false'])";
 
 function normalizedScale(scale: number) {
@@ -44,12 +49,16 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
     const onPositionChangeRef = useRef(onPositionChange);
     const nodeIdRef = useRef(node.id);
     const finishDragRef = useRef<((pointerId?: number, flush?: boolean) => void) | null>(null);
-    const interactivePointerTargetRef = useRef<Element | null>(null);
+    const interactivePointerGestureRef = useRef<InteractivePointerGesture | null>(null);
+    const clearInteractivePointerRef = useRef<() => void>(() => undefined);
     onPositionChangeRef.current = onPositionChange;
     nodeIdRef.current = node.id;
 
     useEffect(() => {
-        return () => finishDragRef.current?.(undefined, false);
+        return () => {
+            finishDragRef.current?.(undefined, false);
+            clearInteractivePointerRef.current();
+        };
     }, []);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -139,7 +148,26 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
         const target = event.target instanceof Element ? event.target : null;
         const interactiveTarget = target?.closest(interactiveSelector) ?? null;
         if (!interactiveTarget) return;
-        interactivePointerTargetRef.current = interactiveTarget;
+        clearInteractivePointerRef.current();
+        const gesture = { pointerId: event.pointerId, target: interactiveTarget };
+        interactivePointerGestureRef.current = gesture;
+        let expiryTimer: number | null = null;
+        const clear = () => {
+            if (interactivePointerGestureRef.current === gesture) interactivePointerGestureRef.current = null;
+            window.removeEventListener("pointerup", finish);
+            window.removeEventListener("pointercancel", finish);
+            window.removeEventListener("blur", clear);
+            if (expiryTimer !== null) window.clearTimeout(expiryTimer);
+            if (clearInteractivePointerRef.current === clear) clearInteractivePointerRef.current = () => undefined;
+        };
+        const finish = (pointerEvent: PointerEvent) => {
+            if (pointerEvent.pointerId === gesture.pointerId) clear();
+        };
+        window.addEventListener("pointerup", finish);
+        window.addEventListener("pointercancel", finish);
+        window.addEventListener("blur", clear);
+        expiryTimer = window.setTimeout(clear, 0);
+        clearInteractivePointerRef.current = clear;
         onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
     };
 
@@ -147,9 +175,9 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
         if (disabled) return;
         const target = event.target instanceof Element ? event.target : null;
         if (!target?.closest(interactiveSelector)) return;
-        const pointerTarget = interactivePointerTargetRef.current;
-        interactivePointerTargetRef.current = null;
-        if (pointerTarget && (pointerTarget === target || pointerTarget.contains(target))) return;
+        const gesture = interactivePointerGestureRef.current;
+        clearInteractivePointerRef.current();
+        if (gesture && (gesture.target === target || gesture.target.contains(target))) return;
         onSelect?.(node.id, false);
     };
 

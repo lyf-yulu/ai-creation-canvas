@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
+import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -163,6 +164,51 @@ describe("project-scoped node selection and deletion", () => {
         expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["a"]);
     });
 
+    it("expires interactive focus suppression when an already-focused control's pointer gesture ends", async () => {
+        const projectId = await renderProject([node("a", 80), node("b", 400)]);
+        const first = screen.getByTestId("draggable-node-a");
+        const second = screen.getByTestId("draggable-node-b");
+        const editor = within(second).getByRole("textbox", { name: "提示词内容" });
+        fireEvent.focus(editor);
+        fireEvent.pointerDown(first, { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        expect(first).toHaveAttribute("aria-selected", "true");
+
+        fireEvent.pointerDown(editor, { button: 0, pointerId: 2 });
+        fireEvent.pointerUp(window, { pointerId: 2 });
+        expect(second).toHaveAttribute("aria-selected", "true");
+        fireEvent.pointerDown(first, { button: 0, pointerId: 3 });
+        fireEvent.pointerUp(window, { pointerId: 3 });
+        expect(first).toHaveAttribute("aria-selected", "true");
+
+        fireEvent.focus(editor);
+        expect(first).toHaveAttribute("aria-selected", "false");
+        expect(second).toHaveAttribute("aria-selected", "true");
+        second.focus();
+        fireEvent.keyDown(second, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["a"]);
+    });
+
+    it("clears interactive pointer suppression on pointer cancel and unmount", () => {
+        const onSelect = vi.fn();
+        const removeWindowListener = vi.spyOn(window, "removeEventListener");
+        const view = render(
+            <DraggableCanvasNode node={node("b", 400)} scale={1} onPositionChange={vi.fn()} onSelect={onSelect}>
+                <textarea aria-label="gesture editor" />
+            </DraggableCanvasNode>,
+        );
+        const editor = screen.getByRole("textbox", { name: "gesture editor" });
+        fireEvent.pointerDown(editor, { button: 0, pointerId: 7 });
+        expect(onSelect).toHaveBeenCalledTimes(1);
+        fireEvent.pointerCancel(window, { pointerId: 7 });
+        fireEvent.focus(editor);
+        expect(onSelect).toHaveBeenCalledTimes(2);
+
+        fireEvent.pointerDown(editor, { button: 0, pointerId: 8 });
+        view.unmount();
+        expect(removeWindowListener.mock.calls.map(([name]) => name)).toEqual(expect.arrayContaining(["pointerup", "pointercancel", "blur"]));
+    });
+
     it("deletes a node and its incident connection from the node context menu", async () => {
         const projectId = await renderProject([node("a", 80), node("b", 400)], [
             { id: "a-b", fromNodeId: "a", fromPortId: "prompt", toNodeId: "b", toPortId: "prompt" },
@@ -207,6 +253,48 @@ describe("project-scoped node selection and deletion", () => {
         menuHeight = 180;
         fireEvent(window, new Event("resize"));
         await waitFor(() => expect(menu.style.top).toBe("52px"));
+    });
+
+    it("tracks visual viewport scroll and observed menu height, then cleans up", async () => {
+        class TestViewport extends EventTarget {
+            width = 240;
+            height = 240;
+            offsetLeft = 0;
+            offsetTop = 0;
+        }
+        const viewport = new TestViewport();
+        const addViewportListener = vi.spyOn(viewport, "addEventListener");
+        const removeViewportListener = vi.spyOn(viewport, "removeEventListener");
+        vi.stubGlobal("visualViewport", viewport);
+        let resizeCallback!: ResizeObserverCallback;
+        const observe = vi.fn();
+        const disconnect = vi.fn();
+        vi.stubGlobal("ResizeObserver", class {
+            constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+            observe = observe;
+            disconnect = disconnect;
+        });
+        vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+            const height = this.getAttribute("role") === "menu" ? this.querySelectorAll("[role='menuitem']").length * 60 : 0;
+            return { x: 0, y: 0, left: 0, top: 0, right: 100, bottom: height, width: 100, height, toJSON: () => ({}) } as DOMRect;
+        });
+        const menu = { type: "node" as const, nodeId: "a", x: 230, y: 230 };
+        const view = render(<CanvasNodeContextMenu menu={menu} onClose={vi.fn()} onDelete={vi.fn()} />);
+        const surface = screen.getByRole("menu", { name: "节点操作" });
+        await waitFor(() => expect(surface.style.top).toBe("172px"));
+        expect(observe).toHaveBeenCalledWith(surface);
+        expect(addViewportListener).toHaveBeenCalledWith("scroll", expect.any(Function));
+
+        view.rerender(<CanvasNodeContextMenu menu={menu} onClose={vi.fn()} onDelete={vi.fn()} onDuplicate={vi.fn()} />);
+        act(() => resizeCallback([], {} as ResizeObserver));
+        await waitFor(() => expect(surface.style.top).toBe("112px"));
+        viewport.offsetTop = 20;
+        act(() => viewport.dispatchEvent(new Event("scroll")));
+        await waitFor(() => expect(surface.style.top).toBe("132px"));
+
+        view.unmount();
+        expect(removeViewportListener).toHaveBeenCalledWith("scroll", expect.any(Function));
+        expect(disconnect).toHaveBeenCalledTimes(1);
     });
 
     it.each([
