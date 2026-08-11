@@ -48,9 +48,16 @@ export async function fetchAsset(id: string) {
     return assetFromResponse(response);
 }
 
-export function uploadMediaAsset(file: File, mediaType: GraphMediaType, onProgress: (percent: number) => void = () => undefined): Promise<OwnedMediaAsset> {
+export async function deleteMediaAsset(id: string): Promise<void> {
+    await apiFetch<void>(assetUrl(id), { method: "DELETE" });
+}
+
+export function uploadMediaAsset(file: File, mediaType: GraphMediaType, onProgress: (percent: number) => void = () => undefined, signal?: AbortSignal): Promise<OwnedMediaAsset> {
+    if (signal?.aborted) return Promise.reject(new DOMException("The upload was cancelled.", "AbortError"));
     return new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
+        const abortRequest = () => request.abort();
+        const cleanup = () => signal?.removeEventListener("abort", abortRequest);
         request.open("POST", safeApiPath("/api/v1/assets"));
         request.withCredentials = true;
         request.setRequestHeader("Accept", "application/json");
@@ -62,23 +69,27 @@ export function uploadMediaAsset(file: File, mediaType: GraphMediaType, onProgre
         });
         request.addEventListener("load", () => {
             if (request.status < 200 || request.status >= 300) {
+                cleanup();
                 reject(new Error("媒体上传失败，请重试。"));
                 return;
             }
             try {
                 const asset = ownedAssetFromResponse(JSON.parse(request.responseText) as unknown, mediaType);
                 onProgress(100);
+                cleanup();
                 resolve(asset);
             } catch {
+                cleanup();
                 reject(new Error("媒体上传响应无效，请重试。"));
             }
         });
-        request.addEventListener("error", () => reject(new Error("媒体上传失败，请检查网络后重试。")));
-        request.addEventListener("abort", () => reject(new Error("媒体上传已取消。")));
+        request.addEventListener("error", () => { cleanup(); reject(new Error("媒体上传失败，请检查网络后重试。")); });
+        request.addEventListener("abort", () => { cleanup(); reject(new DOMException("The upload was cancelled.", "AbortError")); });
         const body = new FormData();
         body.append("kind", "reference");
         body.append("media_type", mediaType);
         body.append("file", file, file.name);
+        signal?.addEventListener("abort", abortRequest, { once: true });
         request.send(body);
     });
 }

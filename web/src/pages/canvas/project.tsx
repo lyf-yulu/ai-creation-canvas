@@ -11,12 +11,12 @@ import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { GenerationInspector, type GenerationInspectorValue } from "@/components/canvas/generation-inspector";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
-import { MediaCollectionNode } from "@/components/canvas/media-collection-node";
+import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
 import { NodePort } from "@/components/canvas/node-port";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
-import { GRAPH_SCHEMA_VERSION, type GraphMediaItem, type GraphMediaType } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, type GraphMediaType } from "@/features/graph/contracts";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
@@ -385,15 +385,19 @@ export default function CanvasProjectPage() {
         setSelectedNodeIds(new Set([node.id]));
     }, [id, readOnly, updateProject]);
 
-    const updateMediaCollection = useCallback((nodeId: string, items: GraphMediaItem[]) => {
-        if (readOnly) return;
+    const updateMediaCollection = useCallback((nodeId: string, update: MediaItemsUpdater) => {
+        if (readOnly) return false;
         const current = useCanvasStore.getState().openProject(id);
-        if (!current) return;
+        if (!current) return false;
+        let found = false;
         const nodes = current.nodes.map((node) => {
             if (node.id !== nodeId || node.metadata?.graph?.role !== "media-collection") return node;
-            return { ...node, metadata: { ...node.metadata, graph: { ...node.metadata.graph, items: items.map((item) => ({ ...item })) } } };
+            found = true;
+            const items = update(node.metadata.graph.items).map((item) => ({ ...item }));
+            return { ...node, metadata: { ...node.metadata, graph: { ...node.metadata.graph, items } } };
         });
-        updateProject(id, { nodes });
+        if (found) updateProject(id, { nodes });
+        return found;
     }, [id, readOnly, updateProject]);
 
     const openNodeContextMenu = useCallback((nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
@@ -498,7 +502,7 @@ export default function CanvasProjectPage() {
                                 {promptNode
                                     ? <PromptNodeCard node={node} disabled={readOnly} onTextChange={(text) => updatePromptNode(node.id, text)} />
                                     : mediaCollectionNode
-                                        ? <MediaCollectionNode node={node} readOnly={readOnly} onItemsChange={(items) => updateMediaCollection(node.id, items)} />
+                                        ? <MediaCollectionNode node={node} readOnly={readOnly} onItemsChange={(update) => updateMediaCollection(node.id, update)} />
                                         : <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} />}
                                 {[...ports.targets, ...ports.sources].map((port) => (
                                     <NodePort

@@ -489,6 +489,27 @@ class CanvasStore:
         item = self._row(row)
         return (item, bool(item and item["user_id"] != user_id))
 
+    def delete_owned_local_reference_asset(self, asset_id: str, user_id: str, delete_file: Callable[[dict[str, object]], None]) -> str:
+        """Delete one local reference file inside the same locked DB decision.
+
+        The row deletion is rolled back if the verified file removal fails. Portrait
+        and upstream-backed assets deliberately require a future provider workflow.
+        """
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+            if row is None:
+                return "not_found"
+            item = dict(row)
+            if item["user_id"] != user_id:
+                return "forbidden"
+            if item["kind"] != "reference" or item.get("service_id") is not None or item.get("upstream_asset_id") is not None:
+                return "unsupported"
+            cursor = db.execute("DELETE FROM canvas_assets WHERE asset_id=? AND user_id=?", (asset_id, user_id))
+            if cursor.rowcount != 1:
+                raise RuntimeError("asset delete lost its ownership lock")
+            delete_file(item)
+        return "deleted"
+
     def update_asset_status(self, asset_id: str, status: str) -> dict[str, object]:
         ranks = {"processing": 0, "active": 1, "failed": 1}
         with self._connection(immediate=True) as db:

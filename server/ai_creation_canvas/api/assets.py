@@ -7,8 +7,10 @@ import secrets
 import stat
 from typing import Iterator
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
+from starlette.datastructures import FormData, UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import AssetRef
@@ -34,6 +36,81 @@ _EXTENSIONS = {
     "audio/mpeg": ".mp3",
     "audio/wav": ".wav",
 }
+_INPUT_EXTENSIONS = {
+    "image/png": frozenset({".png"}),
+    "image/jpeg": frozenset({".jpg", ".jpeg"}),
+    "image/webp": frozenset({".webp"}),
+    "video/mp4": frozenset({".mp4"}),
+    "video/webm": frozenset({".webm"}),
+    "audio/mpeg": frozenset({".mp3"}),
+    "audio/wav": frozenset({".wav"}),
+}
+
+
+class MediaUploadInvalid(MultiPartException):
+    """The multipart stream declares media outside the owned upload contract."""
+
+
+class MediaUploadTooLarge(MultiPartException):
+    """The actual file-part bytes exceeded the MIME-specific configured limit."""
+
+
+def _safe_upload_basename(filename: str, mime_type: str) -> str:
+    if not isinstance(filename, str) or any(ord(char) < 32 or ord(char) == 127 for char in filename):
+        raise MediaUploadInvalid("invalid filename")
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    parts = basename.split(".")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise MediaUploadInvalid("invalid filename")
+    extension = f".{parts[1].lower()}"
+    if extension not in _INPUT_EXTENSIONS.get(mime_type, frozenset()):
+        raise MediaUploadInvalid("invalid filename")
+    return basename
+
+
+class LimitedMediaMultiPartParser(MultiPartParser):
+    """Starlette parser with file limits enforced before each spool write."""
+
+    def __init__(self, request: Request) -> None:
+        super().__init__(request.headers, request.stream(), max_files=1, max_fields=2, max_part_size=8 * 1024)
+        self._request = request
+        self.file_mime_type: str | None = None
+        self.file_media_type: str | None = None
+        self.file_name: str | None = None
+        self.file_bytes = 0
+        self.file_limit: int | None = None
+
+    def on_headers_finished(self) -> None:
+        super().on_headers_finished()
+        upload = self._current_part.file
+        if upload is None:
+            return
+        mime_type = upload.content_type.lower() if isinstance(upload.content_type, str) else ""
+        media_type = _MIME_MEDIA.get(mime_type)
+        if media_type is None:
+            raise MediaUploadInvalid("unsupported media type")
+        self.file_name = _safe_upload_basename(upload.filename or "", mime_type)
+        self.file_mime_type = mime_type
+        self.file_media_type = media_type
+        self.file_limit = _upload_limit(self._request, media_type)
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            if self.file_limit is None:
+                raise MediaUploadInvalid("missing file declaration")
+            next_size = self.file_bytes + end - start
+            if next_size > self.file_limit:
+                raise MediaUploadTooLarge("file exceeded configured media limit")
+            self.file_bytes = next_size
+        super().on_part_data(data, start, end)
+
+    async def parse(self) -> FormData:
+        try:
+            return await super().parse()
+        except BaseException:
+            for temporary in self._files_to_close_on_error:
+                temporary.close()
+            raise
 
 
 def _is_valid(mime_type: str, data: bytes, tail: bytes, size: int) -> bool:
@@ -76,22 +153,33 @@ def _upload_limit(request: Request, media_type: str) -> int:
 
 
 @router.post("/assets", status_code=201)
-async def upload_asset(
-    request: Request,
-    file: UploadFile = File(...),
-    kind: str = Form("reference"),
-    media_type: str = Form("image"),
-) -> dict[str, object]:
+async def upload_asset(request: Request) -> dict[str, object]:
     context = context_for(request)
-    if kind not in {"reference", "portrait"} or media_type not in {"image", "video", "audio"} or (kind == "portrait" and media_type != "image"):
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
-    mime = file.content_type.lower() if isinstance(file.content_type, str) else ""
-    if _MIME_MEDIA.get(mime) != media_type:
+    parser = LimitedMediaMultiPartParser(request)
+    try:
+        form = await parser.parse()
+    except MediaUploadTooLarge:
+        raise problem(request, "ASSET_TOO_LARGE", "The upload is too large.", status=413) from None
+    except MediaUploadInvalid:
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415) from None
+    except MultiPartException:
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
+    file = form.get("file")
+    kind = form.get("kind", "reference")
+    media_type = form.get("media_type", "image")
+    if not isinstance(file, UploadFile) or not isinstance(kind, str) or not isinstance(media_type, str):
+        await form.close()
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
+    if kind not in {"reference", "portrait"} or media_type not in {"image", "video", "audio"} or (kind == "portrait" and media_type != "image"):
+        await form.close()
+        raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
+    mime = parser.file_mime_type or ""
+    if parser.file_media_type != media_type:
+        await form.close()
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=415)
     limit = _upload_limit(request, media_type)
-    stated = request.headers.get("content-length")
-    if stated and stated.isdigit() and int(stated) > limit + 1024 * 1024:
-        raise problem(request, "ASSET_TOO_LARGE", "The upload is too large.", status=413)
     store = request.app.state.canvas_store
     asset_id = secrets.token_urlsafe(18)
     relative = f"assets/{secrets.token_hex(20)}{_EXTENSIONS[mime]}"
@@ -145,7 +233,7 @@ async def upload_asset(
         target.unlink(missing_ok=True)
         raise
     finally:
-        await file.close()
+        await form.close()
 
 
 def _owned_asset(asset_id: str, request: Request) -> dict[str, object]:
@@ -156,6 +244,53 @@ def _owned_asset(asset_id: str, request: Request) -> dict[str, object]:
     if item is None:
         raise problem(request, "ASSET_NOT_FOUND", "The asset was not found.", status=404)
     return item
+
+
+def _unlink_safe_asset(item: dict[str, object], request: Request) -> None:
+    store = request.app.state.canvas_store
+    relative = Path(str(item["relative_path"]))
+    if relative.parent != Path("assets") or relative.name in {"", ".", ".."}:
+        raise ValueError("unsafe asset path")
+    root_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_descriptor = os.open(store.assets_dir, root_flags)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(relative.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_descriptor)
+        opened = os.fstat(descriptor)
+        current = os.stat(relative.name, dir_fd=root_descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != current.st_dev
+            or opened.st_ino != current.st_ino
+            or opened.st_size != int(item["size_bytes"])
+        ):
+            raise ValueError("unsafe asset file")
+        os.unlink(relative.name, dir_fd=root_descriptor)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(root_descriptor)
+
+
+@router.delete("/assets/{asset_id}", status_code=204)
+async def delete_asset(asset_id: str, request: Request) -> Response:
+    context = context_for(request)
+    store = request.app.state.canvas_store
+    try:
+        outcome = store.delete_owned_local_reference_asset(
+            asset_id,
+            context.user.user_id,
+            lambda item: _unlink_safe_asset(item, request),
+        )
+    except (OSError, ValueError):
+        raise problem(request, "ASSET_NOT_FOUND", "The asset was not found.", status=404) from None
+    if outcome == "forbidden":
+        raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
+    if outcome == "unsupported":
+        raise problem(request, "ASSET_DELETE_UNSUPPORTED", "This asset cannot be deleted here.", status=409)
+    if outcome == "not_found":
+        raise problem(request, "ASSET_NOT_FOUND", "The asset was not found.", status=404)
+    return Response(status_code=204, headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/assets/{asset_id}")
@@ -240,7 +375,7 @@ async def get_asset_content(asset_id: str, request: Request):
         selected = _byte_range(request.headers.get("range"), size)
     except ValueError:
         os.close(descriptor)
-        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes", "Cache-Control": "private, no-store"})
     start, end = selected or (0, size - 1)
     length = end - start + 1
     headers = {

@@ -56,8 +56,13 @@ PYTHONPATH=server python -m ai_creation_canvas \
   --portal-internal-token "由部署系统注入" \
   --portal-base-url "https://受信-portal.example" \
   --services-config server/config/services.example.json \
+  --max-image-upload-mib 10 \
+  --max-video-upload-mib 64 \
+  --max-audio-upload-mib 32 \
   --static-dir web/dist
 ```
+
+三类上传上限由管理员在本地或生产启动入口中显式设置，单位为 MiB，可选范围均为 1–2048。默认值适合本地和轻量代理测试：图片 10 MiB、视频 64 MiB、音频 32 MiB；上调前应同时核对反向代理、Cloudflare 和服务器请求体限制。
 
 `server/config/services.example.json` 仅是无密钥的声明模板，必须替换 mount 与服务标识并经审批。可使用同样的显式参数追加 `--check-config`，在启动 HTTP 服务前验证服务声明是否能被加载；该检查不会连接模型服务。
 

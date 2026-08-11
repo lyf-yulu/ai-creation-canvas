@@ -3,9 +3,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { setCsrfToken } from "@/api/client";
-import { fetchAsset, uploadMediaAsset } from "@/api/assets";
+import { deleteMediaAsset, fetchAsset, uploadMediaAsset } from "@/api/assets";
 import type { OwnedMediaAsset } from "@/api/contracts";
-import { MediaCollectionNode } from "@/components/canvas/media-collection-node";
+import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
 import { mediaItemLabel, moveMediaItem, safeMediaDisplayName } from "@/features/graph/media-collection";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import type { GraphMediaItem, GraphMediaType } from "@/features/graph/contracts";
@@ -52,20 +52,22 @@ it("derives stable numbered labels from the persisted order", () => {
 
 it("previews, removes, drags, and keyboard-reorders one ordered image collection", () => {
     const changes: GraphMediaItem[][] = [];
-    const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={(next) => changes.push(next)} />);
+    let current = items;
+    const change = (update: MediaItemsUpdater) => { current = update(current); changes.push(current); };
+    const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={change} />);
 
     expect(screen.getByRole("img", { name: "图片1 一.png" })).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
     expect(screen.getByText("图片2")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "上移 图片3" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-a", "asset-c", "asset-b"]);
 
-    rerender(<MediaCollectionNode node={collectionNode("image", changes.at(-1))} onItemsChange={(next) => changes.push(next)} />);
+    rerender(<MediaCollectionNode node={collectionNode("image", current)} onItemsChange={change} />);
     fireEvent.dragStart(screen.getByTestId("media-item-item-a"));
     fireEvent.dragOver(screen.getByTestId("media-item-item-b"));
     fireEvent.drop(screen.getByTestId("media-item-item-b"));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-c", "asset-b", "asset-a"]);
 
-    rerender(<MediaCollectionNode node={collectionNode("image", changes.at(-1))} onItemsChange={(next) => changes.push(next)} />);
+    rerender(<MediaCollectionNode node={collectionNode("image", current)} onItemsChange={change} />);
     fireEvent.click(screen.getByRole("button", { name: "移除 图片2" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-c", "asset-a"]);
 });
@@ -93,7 +95,8 @@ it("uploads multiple files with progress, persists only active safe assets in se
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
     const changes: GraphMediaItem[][] = [];
-    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(next) => changes.push(next)} />);
+    let current: GraphMediaItem[] = [];
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(update) => { current = update(current); changes.push(current); }} />);
 
     fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [
         new File(["a"], "first.png", { type: "image/png" }),
@@ -116,7 +119,8 @@ it("keeps successful uploads, shows a safe error for failed files, and does not 
     });
     vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:preview"), revokeObjectURL: vi.fn() });
     const changes: GraphMediaItem[][] = [];
-    render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={(next) => changes.push(next)} />);
+    let current: GraphMediaItem[] = [];
+    render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={(update) => { current = update(current); changes.push(current); }} />);
 
     fireEvent.change(screen.getByLabelText("添加视频"), { target: { files: [
         new File(["good"], "good.mp4", { type: "video/mp4" }),
@@ -172,6 +176,157 @@ it("uploads through same-origin XHR with CSRF and reports bounded progress", asy
     expect(FakeXhr.instance.headers["X-CSRF-Token"]).toBe("csrf-123");
     expect(progress).toEqual([25, 100]);
     expect(result).toMatchObject({ id: "asset-x", media_type: "image", content_url: "/api/v1/assets/asset-x/content" });
+});
+
+it("aborts same-origin XHR with an AbortError when its signal is cancelled", async () => {
+    class AbortableXhr {
+        static instance: AbortableXhr;
+        listeners: Record<string, () => void> = {};
+        upload = { addEventListener: () => undefined };
+        withCredentials = false;
+        status = 0;
+        responseText = "";
+        constructor() { AbortableXhr.instance = this; }
+        open() { return undefined; }
+        setRequestHeader() { return undefined; }
+        addEventListener(name: string, callback: () => void) { this.listeners[name] = callback; }
+        send() { return undefined; }
+        abort() { this.listeners.abort?.(); }
+    }
+    vi.stubGlobal("XMLHttpRequest", AbortableXhr);
+    const controller = new AbortController();
+    const request = uploadMediaAsset(new File(["data"], "frame.png", { type: "image/png" }), "image", undefined, controller.signal);
+
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it("best-effort deletes an owned asset through same-origin CSRF protection", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    setCsrfToken("csrf-delete");
+
+    await deleteMediaAsset("asset-cleanup");
+
+    const [path, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/v1/assets/asset-cleanup");
+    expect(init.method).toBe("DELETE");
+    expect(init.credentials).toBe("same-origin");
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-delete");
+});
+
+it("serializes overlapping batches and applies upload results to the latest reordered collection", async () => {
+    const calls: string[] = [];
+    const resolvers = new Map<string, (asset: OwnedMediaAsset) => void>();
+    const upload = vi.fn((file: File, mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => {
+        calls.push(file.name);
+        return new Promise<OwnedMediaAsset>((resolve, reject) => {
+            resolvers.set(file.name, resolve);
+            signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+        });
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    let current = items;
+    render(<MediaCollectionNode node={collectionNode("image", items)} upload={upload} onItemsChange={(update) => { current = update(current); }} />);
+    const input = screen.getByLabelText("添加图片");
+
+    fireEvent.change(input, { target: { files: [new File(["a"], "batch-a.png", { type: "image/png" })] } });
+    fireEvent.change(input, { target: { files: [new File(["b"], "batch-b.png", { type: "image/png" })] } });
+    await waitFor(() => expect(calls).toEqual(["batch-a.png"]));
+    fireEvent.click(screen.getByRole("button", { name: "上移 图片3" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除 图片1" }));
+    resolvers.get("batch-a.png")?.({ id: "asset-batch-a", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-batch-a/content" });
+    await waitFor(() => expect(calls).toEqual(["batch-a.png", "batch-b.png"]));
+    resolvers.get("batch-b.png")?.({ id: "asset-batch-b", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-batch-b/content" });
+
+    await waitFor(() => expect(current.map((item) => item.assetId)).toEqual(["asset-c", "asset-b", "asset-batch-a", "asset-batch-b"]));
+    expect(new Set(current.map((item) => item.assetId)).size).toBe(current.length);
+});
+
+it("cancels an in-flight item immediately and aborts all remaining uploads on unmount", async () => {
+    const signals: AbortSignal[] = [];
+    const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise<OwnedMediaAsset>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+    });
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL });
+    let current: GraphMediaItem[] = [];
+    const view = render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={(update) => { current = update(current); }} />);
+    const input = screen.getByLabelText("添加视频");
+    fireEvent.change(input, { target: { files: [new File(["a"], "cancel.mp4", { type: "video/mp4" })] } });
+    await waitFor(() => expect(signals).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "取消上传 cancel.mp4" }));
+    expect(signals[0].aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByText(/cancel\.mp4/)).not.toBeInTheDocument());
+
+    fireEvent.change(input, { target: { files: [new File(["b"], "unmount.mp4", { type: "video/mp4" })] } });
+    await waitFor(() => expect(signals).toHaveLength(2));
+    view.unmount();
+    expect(signals[1].aborted).toBe(true);
+    expect(current).toEqual([]);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:cancel.mp4");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:unmount.mp4");
+});
+
+it("aborts active uploads when the node becomes read-only or its identity changes", async () => {
+    const signals: AbortSignal[] = [];
+    const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise<OwnedMediaAsset>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    const change = vi.fn();
+    const first = collectionNode("image", []);
+    const { rerender } = render(<MediaCollectionNode node={first} upload={upload} onItemsChange={change} />);
+
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["a"], "readonly.png", { type: "image/png" })] } });
+    await waitFor(() => expect(signals).toHaveLength(1));
+    rerender(<MediaCollectionNode node={first} readOnly upload={upload} onItemsChange={change} />);
+    expect(signals[0].aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByText(/readonly\.png/)).not.toBeInTheDocument());
+
+    rerender(<MediaCollectionNode node={first} upload={upload} onItemsChange={change} />);
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["b"], "changed.png", { type: "image/png" })] } });
+    await waitFor(() => expect(signals).toHaveLength(2));
+    rerender(<MediaCollectionNode node={{ ...first, id: "different-node" }} upload={upload} onItemsChange={change} />);
+    expect(signals[1].aborted).toBe(true);
+    await waitFor(() => expect(screen.queryByText(/changed\.png/)).not.toBeInTheDocument());
+    expect(change).not.toHaveBeenCalled();
+});
+
+it("deletes a late successful upload when unmounted or when project writeback declines it", async () => {
+    let finish: ((asset: OwnedMediaAsset) => void) | undefined;
+    const asset: OwnedMediaAsset = { id: "asset-orphan", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-orphan/content" };
+    const upload = vi.fn(() => new Promise<OwnedMediaAsset>((resolve) => { finish = resolve; }));
+    const removeAsset = vi.fn().mockRejectedValue(new Error("network unavailable"));
+    const change = vi.fn();
+    const view = render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} removeAsset={removeAsset} onItemsChange={change} />);
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["a"], "late.png", { type: "image/png" })] } });
+    await waitFor(() => expect(upload).toHaveBeenCalledOnce());
+    view.unmount();
+    finish?.(asset);
+    await waitFor(() => expect(removeAsset).toHaveBeenCalledWith("asset-orphan"));
+    expect(change).not.toHaveBeenCalled();
+
+    removeAsset.mockClear();
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={vi.fn().mockResolvedValue(asset)} removeAsset={removeAsset} onItemsChange={() => false} />);
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: [new File(["b"], "declined.png", { type: "image/png" })] } });
+    await waitFor(() => expect(removeAsset).toHaveBeenCalledWith("asset-orphan"));
+});
+
+it("normalizes and persists inline display-name edits while read-only mode hides the editor", () => {
+    let current = items;
+    const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={(update) => { current = update(current); }} />);
+    const editor = screen.getByLabelText("重命名 图片1");
+    fireEvent.change(editor, { target: { value: "../renamed\u0000.png" } });
+    fireEvent.blur(editor);
+    expect(current[0].displayName).toBe("renamed.png");
+
+    rerender(<MediaCollectionNode node={collectionNode("image", current)} readOnly onItemsChange={() => { throw new Error("must not edit"); }} />);
+    expect(screen.queryByLabelText("重命名 图片1")).not.toBeInTheDocument();
+    expect(screen.getByText("renamed.png")).toBeVisible();
 });
 
 it("normalizes safe server asset metadata for portrait polling without exposing storage fields", async () => {

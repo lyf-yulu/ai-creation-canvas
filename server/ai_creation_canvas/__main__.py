@@ -18,6 +18,25 @@ from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.auth.local import BootstrapResult
 
 
+_MIB = 1024 * 1024
+
+
+def _upload_mib(value: str) -> int:
+    try:
+        amount = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("upload limit must be an integer MiB value") from error
+    if not 1 <= amount <= 2048:
+        raise argparse.ArgumentTypeError("upload limit must be between 1 and 2048 MiB")
+    return amount * _MIB
+
+
+def _add_upload_limit_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--max-image-upload-mib", dest="max_image_upload_bytes", type=_upload_mib, default=10 * _MIB, metavar="MIB", help="maximum owned image upload size (1-2048 MiB; default: 10)")
+    parser.add_argument("--max-video-upload-mib", dest="max_video_upload_bytes", type=_upload_mib, default=64 * _MIB, metavar="MIB", help="maximum owned video upload size (1-2048 MiB; default: 64)")
+    parser.add_argument("--max-audio-upload-mib", dest="max_audio_upload_bytes", type=_upload_mib, default=32 * _MIB, metavar="MIB", help="maximum owned audio upload size (1-2048 MiB; default: 32)")
+
+
 def initialize_local_accounts(data_dir: Path, *, initial_model_ids: tuple[str, ...] = (), output: Callable[[str], None] = print) -> bool:
     store = CanvasStore(data_dir)
     result = LocalAuthService(store, session_ttl_seconds=12 * 60 * 60).bootstrap_accounts(initial_model_ids)
@@ -36,7 +55,7 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB):
     origin = f"http://127.0.0.1:{port}"
     settings = Settings(
         environment="development",
@@ -49,6 +68,9 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_i
         enable_ark_adapter=ark_models_config is not None,
         ark_models_config_path=ark_models_config,
         ark_models_config_root=ark_models_config.parent if ark_models_config is not None else None,
+        max_image_upload_bytes=max_image_upload_bytes,
+        max_video_upload_bytes=max_video_upload_bytes,
+        max_audio_upload_bytes=max_audio_upload_bytes,
     )
     app = create_app(settings, static_dir=static_dir)
     accounts: BootstrapResult | None = None
@@ -94,8 +116,9 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--bootstrap-if-empty", action="store_true")
     parser.add_argument("--open", action="store_true", dest="open_browser")
     parser.add_argument("--ark-models", type=Path, help="administrator-owned Ark model declarations; requires ARK_API_KEY")
+    _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"
@@ -116,6 +139,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--static-dir", type=Path, default=Path(__file__).parents[2] / "web" / "dist")
     parser.add_argument("--allow-loopback-http", action="store_true")
     parser.add_argument("--check-config", action="store_true", help="validate the declaration file without serving HTTP")
+    _add_upload_limit_arguments(parser)
     return parser.parse_args()
 
 
@@ -139,6 +163,9 @@ def main() -> None:
         services_config_path=args.services_config,
         services_config_root=args.services_config.parent,
         portal_allow_loopback_http=args.allow_loopback_http,
+        max_image_upload_bytes=args.max_image_upload_bytes,
+        max_video_upload_bytes=args.max_video_upload_bytes,
+        max_audio_upload_bytes=args.max_audio_upload_bytes,
     )
     app = create_app(settings, static_dir=args.static_dir)
     if args.check_config:
