@@ -8,6 +8,7 @@ import { fetchModels } from "@/api/models";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+import { CanvasCreateContextMenu, type CanvasCreationKind } from "@/components/canvas/canvas-create-context-menu";
 import { RenameNodeDialog } from "@/components/canvas/rename-node-dialog";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
@@ -339,7 +340,7 @@ export default function CanvasProjectPage() {
         if (readOnly) return false;
         const current = useCanvasStore.getState().openProject(id);
         if (!current?.nodes.some((node) => node.id === nodeId)) return false;
-        renameTriggerRef.current = trigger ?? document.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
+        renameTriggerRef.current = trigger ?? [...document.querySelectorAll<HTMLElement>("[data-node-id]")].find((element) => element.dataset.nodeId === nodeId) ?? null;
         setContextMenu(null);
         setRenamingNodeId(nodeId);
         return true;
@@ -507,7 +508,7 @@ export default function CanvasProjectPage() {
     );
 
     const addModelNode = useCallback(
-        (operation: ModelOperation) => {
+        (operation: ModelOperation, position?: Position) => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             const model = models.find((candidate) => candidate.operations.includes(operation));
@@ -517,7 +518,7 @@ export default function CanvasProjectPage() {
                 id: nanoid(),
                 type: CanvasNodeType.Config,
                 title: operation.startsWith("video.") ? "视频生成" : "图片生成",
-                position: { x: 112 + current.nodes.length * 24, y: 136 + current.nodes.length * 24 },
+                position: position ?? { x: 112 + current.nodes.length * 24, y: 136 + current.nodes.length * 24 },
                 width: 340,
                 height: 360,
                 metadata: {
@@ -533,7 +534,7 @@ export default function CanvasProjectPage() {
         },
         [id, models, readOnly, updateProject],
     );
-    const addPromptNode = () => {
+    const addPromptNode = useCallback((position?: Position) => {
         if (readOnly) return;
         const current = useCanvasStore.getState().openProject(id);
         if (!current || current.nodes.some((node) => node.metadata?.graph?.role === "prompt")) return;
@@ -541,7 +542,7 @@ export default function CanvasProjectPage() {
             id: nanoid(),
             type: CanvasNodeType.Text,
             title: "提示词",
-            position: { x: 80 + current.nodes.length * 24, y: 80 + current.nodes.length * 24 },
+            position: position ?? { x: 80 + current.nodes.length * 24, y: 80 + current.nodes.length * 24 },
             width: 300,
             height: 250,
             metadata: {
@@ -552,7 +553,7 @@ export default function CanvasProjectPage() {
         };
         updateProject(id, { nodes: [...current.nodes, node] });
         setSelectedNodeIds(new Set([node.id]));
-    };
+    }, [id, readOnly, updateProject]);
 
     const updatePromptNode = useCallback(
         (nodeId: string, text: string) => {
@@ -577,7 +578,7 @@ export default function CanvasProjectPage() {
     );
 
     const addMediaCollectionNode = useCallback(
-        (mediaType: GraphMediaType) => {
+        (mediaType: GraphMediaType, position?: Position) => {
             if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             if (!current) return;
@@ -587,7 +588,7 @@ export default function CanvasProjectPage() {
                 id: nanoid(),
                 type: nodeType,
                 title,
-                position: { x: 96 + current.nodes.length * 24, y: 112 + current.nodes.length * 24 },
+                position: position ?? { x: 96 + current.nodes.length * 24, y: 112 + current.nodes.length * 24 },
                 width: mediaType === "video" ? 400 : 360,
                 height: mediaType === "audio" ? 220 : 300,
                 metadata: {
@@ -618,6 +619,30 @@ export default function CanvasProjectPage() {
         },
         [id, readOnly, updateProject],
     );
+
+    const openCanvasContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+        if (readOnly) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("[data-node-id],[data-connection-key],[data-canvas-no-zoom]") && target !== event.currentTarget) return;
+        event.preventDefault();
+        event.stopPropagation();
+        contextTriggerRef.current = event.currentTarget;
+        setSelectedNodeIds(new Set());
+        setSelectedConnectionKey(null);
+        clearPendingConnection();
+        setContextMenu({ type: "canvas", x: event.clientX, y: event.clientY, worldPosition: clientToWorld(event.clientX, event.clientY) });
+    }, [clearPendingConnection, clientToWorld, readOnly]);
+
+    const createNodeFromContextMenu = useCallback((kind: CanvasCreationKind) => {
+        if (contextMenu?.type !== "canvas") return;
+        const position = contextMenu.worldPosition;
+        if (kind === "prompt") addPromptNode(position);
+        else if (kind === "image" || kind === "video" || kind === "audio") addMediaCollectionNode(kind, position);
+        else if (kind === "image-model") addModelNode("image.generate", position);
+        else addModelNode("video.generate", position);
+        setContextMenu(null);
+        setCanvasCommandMessage("节点已创建在右键位置。");
+    }, [addMediaCollectionNode, addModelNode, addPromptNode, contextMenu]);
 
     const openNodeContextMenu = useCallback(
         (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
@@ -680,7 +705,7 @@ export default function CanvasProjectPage() {
                             <button
                                 disabled={readOnly || project.nodes.some((node) => node.metadata?.graph?.role === "prompt")}
                                 type="button"
-                                onClick={addPromptNode}
+                                onClick={() => addPromptNode()}
                                 className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 <MessageSquareText className="size-4 text-[#58ed87]" />
@@ -745,6 +770,7 @@ export default function CanvasProjectPage() {
                             setContextMenu(null);
                             clearPendingConnection();
                         }}
+                        onContextMenu={readOnly ? undefined : openCanvasContextMenu}
                     >
                         <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
                             {resolvedConnections.map(({ connection, connectionKey, active: connectionActive, reason }) => {
@@ -865,7 +891,16 @@ export default function CanvasProjectPage() {
                             {inactiveConnectionCount} 条连接暂不可用，已保留在画布中。
                         </p>
                     ) : null}
-                    {contextMenu?.type === "node" ? (
+                    {contextMenu?.type === "canvas" ? (
+                        <CanvasCreateContextMenu
+                            menu={contextMenu}
+                            promptDisabled={project.nodes.some((node) => node.metadata?.graph?.role === "prompt")}
+                            imageModelDisabled={!models.some((model) => model.operations.includes("image.generate"))}
+                            videoModelDisabled={!models.some((model) => model.operations.includes("video.generate"))}
+                            onClose={closeContextMenu}
+                            onCreate={createNodeFromContextMenu}
+                        />
+                    ) : contextMenu?.type === "node" ? (
                         <CanvasNodeContextMenu
                             menu={contextMenu}
                             onClose={closeContextMenu}

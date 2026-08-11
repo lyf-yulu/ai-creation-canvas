@@ -9,6 +9,7 @@ import CanvasProjectPage from "@/pages/canvas/project";
 import { appendResultNode } from "@/features/generation/result-node";
 import { clearCanvasInMemory, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useSessionStore } from "@/stores/portal/use-session-store";
+import { clearStorageScope, setStorageScope } from "@/storage/scope";
 import "@/styles/globals.css";
 
 type Bounds = Pick<DOMRect, "bottom" | "left" | "right" | "top">;
@@ -30,7 +31,8 @@ function chooseFile(input: HTMLInputElement, files: File[]) {
     input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+    await setStorageScope({ environment: "test", userId: "responsive-user" });
     clearCanvasInMemory();
     useCanvasStore.setState({ hydrated: true, projectsLoaded: true });
     useSessionStore.setState({
@@ -51,6 +53,7 @@ afterEach(() => {
     flushSync(() => root.unmount());
     vi.unstubAllGlobals();
     clearCanvasInMemory();
+    clearStorageScope();
     document.body.replaceChildren();
 });
 
@@ -171,7 +174,41 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     chooseFile(document.querySelector('input[aria-label="导入 TXT"]')!, [new File(["来自 TXT 的提示词"], "prompt.txt", { type: "text/plain" })]);
     await expect.element(page.getByLabelText("提示词内容")).toHaveValue("来自 TXT 的提示词");
 
-    await page.getByRole("button", { name: "参考图节点" }).click();
+    const canvasElement = document.querySelector<HTMLElement>('[data-testid="infinite-canvas"]')!;
+    const canvasBounds = canvasElement.getBoundingClientRect();
+    canvasElement.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: canvasBounds.left + 420,
+        clientY: canvasBounds.top + 260,
+    }));
+    await expect.element(page.getByRole("menu", { name: "创建节点" })).toBeVisible();
+    await page.getByRole("menuitem", { name: "参考图片" }).click();
+    const contextCreatedImage = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")!;
+    expect(contextCreatedImage.position.x).toBeCloseTo(420, 0);
+    expect(contextCreatedImage.position.y).toBeCloseTo(260, 0);
+    await expect.element(page.getByTestId(`draggable-node-${contextCreatedImage.id}`)).toHaveAttribute("aria-selected", "true");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "c", ctrlKey: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "v", ctrlKey: true }));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const imageCollectionsAfterPaste = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.filter((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image");
+    expect(imageCollectionsAfterPaste).toHaveLength(2);
+    expect(imageCollectionsAfterPaste[1].position).toEqual({ x: contextCreatedImage.position.x + 32, y: contextCreatedImage.position.y + 32 });
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "F2" }));
+    await expect.element(page.getByRole("dialog", { name: "重命名节点" })).toBeVisible();
+    await page.getByRole("textbox", { name: "节点名称" }).fill("备用参考图");
+    await page.getByRole("button", { name: "保存名称" }).click();
+    expect(useCanvasStore.getState().openProject(projectId)!.nodes.find((node) => node.id === imageCollectionsAfterPaste[1].id)?.title).toBe("备用参考图");
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Delete" }));
+    expect(useCanvasStore.getState().openProject(projectId)!.nodes.some((node) => node.id === imageCollectionsAfterPaste[1].id)).toBe(false);
+
     await page.getByRole("button", { name: "参考视频节点" }).click();
     await page.getByRole("button", { name: "参考音频节点" }).click();
     chooseFile(document.querySelector('input[aria-label="添加图片"]')!, [new File(["one"], "one.png", { type: "image/png" }), new File(["two"], "two.png", { type: "image/png" })]);

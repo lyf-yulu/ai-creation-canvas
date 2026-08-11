@@ -13,7 +13,7 @@ type InfiniteCanvasProps = {
     onCanvasMouseDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
     onCanvasDeselect?: () => void;
     onCanvasDoubleClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
-    onContextMenu?: (event: React.MouseEvent) => void;
+    onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
     onDrop?: (event: React.DragEvent<HTMLDivElement>) => void;
     children: React.ReactNode;
 };
@@ -197,6 +197,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
         <div
             ref={containerRef}
             data-testid="infinite-canvas"
+            tabIndex={-1}
             className="relative h-full w-full cursor-grab select-none overflow-hidden"
             style={{ background: theme.canvas.background }}
             onPointerDown={handlePointerDown}

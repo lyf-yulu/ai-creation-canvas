@@ -62,6 +62,15 @@ export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, 
         menuRef.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus();
     }, [menu]);
 
+    const moveFocus = (direction: 1 | -1) => {
+        const items = [...(menuRef.current?.querySelectorAll<HTMLElement>("[role='menuitem']") ?? [])];
+        if (!items.length) return;
+        const current = items.indexOf(document.activeElement as HTMLElement);
+        items[(current + direction + items.length) % items.length]?.focus();
+    };
+
+    const copyAction = onCopy ?? onDuplicate;
+
     return (
         <div
             ref={menuRef}
@@ -77,13 +86,18 @@ export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, 
                     onClose(true);
                 } else if (event.key === "Tab") {
                     onClose(false);
+                } else if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    moveFocus(1);
+                } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    moveFocus(-1);
                 }
             }}
         >
-            {menu.type === "node" && onCopy ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={onCopy} /> : null}
+            {menu.type === "node" && copyAction ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={copyAction} /> : null}
             {menu.type === "node" && onCut ? <MenuButton icon={<Scissors className="size-4" />} label="剪切" onClick={onCut} /> : null}
             {menu.type === "node" && onRename ? <MenuButton icon={<Pencil className="size-4" />} label="重命名" onClick={onRename} /> : null}
-            {menu.type === "node" && onDuplicate ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={onDuplicate} /> : null}
             <MenuButton icon={<Trash2 className="size-4" />} label="删除" onClick={onDelete} danger />
         </div>
     );

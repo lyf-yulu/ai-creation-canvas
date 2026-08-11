@@ -472,9 +472,79 @@ describe("canvas editing shortcuts", () => {
         expect(screen.getByTestId("draggable-node-a")).toHaveAttribute("aria-selected", "true");
         expect(screen.getByTestId("draggable-node-b")).toHaveAttribute("aria-selected", "true");
         const menu = screen.getByRole("menu", { name: "节点操作" });
-        expect(within(menu).getByRole("menuitem", { name: "复制" })).toBeVisible();
-        expect(within(menu).getByRole("menuitem", { name: "剪切" })).toBeVisible();
+        const copy = within(menu).getByRole("menuitem", { name: "复制" });
+        const cut = within(menu).getByRole("menuitem", { name: "剪切" });
+        expect(copy).toBeVisible();
+        expect(cut).toBeVisible();
         expect(within(menu).getByRole("menuitem", { name: "重命名" })).toBeVisible();
+        await waitFor(() => expect(copy).toHaveFocus());
+        fireEvent.keyDown(copy, { key: "ArrowDown" });
+        expect(cut).toHaveFocus();
+    });
+});
+
+describe("blank canvas creation menu", () => {
+    it("creates the chosen node at the exact world position after pan and zoom", async () => {
+        const projectId = await renderProject();
+        useCanvasStore.getState().updateProject(projectId, { viewport: { x: 100, y: 50, k: 2 } });
+        await waitFor(() => expect(screen.getByTestId("canvas-world")).toHaveStyle({ transform: "translate(100px, 50px) scale(2)" }));
+        const canvas = screen.getByTestId("infinite-canvas");
+        Object.defineProperty(canvas, "getBoundingClientRect", { configurable: true, value: () => ({ left: 20, top: 10, right: 1020, bottom: 710, width: 1000, height: 700, x: 20, y: 10, toJSON: () => ({}) }) });
+
+        expect(fireEvent.contextMenu(canvas, { clientX: 320, clientY: 210 })).toBe(false);
+        const menu = screen.getByRole("menu", { name: "创建节点" });
+        expect(within(menu).getByRole("menuitem", { name: "图片生成" })).toBeDisabled();
+        fireEvent.click(within(menu).getByRole("menuitem", { name: "参考图片" }));
+
+        const created = useCanvasStore.getState().openProject(projectId)?.nodes[0];
+        expect(created?.metadata?.graph).toMatchObject({ role: "media-collection", mediaType: "image" });
+        expect(created?.position).toEqual({ x: 100, y: 75 });
+        expect(screen.getByTestId(`draggable-node-${created?.id}`)).toHaveAttribute("aria-selected", "true");
+    });
+
+    it("offers all built-in node choices, enforces one prompt and supports keyboard creation", async () => {
+        const projectId = await renderProject([node("prompt", 80)]);
+        const canvas = screen.getByTestId("infinite-canvas");
+        fireEvent.contextMenu(canvas, { clientX: 240, clientY: 180 });
+        const menu = screen.getByRole("menu", { name: "创建节点" });
+
+        expect(within(menu).getByRole("menuitem", { name: "提示词" })).toBeDisabled();
+        expect(within(menu).getByRole("menuitem", { name: "参考图片" })).toBeVisible();
+        expect(within(menu).getByRole("menuitem", { name: "参考视频" })).toBeVisible();
+        expect(within(menu).getByRole("menuitem", { name: "参考音频" })).toBeVisible();
+        expect(within(menu).getByRole("menuitem", { name: "图片生成" })).toBeDisabled();
+        expect(within(menu).getByRole("menuitem", { name: "视频生成" })).toBeDisabled();
+
+        const firstEnabled = within(menu).getByRole("menuitem", { name: "参考图片" });
+        await waitFor(() => expect(firstEnabled).toHaveFocus());
+        fireEvent.keyDown(firstEnabled, { key: "ArrowDown" });
+        const video = within(menu).getByRole("menuitem", { name: "参考视频" });
+        expect(video).toHaveFocus();
+        fireEvent.keyDown(video, { key: "Enter" });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.at(-1)?.metadata?.graph).toMatchObject({ role: "media-collection", mediaType: "video" });
+    });
+
+    it("preserves the native blank-canvas context menu in read-only mode", async () => {
+        await renderProject([node("protected", 80)]);
+        useCanvasStore.setState({ loadError: { code: "UNSUPPORTED_GRAPH_SCHEMA", message: "需要升级应用", readOnly: true } });
+        await waitFor(() => expect(screen.getByRole("textbox", { name: "提示词内容" })).toBeDisabled());
+        const canvas = screen.getByTestId("infinite-canvas");
+
+        expect(fireEvent.contextMenu(canvas, { clientX: 200, clientY: 160 })).toBe(true);
+        expect(screen.queryByRole("menu", { name: "创建节点" })).not.toBeInTheDocument();
+    });
+
+    it("closes the creation menu with Escape and restores focus to the canvas", async () => {
+        await renderProject();
+        const canvas = screen.getByTestId("infinite-canvas");
+        fireEvent.contextMenu(canvas, { clientX: 200, clientY: 160 });
+        const item = screen.getByRole("menuitem", { name: "提示词" });
+        await waitFor(() => expect(item).toHaveFocus());
+
+        fireEvent.keyDown(item, { key: "Escape" });
+
+        expect(screen.queryByRole("menu", { name: "创建节点" })).not.toBeInTheDocument();
+        await waitFor(() => expect(canvas).toHaveFocus());
     });
 });
 
