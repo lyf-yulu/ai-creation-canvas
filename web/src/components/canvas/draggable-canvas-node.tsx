@@ -28,7 +28,7 @@ type InteractivePointerGesture = {
     target: Element;
 };
 
-const interactiveSelector = "button,input,textarea,select,a,video,audio,[contenteditable]:not([contenteditable='false'])";
+const interactiveSelector = "button,input,textarea,select,label,a,video,audio,[contenteditable]:not([contenteditable='false']),[data-canvas-no-drag]";
 
 function normalizedScale(scale: number) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
@@ -178,7 +178,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
         const gesture = interactivePointerGestureRef.current;
         clearInteractivePointerRef.current();
         if (gesture && (gesture.target === target || gesture.target.contains(target))) return;
-        onSelect?.(node.id, false);
+        if (!selected) onSelect?.(node.id, false);
     };
 
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {

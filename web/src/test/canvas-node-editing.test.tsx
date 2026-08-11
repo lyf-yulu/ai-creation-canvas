@@ -189,6 +189,46 @@ describe("project-scoped node selection and deletion", () => {
         expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["a"]);
     });
 
+    it("selects prompt labels without dragging or blocking their native controls", async () => {
+        const projectId = await renderProject([node("a", 80), node("b", 400)]);
+        const first = screen.getByTestId("draggable-node-a");
+        const second = screen.getByTestId("draggable-node-b");
+        fireEvent.pointerDown(first, { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        const promptLabel = within(second).getByText("提示词内容", { selector: "label" });
+        const fileLabel = within(second).getByText("导入 TXT", { selector: "label" });
+        const promptEditor = within(second).getByRole("textbox", { name: "提示词内容" });
+        const fileInput = within(second).getByLabelText("导入 TXT");
+
+        const promptAllowed = fireEvent.pointerDown(promptLabel, { button: 0, pointerId: 2, clientX: 410, clientY: 100 });
+        fireEvent.pointerMove(window, { pointerId: 2, clientX: 510, clientY: 200 });
+        fireEvent.pointerUp(window, { pointerId: 2 });
+        expect(promptAllowed).toBe(true);
+        expect(first).toHaveAttribute("aria-selected", "false");
+        expect(second).toHaveAttribute("aria-selected", "true");
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.id === "b")?.position).toEqual({ x: 400, y: 80 });
+        expect((promptLabel as HTMLLabelElement).control).toBe(promptEditor);
+
+        const fileActivated = vi.fn();
+        fileInput.addEventListener("click", fileActivated);
+        const fileAllowed = fireEvent.pointerDown(fileLabel, { button: 0, pointerId: 3 });
+        fireEvent.pointerMove(window, { pointerId: 3, clientX: 600, clientY: 240 });
+        fireEvent.pointerUp(window, { pointerId: 3 });
+        fileLabel.click();
+        expect(fileAllowed).toBe(true);
+        expect((fileLabel as HTMLLabelElement).control).toBe(fileInput);
+        expect(fileActivated).toHaveBeenCalledTimes(1);
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.id === "b")?.position).toEqual({ x: 400, y: 80 });
+
+        fireEvent.pointerDown(first, { button: 0, pointerId: 4 });
+        fireEvent.pointerUp(window, { pointerId: 4 });
+        fireEvent.pointerDown(promptLabel, { button: 0, pointerId: 5, metaKey: true });
+        fireEvent.pointerUp(window, { pointerId: 5 });
+        fireEvent.focus(promptEditor);
+        expect(first).toHaveAttribute("aria-selected", "true");
+        expect(second).toHaveAttribute("aria-selected", "true");
+    });
+
     it("clears interactive pointer suppression on pointer cancel and unmount", () => {
         const onSelect = vi.fn();
         const removeWindowListener = vi.spyOn(window, "removeEventListener");
@@ -472,6 +512,10 @@ it("keeps prompt editing and deletion disabled when graph loading entered read-o
     fireEvent.pointerDown(screen.getByTestId("draggable-node-protected"), { button: 0, pointerId: 1 });
     fireEvent.keyDown(screen.getByTestId("draggable-node-protected"), { key: "Enter" });
     const editor = screen.getByRole("textbox", { name: "提示词内容" });
+    const promptLabel = within(screen.getByTestId("draggable-node-protected")).getByText("提示词内容", { selector: "label" });
+    expect(fireEvent.pointerDown(promptLabel, { button: 0, pointerId: 2 })).toBe(true);
+    fireEvent.pointerMove(window, { pointerId: 2, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 2 });
 
     expect(editor).toBeDisabled();
     fireEvent.change(editor, { target: { value: "must not persist" } });
