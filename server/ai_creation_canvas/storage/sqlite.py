@@ -743,7 +743,7 @@ class CanvasStore:
                 return old
             now = _now()
             if result_ids is not None:
-                if not 1 <= len(result_ids) <= 8 or len(set(result_ids)) != len(result_ids) or any(not _RESULT_ID.fullmatch(item) for item in result_ids):
+                if not 1 <= len(result_ids) <= 15 or len(set(result_ids)) != len(result_ids) or any(not _RESULT_ID.fullmatch(item) for item in result_ids):
                     raise ValueError("result IDs are invalid")
                 result_id = result_ids[0]
                 result_ids_json = json.dumps(result_ids, separators=(",", ":"))

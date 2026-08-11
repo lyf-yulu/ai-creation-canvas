@@ -140,7 +140,7 @@ class ArkGenerationAdapter:
             response = await self._api("POST", "/api/v3/images/generations", json=payload)
             data = self._json(response)
             items = data.get("data")
-            if not isinstance(items, list) or not 1 <= len(items) <= 8 or any(not isinstance(item, Mapping) or not isinstance(item.get("url"), str) for item in items):
+            if not isinstance(items, list) or not 1 <= len(items) <= 15 or any(not isinstance(item, Mapping) or not isinstance(item.get("url"), str) for item in items):
                 raise InvalidUpstreamResult("Ark image response is invalid")
             upstream_id = "ark_image_" + hashlib.sha256(f"{request.model_id}\n{request.idempotency_key}".encode()).hexdigest()
             await self._record_pending(upstream_id, tuple(str(item["url"]) for item in items), "image")
@@ -281,7 +281,7 @@ class ArkGenerationAdapter:
             raise ValueError("Ark parameters are invalid") from error
 
     async def _record_pending(self, job_id: str, urls: tuple[str, ...], kind: str) -> None:
-        if not 1 <= len(urls) <= 8:
+        if not 1 <= len(urls) <= (15 if kind == "image" else 1):
             raise InvalidUpstreamResult("Ark result count is invalid")
         for url in urls:
             self._safe_result_url(url)
@@ -296,7 +296,8 @@ class ArkGenerationAdapter:
         urls = item.get("urls")
         if urls is None and isinstance(item.get("url"), str):
             urls = [item["url"]]
-        return {"urls": urls, "kind": item["kind"]} if isinstance(urls, list) and 1 <= len(urls) <= 8 and all(isinstance(url, str) for url in urls) else None
+        maximum = 15 if item.get("kind") == "image" else 1
+        return {"urls": urls, "kind": item["kind"]} if isinstance(urls, list) and 1 <= len(urls) <= maximum and all(isinstance(url, str) for url in urls) else None
 
     async def _clear_pending(self, job_id: str) -> None:
         async with self._lock:

@@ -127,6 +127,21 @@ def test_multi_result_contract_is_indexed_owned_and_legacy_first_result_compatib
     assert client.get("/api/v1/results/multi-job/1", headers=headers("u-b")).status_code == 404
 
 
+def test_group_image_results_support_the_official_fifteen_item_index(tmp_path):
+    adapter = FakeGeneration(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="group-job", service_id="images", operation="image.generate", idempotency_key="group-key", request_hash="a" * 64)
+    store.mark_submitted("group-job", "upstream-1", "queued")
+    store._update("group-job", status="succeeded", result_ids=tuple(f"opaque-{index}" for index in range(15)))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    state = client.get("/api/v1/jobs/group-job", headers=headers()).json()
+    assert len(state["results"]) == 15
+    assert state["results"][14]["asset_id"] == "job-result.group-job.14"
+    assert client.get("/api/v1/results/group-job/14", headers=headers()).content == b"abcdef"
+
+
 def test_owned_result_output_can_be_reused_as_a_typed_input_without_exposing_provider_id(tmp_path):
     class ResultInputGeneration(FakeGeneration):
         service_id = "videos"

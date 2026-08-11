@@ -282,8 +282,8 @@ class JobState:
         values = tuple(self.results)
         if self.result is not None and not isinstance(self.result, AssetRef):
             raise ValueError("result must be an AssetRef")
-        if any(not isinstance(item, AssetRef) for item in values) or len(values) > 8:
-            raise ValueError("results must contain at most eight AssetRef values")
+        if any(not isinstance(item, AssetRef) for item in values) or len(values) > 15:
+            raise ValueError("results must contain at most fifteen AssetRef values")
         if self.result is not None and not values:
             values = (self.result,)
         elif self.result is None and values:

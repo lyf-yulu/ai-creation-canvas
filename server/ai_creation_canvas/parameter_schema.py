@@ -11,6 +11,8 @@ _SIZE = re.compile(r"([1-9][0-9]{1,4})x([1-9][0-9]{1,4})\Z")
 
 
 def validate_parameter_schema(schema: Mapping[str, object]) -> None:
+    if not schema:
+        return
     properties = schema.get("properties")
     if schema.get("type") != "object" or schema.get("additionalProperties", False) is not False or not isinstance(properties, Mapping):
         raise ValueError("parameter schema is invalid")
@@ -39,6 +41,10 @@ def validate_parameter_schema(schema: Mapping[str, object]) -> None:
 
 def validate_parameter_values(schema: Mapping[str, object], values: Mapping[str, object]) -> dict[str, object]:
     validate_parameter_schema(schema)
+    if not schema:
+        if values:
+            raise ValueError("parameters are invalid")
+        return {}
     properties = schema["properties"]
     assert isinstance(properties, Mapping)
     if set(values) - set(properties):

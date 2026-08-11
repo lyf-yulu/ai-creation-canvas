@@ -61,6 +61,38 @@ def test_example_seedream_4_declares_only_confirmed_single_image_request_paramet
     assert "n" not in image.parameter_mappings.values()
 
 
+def test_example_catalog_declares_current_official_ark_model_matrix() -> None:
+    config = Path(__file__).parents[2] / "server" / "config" / "ark-models.example.json"
+    declarations = {item.model_id: item for item in load_ark_model_declarations(config, config.parent)}
+    assert set(declarations) == {
+        "doubao-seedream-5-0-pro-260628",
+        "doubao-seedream-5-0-260128",
+        "doubao-seedream-4-5-251128",
+        "doubao-seedream-4-0-250828",
+        "doubao-seedance-2-5-260628",
+        "doubao-seedance-2-0-260128",
+        "doubao-seedance-2-0-fast-260128",
+        "doubao-seedance-2-0-mini-260615",
+    }
+
+    pro = declarations["doubao-seedream-5-0-pro-260628"]
+    lite = declarations["doubao-seedream-5-0-260128"]
+    old = declarations["doubao-seedream-4-0-250828"]
+    assert {port.port_id: port.max_items for port in pro.input_ports}["reference_images"] == 10
+    assert {port.port_id: port.max_items for port in lite.input_ports}["reference_images"] == 14
+    assert "sequence_mode" not in pro.parameter_schema["properties"]
+    assert lite.parameter_mappings["max_images"] == "sequential_image_generation_options.max_images"
+    assert old.parameter_schema["properties"]["prompt_optimization"]["enum"] == ["standard", "fast"]
+
+    seedance_25 = declarations["doubao-seedance-2-5-260628"]
+    seedance_20 = declarations["doubao-seedance-2-0-260128"]
+    seedance_fast = declarations["doubao-seedance-2-0-fast-260128"]
+    assert seedance_25.parameter_schema["properties"]["duration"]["maximum"] == 30
+    assert seedance_25.parameter_schema["properties"]["resolution"]["enum"] == ["480p", "720p"]
+    assert seedance_20.parameter_schema["properties"]["resolution"]["enum"] == ["480p", "720p", "1080p", "4k"]
+    assert seedance_fast.parameter_schema["properties"]["resolution"]["enum"] == ["480p", "720p"]
+
+
 def test_loader_rejects_malformed_ark_size_constraints(tmp_path) -> None:
     base = {
         "model_id": "image-endpoint", "service_id": "ark-image", "display_name": "图片模型",

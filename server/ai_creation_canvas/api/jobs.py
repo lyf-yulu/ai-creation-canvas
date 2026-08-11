@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 64
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
-_RESULT_ASSET = re.compile(r"job-result\.([A-Za-z0-9_-]{1,128})\.([0-7])\Z")
+_RESULT_ASSET = re.compile(r"job-result\.([A-Za-z0-9_-]{1,128})\.([0-9]{1,2})\Z")
 
 
 def _result_ids(item: Mapping[str, object]) -> tuple[str, ...]:
@@ -30,7 +30,7 @@ def _result_ids(item: Mapping[str, object]) -> tuple[str, ...]:
             values = json.loads(encoded)
         except ValueError:
             values = None
-        if isinstance(values, list) and 1 <= len(values) <= 8 and all(isinstance(value, str) and _RESULT_ID.fullmatch(value) for value in values):
+        if isinstance(values, list) and 1 <= len(values) <= 15 and all(isinstance(value, str) and _RESULT_ID.fullmatch(value) for value in values):
             return tuple(values)
     legacy = item.get("result_id")
     return (legacy,) if isinstance(legacy, str) and _RESULT_ID.fullmatch(legacy) else ()
@@ -126,7 +126,7 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
             state = await adapter.poll(context, str(item["upstream_job_id"]))
         result_ids = tuple(result.asset_id for result in state.results)
         if state.status.value == "succeeded":
-            if not result_ids or len(result_ids) > 8 or any(not _RESULT_ID.fullmatch(result_id) for result_id in result_ids):
+            if not result_ids or len(result_ids) > 15 or any(not _RESULT_ID.fullmatch(result_id) for result_id in result_ids):
                 raise InvalidUpstreamResult("provider success result is invalid")
         return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_ids=result_ids or None)
     except (InvalidUpstreamResult, ValueError):

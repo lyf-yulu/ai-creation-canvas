@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ModelSpec } from "@/api/contracts";
 import { ModelCallNode } from "@/components/canvas/model-call-node";
-import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, type GraphModelMetadata } from "@/features/graph/contracts";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 const models: ModelSpec[] = [
@@ -86,5 +86,30 @@ describe("ModelCallNode", () => {
         expect(screen.getByLabelText("quality")).toBeDisabled();
         expect(screen.getByLabelText("count")).toBeDisabled();
         expect(screen.getByRole("button", { name: "运行模型" })).toBeDisabled();
+    });
+
+    it("shows friendly labels and only reveals dependent group controls when active", () => {
+        const onChange = vi.fn();
+        const groupModel: ModelSpec = {
+            ...models[0],
+            parameter_schema: {
+                type: "object",
+                properties: {
+                    sequence_mode: { type: "string", enum: ["disabled", "auto"], default: "disabled", title: "组图模式", description: "自动生成一组相关图片" },
+                    max_images: { type: "integer", minimum: 1, maximum: 15, default: 4, title: "最多生成张数", "x-ui-visible-when": { name: "sequence_mode", equals: "auto" } },
+                },
+                additionalProperties: false,
+            },
+            parameter_mappings: { sequence_mode: "sequential_image_generation", max_images: "sequential_image_generation_options.max_images" },
+        };
+        const groupGraph = { ...node.metadata.graph!, parameters: { sequence_mode: "disabled", max_images: 4 } } as GraphModelMetadata;
+        const groupNode: CanvasNodeData = { ...node, metadata: { ...node.metadata, graph: groupGraph } };
+        const { rerender } = render(<ModelCallNode node={groupNode} models={[groupModel]} onChange={onChange} onRun={vi.fn()} />);
+        expect(screen.getByText("自动生成一组相关图片")).toBeInTheDocument();
+        expect(screen.queryByLabelText("最多生成张数")).not.toBeInTheDocument();
+
+        const activeNode: CanvasNodeData = { ...groupNode, metadata: { ...groupNode.metadata, graph: { ...groupGraph, parameters: { sequence_mode: "auto", max_images: 4 } } } };
+        rerender(<ModelCallNode node={activeNode} models={[groupModel]} onChange={onChange} onRun={vi.fn()} />);
+        expect(screen.getByLabelText("最多生成张数")).toHaveValue(4);
     });
 });

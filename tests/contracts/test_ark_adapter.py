@@ -129,6 +129,30 @@ def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) 
     asyncio.run(scenario())
 
 
+def test_ark_seedream_accepts_the_official_fifteen_image_group_bound(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    urls = [f"https://download.volces.com/{index}.png" for index in range(15)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": url} for url in urls]})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=request.url.path.encode())
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path,
+            models=(ArkModelDeclaration("image-endpoint", "ark-image", "Seedream", ("image.generate",), {"type": "object", "properties": {}, "additionalProperties": False}),),
+            transport=httpx.MockTransport(handler),
+        )
+        submitted = await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "series", "fifteen"))
+        state = await adapter.poll(context(), submitted.upstream_job_id)
+        assert len(state.results) == 15
+        assert len({item.asset_id for item in state.results}) == 15
+
+    asyncio.run(scenario())
+
+
 def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
 

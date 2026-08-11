@@ -27,6 +27,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     if (graph?.role !== "model") return null;
     const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
     const controls = useMemo(() => parameterControls(selected?.parameter_schema ?? {}), [selected]);
+    const visibleControls = controls.filter((control) => !control.visibleWhen || Object.is(graph.parameters[control.visibleWhen.name], control.visibleWhen.equals));
     const busy = node.metadata?.status === "loading" || node.metadata?.jobStatus === "queued" || node.metadata?.jobStatus === "running";
     const editDisabled = disabled || busy;
     if (!selected) return <article className="rounded-xl border border-[#6b4b2c] bg-[#171008] p-3 text-xs text-[#ffbd73]">暂无可用模型。</article>;
@@ -63,12 +64,12 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         </span>
                     ))}
                 </div>
-                {controls.map((control) => (
+                {visibleControls.map((control) => (
                     <label key={control.name} className="block text-[11px] text-[#9fb5a5]">
-                        {control.name}
+                        {control.title ?? control.name}
                         {control.type === "enum" ? (
                             <select
-                                aria-label={control.name}
+                                aria-label={control.title ?? control.name}
                                 disabled={editDisabled}
                                 value={String(control.enum?.findIndex((value) => Object.is(value, graph.parameters[control.name])) ?? 0)}
                                 onChange={(event) => updateParameter(control.name, control.enum?.[Number(event.target.value)] ?? null)}
@@ -82,7 +83,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                             </select>
                         ) : control.type === "boolean" ? (
                             <input
-                                aria-label={control.name}
+                                aria-label={control.title ?? control.name}
                                 disabled={editDisabled}
                                 type="checkbox"
                                 checked={graph.parameters[control.name] === true}
@@ -91,13 +92,18 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                             />
                         ) : (
                             <input
-                                aria-label={control.name}
+                                aria-label={control.title ?? control.name}
                                 disabled={editDisabled}
+                                type={control.type === "number" || control.type === "integer" ? "number" : "text"}
+                                min={control.minimum}
+                                max={control.maximum}
+                                step={control.type === "integer" ? 1 : undefined}
                                 value={String(graph.parameters[control.name] ?? "")}
-                                onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? Number(event.target.value) : event.target.value)}
+                                onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? event.target.value === "" ? null : Number(event.target.value) : event.target.value)}
                                 className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
                             />
                         )}
+                        {control.description ? <span className="mt-1 block text-[10px] leading-4 text-[#789080]">{control.description}</span> : null}
                     </label>
                 ))}
                 <button
