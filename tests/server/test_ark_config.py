@@ -53,6 +53,14 @@ def test_example_ark_video_declaration_uses_a_supported_five_second_default() ->
     assert {port.port_id: port.max_items for port in video.input_ports}["reference_audio"] == 3
 
 
+def test_example_seedream_4_declares_only_confirmed_single_image_request_parameters() -> None:
+    config = Path(__file__).parents[2] / "server" / "config" / "ark-models.example.json"
+    image = {item.service_id: item for item in load_ark_model_declarations(config, config.parent)}["ark-image"]
+    assert "count" not in image.parameter_schema["properties"]
+    assert "count" not in image.parameter_mappings
+    assert "n" not in image.parameter_mappings.values()
+
+
 def test_ark_declarations_are_not_limited_to_the_local_identity_mode(tmp_path) -> None:
     config = tmp_path / "ark-models.json"
     config.write_text(json.dumps({"models": [{

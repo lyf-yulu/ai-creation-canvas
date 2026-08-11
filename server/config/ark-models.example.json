@@ -9,7 +9,7 @@
         {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
         {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 14}
       ],
-      "parameter_mappings": {"size": "size", "count": "n"},
+      "parameter_mappings": {"size": "size"},
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -17,12 +17,6 @@
             "type": "string",
             "enum": ["1024x1024"],
             "default": "1024x1024"
-          },
-          "count": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 4,
-            "default": 1
           }
         },
         "additionalProperties": false

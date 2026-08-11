@@ -32,6 +32,7 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
             "size": "1024x1024",
             "response_format": "url",
         }
+        assert "n" not in json.loads(request.content)
         return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
 
     async def scenario() -> None:
