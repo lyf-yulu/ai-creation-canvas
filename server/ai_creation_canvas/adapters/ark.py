@@ -8,6 +8,7 @@ result URLs stay in the server's protected data directory.
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
@@ -15,7 +16,8 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Mapping
+import sqlite3
+from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -85,12 +87,12 @@ class ArkGenerationAdapter:
 
     requires_portal_cookie = False
 
-    def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None) -> None:
         if not isinstance(api_key, str) or len(api_key.strip()) < 8:
             raise ValueError("Ark API key is unavailable")
         if not models or len({model.model_id for model in models}) != len(models) or len({model.service_id for model in models}) != 1:
             raise ValueError("Ark model declarations are invalid")
-        self._api_key, self._models, self._transport = api_key, {model.model_id: model for model in models}, transport
+        self._api_key, self._models, self._transport, self._asset_loader = api_key, {model.model_id: model for model in models}, transport, asset_loader
         self.service_id = models[0].service_id
         root = Path(data_dir) / "ark-results"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -113,12 +115,15 @@ class ArkGenerationAdapter:
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
         del context
         declaration = self._models.get(request.model_id)
-        if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids or request.inputs:
+        if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids:
             raise ValueError("Ark request is invalid")
         params = self._validated_params(declaration, request.params)
         provider_params = {declaration.parameter_mappings[key]: value for key, value in params.items()}
-        if request.operation is ModelOperation.IMAGE_GENERATE:
-            payload = {"model": request.model_id, "prompt": request.prompt, **provider_params, "response_format": "url"}
+        if request.operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
+            references = self._image_references(declaration, request)
+            if request.operation is ModelOperation.IMAGE_EDIT and not references or request.operation is ModelOperation.IMAGE_GENERATE and references:
+                raise ValueError("Ark image operation does not match its inputs")
+            payload = {"model": request.model_id, "prompt": request.prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
             response = await self._api("POST", "/api/v3/images/generations", json=payload)
             data = self._json(response)
             items = data.get("data")
@@ -136,6 +141,21 @@ class ArkGenerationAdapter:
                 raise InvalidUpstreamResult("Ark video response is invalid")
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         raise ValueError("Ark operation is unsupported")
+
+    def _image_references(self, declaration: ArkModelDeclaration, request: JobRequest) -> list[str]:
+        unknown = set(request.inputs) - {"reference_images"}
+        values = tuple(request.inputs.get("reference_images", ()))
+        port = next((candidate for candidate in declaration.input_ports if candidate.port_id == "reference_images"), None)
+        if unknown or values and (port is None or len(values) > port.max_items) or values and self._asset_loader is None:
+            raise ValueError("Ark image inputs are invalid")
+        encoded: list[str] = []
+        for asset_id in values:
+            assert self._asset_loader is not None
+            body, mime = self._asset_loader(asset_id)
+            if mime not in _IMAGE_MIME or not body or len(body) > 20 * 1024 * 1024:
+                raise ValueError("Ark image input is invalid")
+            encoded.append(f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}")
+        return encoded
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
@@ -342,7 +362,7 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
                 raise ValueError
             if not model_id.isascii() or not service_id.isascii() or not model_id.replace("-", "").replace("_", "").isalnum() or not service_id.replace("-", "").replace("_", "").isalnum():
                 raise ValueError
-            if not isinstance(operations, list) or not operations or any(value not in {"image.generate", "video.generate"} for value in operations):
+            if not isinstance(operations, list) or not operations or any(value not in {"image.generate", "image.edit", "video.generate"} for value in operations):
                 raise ValueError
             if not isinstance(parameter_schema, Mapping) or parameter_schema.get("type") != "object" or parameter_schema.get("additionalProperties") is not False or not isinstance(parameter_schema.get("properties"), Mapping):
                 raise ValueError
@@ -372,6 +392,28 @@ def build_ark_adapters(*, api_key: str, data_dir: Path | str, config_path: Path 
     for declaration in load_ark_model_declarations(config_path, config_root):
         grouped.setdefault(declaration.service_id, []).append(declaration)
     return tuple(
-        ArkGenerationAdapter(api_key=api_key, data_dir=data_dir, models=tuple(items), transport=transport)
+        ArkGenerationAdapter(api_key=api_key, data_dir=data_dir, models=tuple(items), transport=transport, asset_loader=_local_asset_loader(Path(data_dir)))
         for _, items in sorted(grouped.items())
     )
+
+
+def _local_asset_loader(data_dir: Path) -> Callable[[str], tuple[bytes, str]]:
+    database = data_dir / "canvas.sqlite3"
+    assets_root = data_dir / "assets"
+
+    def load(asset_id: str) -> tuple[bytes, str]:
+        if not isinstance(asset_id, str) or not asset_id or len(asset_id) > 128:
+            raise ValueError("Ark asset ID is invalid")
+        with sqlite3.connect(database) as connection:
+            row = connection.execute("SELECT relative_path,mime_type,status,kind,size_bytes FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+        if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
+            raise ValueError("Ark asset is invalid")
+        relative = Path(str(row[0]))
+        if len(relative.parts) != 2 or relative.parts[0] != "assets" or relative.name in {"", ".", ".."}:
+            raise ValueError("Ark asset path is invalid")
+        candidate = assets_root / relative.name
+        if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size != row[4]:
+            raise ValueError("Ark asset file is invalid")
+        return candidate.read_bytes(), str(row[1])
+
+    return load

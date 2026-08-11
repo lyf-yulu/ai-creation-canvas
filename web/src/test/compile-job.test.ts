@@ -6,7 +6,7 @@ import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 const model: ModelSpec = {
-    model_id: "seedream", service_id: "ark-image", display_name: "Seedream", operations: ["image.edit"], input_media: ["text", "image"],
+    model_id: "seedream", service_id: "ark-image", display_name: "Seedream", operations: ["image.generate", "image.edit"], input_media: ["text", "image"],
     input_ports: [
         { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
         { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 2 },
@@ -21,7 +21,7 @@ const nodes: CanvasNodeData[] = [
         { id: "b", assetId: "asset-b", displayName: "b.png", mimeType: "image/png", bytes: 2 },
         { id: "a", assetId: "asset-a", displayName: "a.png", mimeType: "image/png", bytes: 1 },
     ] } } },
-    { id: "model", type: CanvasNodeType.Config, title: "Model", position: { x: 0, y: 0 }, width: 1, height: 1, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "seedream", operation: "image.edit", inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }], outputPortId: "result", parameters: { label: "", count: 0, enabled: false } } } },
+    { id: "model", type: CanvasNodeType.Config, title: "Model", position: { x: 0, y: 0 }, width: 1, height: 1, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "seedream", operation: "image.generate", inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }], outputPortId: "result", parameters: { label: "", count: 0, enabled: false } } } },
 ];
 const connections: CanvasConnection[] = [
     { id: "p", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },

@@ -138,3 +138,32 @@ def test_ark_adapter_forwards_every_declared_image_parameter_exactly(tmp_path: P
         "model": "image-endpoint", "prompt": "prompt", "quality": "", "n": 0,
         "strength": 0.0, "watermark": False, "response_format": "url",
     }]
+
+
+def test_seedream_edit_preserves_ordered_reference_images_in_official_payload(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    payloads: list[dict[str, object]] = []
+    assets = {"second": (b"second", "image/png"), "first": (b"first", "image/jpeg")}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "seedream", "ark-image", "Seedream", ("image.generate", "image.edit"),
+            {"type": "object", "properties": {"size": {"type": "string"}}, "additionalProperties": False},
+            (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 14)),
+            {"size": "size"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: assets[asset_id])
+        await adapter.submit(context(), JobRequest("image.edit", "seedream", "combine", "ordered", {"size": "2K"}, inputs={"reference_images": ("second", "first")}))
+
+    asyncio.run(scenario())
+    assert payloads == [{
+        "model": "seedream", "prompt": "combine", "image": [
+            "data:image/png;base64,c2Vjb25k", "data:image/jpeg;base64,Zmlyc3Q=",
+        ], "size": "2K", "response_format": "url",
+    }]

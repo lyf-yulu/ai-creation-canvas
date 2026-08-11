@@ -4,7 +4,7 @@
       "model_id": "doubao-seedream-4-0-250828",
       "service_id": "ark-image",
       "display_name": "图片生成（Ark）",
-      "operations": ["image.generate"],
+      "operations": ["image.generate", "image.edit"],
       "input_ports": [
         {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
         {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 14}
