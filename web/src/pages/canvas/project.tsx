@@ -26,7 +26,7 @@ import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphC
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { copyCanvasSelection, pasteCanvasSelection } from "@/features/graph/canvas-clipboard";
-import { appendResultNode } from "@/features/generation/result-node";
+import { appendJobResults } from "@/features/generation/result-node";
 import { generationErrorMessage } from "@/features/generation/error-message";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -205,8 +205,9 @@ export default function CanvasProjectPage() {
             const current = useCanvasStore.getState().openProject(targetProjectId);
             if (!current) return;
             const source = current.nodes.find((node) => node.id === ref?.sourceNodeId);
-            const nodes = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "success" as const, idempotencyKey: undefined } } : node));
-            updateProject(targetProjectId, { nodes: appendResultNode(nodes, job, source) });
+            const completedSource = source ? { ...source, metadata: { ...source.metadata, status: "success" as const, jobStatus: "succeeded" as const, idempotencyKey: undefined } } : undefined;
+            const nodes = current.nodes.map((node) => (node.id === completedSource?.id ? completedSource : node));
+            updateProject(targetProjectId, appendJobResults(nodes, current.connections, job, completedSource, nanoid));
         },
         [updateProject],
     );

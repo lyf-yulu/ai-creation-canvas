@@ -5,7 +5,8 @@ import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from
 import { useGenerationJob } from "@/features/generation/use-generation-job";
 import { clearGenerationTasks, useGenerationTasks } from "@/features/generation/use-generation-job";
 import { TaskTray } from "@/components/layout/task-tray";
-import { appendResultNode, createResultNode } from "@/features/generation/result-node";
+import { appendJobResults, appendResultNode, createResultNode } from "@/features/generation/result-node";
+import type { CanvasNodeData } from "@/types/canvas";
 
 afterEach(() => {
     cleanup();
@@ -239,4 +240,33 @@ it("creates one reusable result node per protected multi-result item", () => {
         expect.objectContaining({ role: "result", assetId: "job-result.multi-job.1", mediaType: "image" }),
     ]);
     expect(appendResultNode(nodes, job, source)).toHaveLength(2);
+});
+
+it("creates idempotent model-to-result connections and repairs a missing edge", () => {
+    const source: CanvasNodeData = {
+        id: "model-a",
+        type: "config",
+        title: "图片生成",
+        position: { x: 20, y: 30 },
+        width: 340,
+        height: 300,
+        metadata: {
+            status: "success",
+            graph: { schemaVersion: 1, role: "model", modelId: "image", operation: "image.generate", inputPorts: [{ id: "prompt", accepts: "prompt" }], outputPortId: "result", parameters: {} },
+        },
+    };
+    const job = { id: "job-linked", operation: "image.generate" as const, status: "succeeded" as const, result_url: "/api/v1/results/job-linked/0" };
+    let sequence = 0;
+    const createId = () => `created-${++sequence}`;
+
+    const first = appendJobResults([source], [], job, source, createId);
+    const result = first.nodes.find((node) => node.metadata?.sourceJobId === job.id)!;
+    expect(first.connections).toEqual([{ id: "created-2", fromNodeId: source.id, fromPortId: "result", toNodeId: result.id, toPortId: "result" }]);
+
+    const repeated = appendJobResults(first.nodes, first.connections, job, source, createId);
+    expect(repeated).toEqual(first);
+
+    const repaired = appendJobResults(first.nodes, [], job, source, createId);
+    expect(repaired.nodes).toEqual(first.nodes);
+    expect(repaired.connections).toEqual([{ id: "created-3", fromNodeId: source.id, fromPortId: "result", toNodeId: result.id, toPortId: "result" }]);
 });

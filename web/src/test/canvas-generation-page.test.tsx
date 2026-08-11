@@ -40,6 +40,15 @@ it("submits canvas image generation through jobs and writes its result node", as
     expect(JSON.parse(request.body).params.steps).toBe(6);
     expect((fetch as any).mock.calls.filter(([path]: [string]) => path === "/api/v1/jobs")).toHaveLength(1);
     const source = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.type === CanvasNodeType.Config);
+    const result = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.sourceJobId === "job-1");
+    expect(source?.metadata).toMatchObject({ status: "success", jobStatus: "succeeded", jobId: "job-1" });
+    expect(screen.getByText("任务状态：已完成")).toBeVisible();
+    expect(useCanvasStore.getState().openProject(projectId)?.connections).toContainEqual(expect.objectContaining({
+        fromNodeId: source?.id,
+        fromPortId: "result",
+        toNodeId: result?.id,
+        toPortId: "result",
+    }));
     expect(source?.metadata?.graph).toMatchObject({
         schemaVersion: 1,
         role: "model",
