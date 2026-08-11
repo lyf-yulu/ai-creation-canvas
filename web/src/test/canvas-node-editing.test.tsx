@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -133,6 +133,36 @@ describe("project-scoped node selection and deletion", () => {
         contentEditor.remove();
     });
 
+    it("selects an interactive control's node without dragging or deleting the prior selection", async () => {
+        const projectId = await renderProject([node("a", 80), node("b", 400)]);
+        const first = screen.getByTestId("draggable-node-a");
+        const second = screen.getByTestId("draggable-node-b");
+        fireEvent.pointerDown(first, { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        const editor = within(second).getByRole("textbox", { name: "提示词内容" });
+
+        fireEvent.focus(editor);
+        expect(first).toHaveAttribute("aria-selected", "false");
+        expect(second).toHaveAttribute("aria-selected", "true");
+        fireEvent.pointerDown(first, { button: 0, pointerId: 3 });
+        fireEvent.pointerUp(window, { pointerId: 3 });
+
+        fireEvent.pointerDown(editor, { button: 0, pointerId: 2, clientX: 410, clientY: 100 });
+        fireEvent.focus(editor);
+        fireEvent.pointerMove(window, { pointerId: 2, clientX: 510, clientY: 200 });
+        fireEvent.pointerUp(window, { pointerId: 2 });
+
+        expect(first).toHaveAttribute("aria-selected", "false");
+        expect(second).toHaveAttribute("aria-selected", "true");
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.id === "b")?.position).toEqual({ x: 400, y: 80 });
+        fireEvent.keyDown(editor, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["a", "b"]);
+
+        second.focus();
+        fireEvent.keyDown(second, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["a"]);
+    });
+
     it("deletes a node and its incident connection from the node context menu", async () => {
         const projectId = await renderProject([node("a", 80), node("b", 400)], [
             { id: "a-b", fromNodeId: "a", fromPortId: "prompt", toNodeId: "b", toPortId: "prompt" },
@@ -155,6 +185,28 @@ describe("project-scoped node selection and deletion", () => {
         const menu = screen.getByRole("menuitem", { name: "删除" }).parentElement!;
         expect(Number.parseFloat(menu.style.left)).toBeLessThanOrEqual(176);
         expect(Number.parseFloat(menu.style.top)).toBeLessThanOrEqual(384);
+    });
+
+    it("remeasures menu height on resize instead of relying on a fixed item count", async () => {
+        await renderProject([node("a", 80)]);
+        vi.stubGlobal("innerWidth", 240);
+        vi.stubGlobal("innerHeight", 240);
+        let menuHeight = 80;
+        const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+        vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+            if (this.getAttribute("role") === "menu") {
+                return { x: 0, y: 0, left: 0, top: 0, right: 100, bottom: menuHeight, width: 100, height: menuHeight, toJSON: () => ({}) } as DOMRect;
+            }
+            return nativeRect.call(this);
+        });
+
+        fireEvent.contextMenu(screen.getByTestId("draggable-node-a"), { clientX: 230, clientY: 230 });
+        const menu = screen.getByRole("menu", { name: "节点操作" });
+        await waitFor(() => expect(menu.style.top).toBe("152px"));
+
+        menuHeight = 180;
+        fireEvent(window, new Event("resize"));
+        await waitFor(() => expect(menu.style.top).toBe("52px"));
     });
 
     it.each([
@@ -291,6 +343,33 @@ describe("prompt node editing", () => {
         view.unmount();
 
         await act(async () => pending.reject(new Error("after unmount")));
+
+        expect(onTextChange).not.toHaveBeenCalled();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("invalidates a successful read when disabled and never revives it after re-enable", async () => {
+        const pending = deferred<ArrayBuffer>();
+        const onTextChange = vi.fn();
+        const view = render(<PromptNodeCard node={node("a", 80)} onTextChange={onTextChange} />);
+        fireEvent.change(screen.getByLabelText("导入 TXT"), { target: { files: [fileWithRead("a.txt", pending.promise)] } });
+
+        view.rerender(<PromptNodeCard disabled node={node("a", 80)} onTextChange={onTextChange} />);
+        view.rerender(<PromptNodeCard node={node("a", 80)} onTextChange={onTextChange} />);
+        await act(async () => pending.resolve(utf8("must stay stale")));
+
+        expect(onTextChange).not.toHaveBeenCalled();
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("does not publish a read error after the prompt becomes disabled", async () => {
+        const pending = deferred<ArrayBuffer>();
+        const onTextChange = vi.fn();
+        const view = render(<PromptNodeCard node={node("a", 80)} onTextChange={onTextChange} />);
+        fireEvent.change(screen.getByLabelText("导入 TXT"), { target: { files: [fileWithRead("a.txt", pending.promise)] } });
+
+        view.rerender(<PromptNodeCard disabled node={node("a", 80)} onTextChange={onTextChange} />);
+        await act(async () => pending.reject(new Error("disabled read")));
 
         expect(onTextChange).not.toHaveBeenCalled();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();

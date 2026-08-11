@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Plus, Trash2 } from "lucide-react";
 
@@ -9,8 +9,38 @@ import type { ContextMenuState } from "@/types/canvas";
 export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: (restoreFocus?: boolean) => void; onDuplicate?: () => void; onDelete: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const menuRef = useRef<HTMLDivElement>(null);
-    const left = Math.max(8, Math.min(menu.x, window.innerWidth - 184));
-    const top = Math.max(8, Math.min(menu.y, window.innerHeight - 96));
+    const [position, setPosition] = useState({ left: menu.x, top: menu.y });
+
+    const updatePosition = useCallback(() => {
+        const rect = menuRef.current?.getBoundingClientRect();
+        const menuWidth = rect?.width || 176;
+        const menuHeight = rect?.height || 88;
+        const viewport = window.visualViewport;
+        const viewportLeft = viewport?.offsetLeft ?? 0;
+        const viewportTop = viewport?.offsetTop ?? 0;
+        const viewportWidth = viewport?.width ?? window.innerWidth;
+        const viewportHeight = viewport?.height ?? window.innerHeight;
+        const minLeft = viewportLeft + 8;
+        const minTop = viewportTop + 8;
+        const maxLeft = Math.max(minLeft, viewportLeft + viewportWidth - menuWidth - 8);
+        const maxTop = Math.max(minTop, viewportTop + viewportHeight - menuHeight - 8);
+        const next = {
+            left: Math.max(minLeft, Math.min(menu.x, maxLeft)),
+            top: Math.max(minTop, Math.min(menu.y, maxTop)),
+        };
+        setPosition((current) => current.left === next.left && current.top === next.top ? current : next);
+    }, [menu.x, menu.y]);
+
+    useLayoutEffect(() => {
+        updatePosition();
+        const viewport = window.visualViewport;
+        window.addEventListener("resize", updatePosition);
+        viewport?.addEventListener("resize", updatePosition);
+        return () => {
+            window.removeEventListener("resize", updatePosition);
+            viewport?.removeEventListener("resize", updatePosition);
+        };
+    }, [updatePosition]);
 
     useEffect(() => {
         const close = (event: PointerEvent) => {
@@ -33,7 +63,7 @@ export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: 
             role="menu"
             aria-label={menu.type === "node" ? "节点操作" : "连接操作"}
             className="fixed z-[80] min-w-44 overflow-hidden rounded-xl border py-1 shadow-2xl"
-            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            style={{ left: position.left, top: position.top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
             onKeyDown={(event) => {
                 if (event.key === "Escape") {

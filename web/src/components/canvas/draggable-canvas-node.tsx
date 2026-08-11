@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import type { CanvasNodeData, Position } from "@/types/canvas";
 
@@ -44,6 +44,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
     const onPositionChangeRef = useRef(onPositionChange);
     const nodeIdRef = useRef(node.id);
     const finishDragRef = useRef<((pointerId?: number, flush?: boolean) => void) | null>(null);
+    const interactivePointerTargetRef = useRef<Element | null>(null);
     onPositionChangeRef.current = onPositionChange;
     nodeIdRef.current = node.id;
 
@@ -133,6 +134,25 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
         finishDragRef.current = finishDrag;
     };
 
+    const handlePointerDownCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (disabled || event.button !== 0) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const interactiveTarget = target?.closest(interactiveSelector) ?? null;
+        if (!interactiveTarget) return;
+        interactivePointerTargetRef.current = interactiveTarget;
+        onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
+    };
+
+    const handleFocusCapture = (event: ReactFocusEvent<HTMLDivElement>) => {
+        if (disabled) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest(interactiveSelector)) return;
+        const pointerTarget = interactivePointerTargetRef.current;
+        interactivePointerTargetRef.current = null;
+        if (pointerTarget && (pointerTarget === target || pointerTarget.contains(target))) return;
+        onSelect?.(node.id, false);
+    };
+
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
         if (disabled || event.target !== event.currentTarget) return;
         if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
@@ -159,7 +179,9 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
             tabIndex={0}
             className={`absolute rounded-xl outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7bff9f] ${selected ? "outline outline-2 outline-[#58ed87] shadow-[0_0_0_4px_rgba(88,237,135,0.18)]" : ""}`}
             style={{ left: node.position.x, top: node.position.y, width: node.width, minHeight: node.height }}
+            onPointerDownCapture={handlePointerDownCapture}
             onPointerDown={handlePointerDown}
+            onFocusCapture={handleFocusCapture}
             onKeyDown={handleKeyDown}
             onContextMenu={(event) => {
                 const target = event.target instanceof Element ? event.target : null;

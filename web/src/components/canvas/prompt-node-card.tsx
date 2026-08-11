@@ -18,12 +18,18 @@ export function PromptNodeCard({ node, disabled = false, onTextChange }: PromptN
     const mountedRef = useRef(true);
     const importSequenceRef = useRef(0);
     const nodeIdRef = useRef(node.id);
+    const disabledRef = useRef(disabled);
 
     useLayoutEffect(() => {
         if (nodeIdRef.current === node.id) return;
         nodeIdRef.current = node.id;
         importSequenceRef.current += 1;
     }, [node.id]);
+
+    useLayoutEffect(() => {
+        if (disabled && !disabledRef.current) importSequenceRef.current += 1;
+        disabledRef.current = disabled;
+    }, [disabled]);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -40,7 +46,7 @@ export function PromptNodeCard({ node, disabled = false, onTextChange }: PromptN
         const sequence = importSequenceRef.current + 1;
         importSequenceRef.current = sequence;
         const sourceNodeId = node.id;
-        const isLatest = () => mountedRef.current && importSequenceRef.current === sequence && nodeIdRef.current === sourceNodeId;
+        const isLatest = () => mountedRef.current && !disabledRef.current && importSequenceRef.current === sequence && nodeIdRef.current === sourceNodeId;
         setError(null);
         if (!file.name.toLocaleLowerCase().endsWith(".txt") || (file.type && file.type !== "text/plain")) {
             if (isLatest()) setError("请选择纯文本 TXT 文件。");
