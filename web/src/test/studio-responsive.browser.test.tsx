@@ -162,6 +162,18 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
         ),
     );
 
+    const panSurface = document.querySelector<HTMLElement>('[data-testid="infinite-canvas"]')!;
+    panSurface.setPointerCapture = () => undefined;
+    panSurface.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 91, clientX: 80, clientY: 90 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 91, clientX: 150, clientY: 160 }));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 91, clientX: 310, clientY: 330 }));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 91, clientX: 310, clientY: 330 }));
+    expect(useCanvasStore.getState().openProject(projectId)!.viewport).toMatchObject({ x: 230, y: 240 });
+    useCanvasStore.getState().updateProject(projectId, { viewport: { x: 0, y: 0, k: 1 } });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
     await page.getByRole("button", { name: "提示词节点" }).click();
     expect(
         useCanvasStore
@@ -169,10 +181,17 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
             .openProject(projectId)!
             .nodes.filter((node) => node.metadata?.graph?.role === "prompt"),
     ).toHaveLength(1);
-    await expect.element(page.getByRole("button", { name: "提示词节点" })).toBeDisabled();
+    await expect.element(page.getByRole("button", { name: "提示词节点" })).not.toBeDisabled();
     await page.getByLabelText("提示词内容").fill("手动提示词");
     chooseFile(document.querySelector('input[aria-label="导入 TXT"]')!, [new File(["来自 TXT 的提示词"], "prompt.txt", { type: "text/plain" })]);
     await expect.element(page.getByLabelText("提示词内容")).toHaveValue("来自 TXT 的提示词");
+    await page.getByRole("button", { name: "提示词节点" }).click();
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .nodes.filter((node) => node.metadata?.graph?.role === "prompt"),
+    ).toHaveLength(2);
 
     const canvasElement = document.querySelector<HTMLElement>('[data-testid="infinite-canvas"]')!;
     const canvasBounds = canvasElement.getBoundingClientRect();
@@ -221,9 +240,11 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     {
         const current = useCanvasStore.getState().openProject(projectId)!;
         const positions = { prompt: { x: 0, y: 0 }, image: { x: 340, y: 0 }, video: { x: 0, y: 340 }, audio: { x: 430, y: 340 } } as const;
+        let promptIndex = 0;
         useCanvasStore.getState().updateProject(projectId, {
             nodes: current.nodes.map((node) => {
                 const graph = node.metadata?.graph;
+                if (graph?.role === "prompt") return { ...node, position: { x: 0, y: promptIndex++ * 680 } };
                 const key = graph?.role === "prompt" ? "prompt" : graph?.role === "media-collection" ? graph.mediaType : null;
                 return key ? { ...node, position: positions[key] } : node;
             }),
@@ -281,7 +302,7 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
         });
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
-    await page.getByRole("button", { name: `${promptNode.title}：提示词输出端口` }).click();
+    await page.getByTestId(`draggable-node-${promptNode.id}`).getByRole("button", { name: `${promptNode.title}：提示词输出端口` }).click();
     await page.getByRole("button", { name: `${modelNodes[0].title}：提示词输入端口` }).click();
     await page.getByRole("button", { name: `${imageCollection.title}：媒体输出端口` }).click();
     await page.getByRole("button", { name: `${modelNodes[0].title}：参考图片输入端口` }).click();

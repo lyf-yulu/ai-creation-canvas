@@ -95,6 +95,51 @@ it("submits canvas video generation through jobs and writes a video result node"
     expect(JSON.parse(request.body).model_id).toBe("video-model");
 });
 
+it("runs two connected model nodes independently on the same canvas", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const projectId = useCanvasStore.getState().createProject("Concurrent canvas");
+    const models = [
+        { model_id: "image-model", service_id: "images", display_name: "图片模型", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} },
+        { model_id: "video-model", service_id: "videos", display_name: "视频模型", operations: ["video.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} },
+    ];
+    const jobByOperation = { "image.generate": "image-job", "video.generate": "video-job" } as const;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/v1/models") return new Response(JSON.stringify({ models }), { headers: { "content-type": "application/json" } });
+        if (path === "/api/v1/jobs" && init?.method === "POST") {
+            const operation = JSON.parse(String(init.body)).operation as keyof typeof jobByOperation;
+            return new Response(JSON.stringify({ id: jobByOperation[operation], operation, status: "queued" }), { status: 201, headers: { "content-type": "application/json" } });
+        }
+        const jobId = path.split("/").at(-1)!;
+        const operation = jobId === "image-job" ? "image.generate" : "video.generate";
+        return new Response(JSON.stringify({ id: jobId, operation, status: "succeeded", result_url: `/api/v1/results/${jobId}/0` }), { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    const prompts = screen.getAllByLabelText("提示词内容");
+    fireEvent.change(prompts[0], { target: { value: "still image" } });
+    fireEvent.change(prompts[1], { target: { value: "moving image" } });
+    fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
+    fireEvent.click(screen.getByRole("button", { name: "视频生成" }));
+    act(() => {
+        const project = useCanvasStore.getState().openProject(projectId)!;
+        const promptNodes = project.nodes.filter((node) => node.metadata?.graph?.role === "prompt");
+        const modelNodes = project.nodes.filter((node) => node.metadata?.graph?.role === "model");
+        useCanvasStore.getState().updateProject(projectId, { connections: modelNodes.map((model, index) => ({ id: `edge-${index}`, fromNodeId: promptNodes[index].id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" })) });
+    });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "运行模型" })).toHaveLength(2));
+    screen.getAllByRole("button", { name: "运行模型" }).forEach((button) => fireEvent.click(button));
+
+    await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)!.nodes.filter((node) => node.metadata?.sourceJobId)).toHaveLength(2));
+    const project = useCanvasStore.getState().openProject(projectId)!;
+    expect(project.nodes.filter((node) => node.metadata?.graph?.role === "model").map((node) => node.metadata?.jobStatus)).toEqual(["succeeded", "succeeded"]);
+    expect(project.connections.filter((edge) => edge.toPortId === "result")).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([path, init]) => path === "/api/v1/jobs" && init?.method === "POST")).toHaveLength(2);
+});
+
 it("writes a safe failure node for a rate-limited generation", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("Canvas");
