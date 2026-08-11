@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import JobRequest, JobStatus, ModelSpec
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.parameter_schema import validate_parameter_values
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -94,22 +95,7 @@ def _validate_parameters(model: ModelSpec, values: dict[str, Any]) -> None:
         raise ValueError("parameters are not declared")
     if model.parameter_mappings and set(values) - set(model.parameter_mappings):
         raise ValueError("parameters are not mapped")
-    for key, value in values.items():
-        rule = properties[key]
-        if not isinstance(rule, Mapping):
-            raise ValueError("parameter rule is invalid")
-        kind = rule.get("type")
-        valid = (
-            kind == "string" and isinstance(value, str)
-            or kind == "boolean" and isinstance(value, bool)
-            or kind == "integer" and isinstance(value, int) and not isinstance(value, bool)
-            or kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool)
-        )
-        if not valid or "enum" in rule and value not in rule["enum"]:
-            raise ValueError("parameter value is invalid")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            if "minimum" in rule and value < rule["minimum"] or "maximum" in rule and value > rule["maximum"]:
-                raise ValueError("parameter value is outside limits")
+    validate_parameter_values(schema, values)
 
 
 def _response(item: dict[str, object], request: Request) -> dict[str, object]:

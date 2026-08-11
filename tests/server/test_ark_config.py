@@ -61,6 +61,24 @@ def test_example_seedream_4_declares_only_confirmed_single_image_request_paramet
     assert "n" not in image.parameter_mappings.values()
 
 
+def test_loader_rejects_malformed_ark_size_constraints(tmp_path) -> None:
+    base = {
+        "model_id": "image-endpoint", "service_id": "ark-image", "display_name": "图片模型",
+        "operations": ["image.generate"],
+        "input_ports": [{"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}],
+        "parameter_mappings": {"size": "size"},
+        "parameter_schema": {
+            "type": "object",
+            "properties": {"size": {"type": "string", "x-ark-size": {"presets": ["2K"], "min_pixels": 10, "max_pixels": 1, "min_ratio": 1, "max_ratio": 16}}},
+            "additionalProperties": False,
+        },
+    }
+    config = tmp_path / "ark-models.json"
+    config.write_text(json.dumps({"models": [base]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="Ark model configuration is invalid"):
+        load_ark_model_declarations(config, tmp_path)
+
+
 def test_ark_declarations_are_not_limited_to_the_local_identity_mode(tmp_path) -> None:
     config = tmp_path / "ark-models.json"
     config.write_text(json.dumps({"models": [{

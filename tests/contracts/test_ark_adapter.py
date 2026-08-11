@@ -234,6 +234,86 @@ def test_ark_declaration_rejects_unmapped_or_unknown_provider_parameters() -> No
         ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), duplicate_schema, parameter_mappings={"width": "size", "height": "size"})
 
 
+def test_ark_adapter_compiles_declared_nested_image_parameters(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "size": {
+                "type": "string",
+                "default": "2K",
+                "x-ark-size": {"presets": ["1K", "1.5K", "2K"], "min_pixels": 921600, "max_pixels": 4624220, "min_ratio": 0.0625, "max_ratio": 16},
+            },
+            "prompt_optimization": {"type": "string", "enum": ["standard", "fast"], "default": "standard"},
+            "sequence_mode": {"type": "string", "enum": ["disabled", "auto"], "default": "disabled"},
+            "max_images": {"type": "integer", "minimum": 1, "maximum": 15, "default": 4},
+            "output_format": {"type": "string", "enum": ["png", "jpeg"], "default": "png"},
+            "watermark": {"type": "boolean", "default": False},
+        },
+        "additionalProperties": False,
+    }
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "seedream", "ark-image", "Seedream", ("image.generate",), schema,
+            parameter_mappings={
+                "size": "size",
+                "prompt_optimization": "optimize_prompt_options.mode",
+                "sequence_mode": "sequential_image_generation",
+                "max_images": "sequential_image_generation_options.max_images",
+                "output_format": "output_format",
+                "watermark": "watermark",
+            },
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler))
+        await adapter.submit(context(), JobRequest("image.generate", "seedream", "four seasons", "nested", {
+            "size": "2048x1024", "prompt_optimization": "fast", "sequence_mode": "auto", "max_images": 4,
+            "output_format": "png", "watermark": False,
+        }))
+        with pytest.raises(ValueError, match="parameters"):
+            await adapter.submit(context(), JobRequest("image.generate", "seedream", "bad size", "bad-small", {
+                "size": "512x512", "prompt_optimization": "fast", "sequence_mode": "disabled", "max_images": 4,
+                "output_format": "png", "watermark": False,
+            }))
+        with pytest.raises(ValueError, match="parameters"):
+            await adapter.submit(context(), JobRequest("image.generate", "seedream", "bad ratio", "bad-ratio", {
+                "size": "4000x100", "prompt_optimization": "fast", "sequence_mode": "disabled", "max_images": 4,
+                "output_format": "png", "watermark": False,
+            }))
+
+    asyncio.run(scenario())
+    assert payloads == [{
+        "model": "seedream",
+        "prompt": "four seasons",
+        "size": "2048x1024",
+        "optimize_prompt_options": {"mode": "fast"},
+        "sequential_image_generation": "auto",
+        "sequential_image_generation_options": {"max_images": 4},
+        "output_format": "png",
+        "watermark": False,
+        "response_format": "url",
+    }]
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["__proto__.polluted", "constructor.prototype", "optimize_prompt_options.mode.extra", "unknown.mode"],
+)
+def test_ark_declaration_rejects_unsafe_nested_parameter_targets(target: str) -> None:
+    from ai_creation_canvas.adapters.ark import ArkModelDeclaration
+
+    schema = {"type": "object", "properties": {"mode": {"type": "string"}}, "additionalProperties": False}
+    with pytest.raises(ValueError, match="mapping"):
+        ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), schema, parameter_mappings={"mode": target})
+
+
 def test_ark_adapter_forwards_every_declared_image_parameter_exactly(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
 

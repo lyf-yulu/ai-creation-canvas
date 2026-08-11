@@ -24,6 +24,7 @@ import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.parameter_schema import validate_parameter_schema, validate_parameter_values
 
 
 _ARK_URL = "https://ark.cn-beijing.volces.com"
@@ -36,7 +37,11 @@ _VIDEO_MIME = frozenset({"video/mp4", "video/webm"})
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
 _MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_CONFIG_BYTES = 64 * 1024
-_ARK_PARAMETER_TARGETS = frozenset({"size", "quality", "n", "strength", "watermark", "ratio", "duration", "resolution", "generate_audio", "camera_fixed", "output_format", "return_last_frame"})
+_ARK_PARAMETER_TARGETS = frozenset({
+    "size", "quality", "n", "strength", "watermark", "output_format",
+    "optimize_prompt_options.mode", "sequential_image_generation", "sequential_image_generation_options.max_images",
+    "ratio", "duration", "resolution", "generate_audio", "camera_fixed", "return_last_frame",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,7 @@ class ArkModelDeclaration:
         schema_properties = self.parameter_schema.get("properties") if isinstance(self.parameter_schema, Mapping) else None
         if not isinstance(schema_properties, Mapping) or set(self.parameter_mappings) != set(schema_properties):
             raise ValueError("every Ark parameter requires an explicit provider mapping")
+        validate_parameter_schema(self.parameter_schema)
         if any(target not in _ARK_PARAMETER_TARGETS for target in self.parameter_mappings.values()):
             raise ValueError("Ark parameter mapping is unsupported")
         if len(set(self.parameter_mappings.values())) != len(self.parameter_mappings):
@@ -125,7 +131,7 @@ class ArkGenerationAdapter:
         if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids:
             raise ValueError("Ark request is invalid")
         params = self._validated_params(declaration, request.params)
-        provider_params = {declaration.parameter_mappings[key]: value for key, value in params.items()}
+        provider_params = _compile_provider_parameters(declaration.parameter_mappings, params)
         if request.operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
             references = self._image_references(declaration, request)
             if request.operation is ModelOperation.IMAGE_EDIT and not references or request.operation is ModelOperation.IMAGE_GENERATE and references:
@@ -269,26 +275,10 @@ class ArkGenerationAdapter:
 
     @staticmethod
     def _validated_params(declaration: ArkModelDeclaration, values: Mapping[str, object]) -> dict[str, object]:
-        schema = declaration.parameter_schema
-        properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
-        if not isinstance(properties, Mapping) or set(values) - set(properties):
-            raise ValueError("Ark parameters are invalid")
-        result: dict[str, object] = {}
-        for key, value in values.items():
-            rule = properties[key]
-            if not isinstance(rule, Mapping) or not isinstance(rule.get("type"), str):
-                raise ValueError("Ark parameters are invalid")
-            kind = rule["type"]
-            if kind == "string" and not isinstance(value, str):
-                raise ValueError("Ark parameters are invalid")
-            if kind == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
-                raise ValueError("Ark parameters are invalid")
-            if "enum" in rule and value not in rule["enum"]:
-                raise ValueError("Ark parameters are invalid")
-            if isinstance(value, int) and (("minimum" in rule and value < rule["minimum"]) or ("maximum" in rule and value > rule["maximum"])):
-                raise ValueError("Ark parameters are invalid")
-            result[key] = value
-        return result
+        try:
+            return validate_parameter_values(declaration.parameter_schema, values)
+        except ValueError as error:
+            raise ValueError("Ark parameters are invalid") from error
 
     async def _record_pending(self, job_id: str, urls: tuple[str, ...], kind: str) -> None:
         if not 1 <= len(urls) <= 8:
@@ -414,6 +404,7 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
                 raise ValueError
             if len(parameter_schema["properties"]) > 16 or any(not isinstance(key, str) or not isinstance(rule, Mapping) or rule.get("type") not in {"string", "integer", "number", "boolean"} for key, rule in parameter_schema["properties"].items()):
                 raise ValueError
+            validate_parameter_schema(parameter_schema)
             raw_ports = item["input_ports"]
             raw_mappings = item["parameter_mappings"]
             if not isinstance(raw_ports, list) or not 1 <= len(raw_ports) <= 16 or not isinstance(raw_mappings, Mapping):
@@ -431,6 +422,21 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
         return tuple(declarations)
     except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as error:
         raise ValueError("Ark model configuration is invalid") from error
+
+
+def _compile_provider_parameters(mappings: Mapping[str, str], values: Mapping[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for name, value in values.items():
+        path = mappings[name].split(".")
+        if len(path) == 1:
+            result[path[0]] = value
+            continue
+        parent, child = path
+        container = result.setdefault(parent, {})
+        if not isinstance(container, dict) or child in container:
+            raise ValueError("Ark parameter mapping is invalid")
+        container[child] = value
+    return result
 
 
 def build_ark_adapters(*, api_key: str, data_dir: Path | str, config_path: Path | str, config_root: Path | str, transport: httpx.AsyncBaseTransport | None = None) -> tuple[ArkGenerationAdapter, ...]:
