@@ -21,6 +21,7 @@ def project_body(project_id: str, title: str) -> dict[str, object]:
         "backgroundMode": "lines",
         "showImageInfo": False,
         "viewport": {"x": 0, "y": 0, "k": 1},
+        "graphSchemaVersion": 1,
     }
 
 
@@ -109,3 +110,65 @@ def test_project_create_is_idempotent_only_for_the_same_document(tmp_path) -> No
     assert repeated.status_code == 200
     assert repeated.json() == first.json()
     assert different.status_code == 409
+
+
+def test_project_graph_schema_version_is_strict_and_round_trips_on_create_and_update(tmp_path) -> None:
+    app, user, headers, owner, user_b, headers_b, owner_b = project_clients(tmp_path)
+    del app, owner, user_b, headers_b, owner_b
+
+    created = user.post("/api/v1/projects", headers=headers, json=project_body("graph-contract", "Graph v1"))
+    assert created.status_code == 201
+    assert created.json()["project"]["graphSchemaVersion"] == 1
+    listed = user.get("/api/v1/projects").json()["projects"]
+    assert listed[0]["project"]["graphSchemaVersion"] == 1
+    assert user.get("/api/v1/projects/graph-contract").json()["project"]["graphSchemaVersion"] == 1
+
+    updated = user.put(
+        "/api/v1/projects/graph-contract",
+        headers=headers,
+        json={**project_body("graph-contract", "Graph v1 updated"), "expected_version": created.json()["version"]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["project"]["graphSchemaVersion"] == 1
+
+    invalid_update = user.put(
+        "/api/v1/projects/graph-contract",
+        headers=headers,
+        json={**project_body("graph-contract", "Rejected update"), "graphSchemaVersion": "1", "expected_version": updated.json()["version"]},
+    )
+    assert invalid_update.status_code == 400
+    assert invalid_update.json()["code"] == "REQUEST_REJECTED"
+    assert user.get("/api/v1/projects/graph-contract").json()["project"]["title"] == "Graph v1 updated"
+
+    for index, value in enumerate([True, "1", 0, 2, None, 1.0]):
+        invalid = {**project_body(f"invalid-version-{index}", "Invalid"), "graphSchemaVersion": value}
+        response = user.post("/api/v1/projects", headers=headers, json=invalid)
+        assert response.status_code == 400, value
+        assert response.json()["code"] == "REQUEST_REJECTED"
+
+    missing = project_body("missing-version", "Missing")
+    missing.pop("graphSchemaVersion")
+    response = user.post("/api/v1/projects", headers=headers, json=missing)
+    assert response.status_code == 400
+    assert response.json()["code"] == "REQUEST_REJECTED"
+
+
+def test_legacy_stored_project_without_graph_version_remains_listable_and_gettable(tmp_path) -> None:
+    app, user, headers, owner, user_b, headers_b, owner_b = project_clients(tmp_path)
+    del headers, user_b, headers_b, owner_b
+    legacy = project_body("legacy-stored", "Legacy stored")
+    legacy.pop("graphSchemaVersion")
+    row, created, conflict = app.state.canvas_store.create_project(
+        user_id=owner,
+        project_id="legacy-stored",
+        title="Legacy stored",
+        document_json=json.dumps(legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
+    assert row and created and not conflict
+
+    listed = user.get("/api/v1/projects")
+    fetched = user.get("/api/v1/projects/legacy-stored")
+    assert listed.status_code == 200
+    assert fetched.status_code == 200
+    assert "graphSchemaVersion" not in listed.json()["projects"][0]["project"]
+    assert "graphSchemaVersion" not in fetched.json()["project"]

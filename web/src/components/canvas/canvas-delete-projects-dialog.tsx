@@ -9,8 +9,10 @@ export function CanvasDeleteProjectsDialog() {
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const removeSelectedIds = useCanvasUiStore((state) => state.removeSelectedProjectIds);
     const deleteProjects = useCanvasStore((state) => state.deleteProjects);
+    const readOnly = useCanvasStore((state) => Boolean(state.loadError?.readOnly));
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
     const confirm = () => {
+        if (readOnly) return;
         deleteProjects(ids);
         cleanupImages();
         removeSelectedIds(ids);
@@ -26,7 +28,7 @@ export function CanvasDeleteProjectsDialog() {
             footer={
                 <>
                     <Button onClick={() => setDeleteIds([])}>取消</Button>
-                    <Button danger type="primary" onClick={confirm}>
+                    <Button disabled={readOnly} danger type="primary" onClick={confirm}>
                         删除
                     </Button>
                 </>

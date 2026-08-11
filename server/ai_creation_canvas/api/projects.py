@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
 
@@ -38,6 +38,14 @@ class ProjectDocument(BaseModel):
     backgroundMode: Literal["dots", "lines", "blank"]
     showImageInfo: bool
     viewport: Viewport
+    graphSchemaVersion: StrictInt
+
+    @field_validator("graphSchemaVersion")
+    @classmethod
+    def validate_graph_schema_version(cls, value: int) -> int:
+        if value != 1:
+            raise ValueError("unsupported graph schema version")
+        return value
 
 
 class ProjectUpdate(ProjectDocument):

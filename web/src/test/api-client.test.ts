@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ApiRequestError, apiFetch, setCsrfToken } from "@/api/client";
+import { createProject as createProjectApi, updateProject as updateProjectApi } from "@/api/projects";
+import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 
 afterEach(() => {
     setCsrfToken(null);
@@ -20,6 +22,31 @@ it("adds the in-memory csrf token only to same-origin mutations", async () => {
     expect(mutationHeaders.get("X-CSRF-Token")).toBe("csrf-memory-only");
     expect(queryHeaders.has("X-CSRF-Token")).toBe(false);
     expect(localStorage.getItem("csrf_token")).toBeNull();
+});
+
+it("sends the canonical graph schema version in real project create and update request shapes", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ project: {}, version: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const project: CanvasProject = {
+        id: "shape-contract",
+        title: "Shape contract",
+        createdAt: "2026-08-11T00:00:00.000Z",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+        nodes: [],
+        connections: [],
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "lines",
+        showImageInfo: false,
+        viewport: { x: 0, y: 0, k: 1 },
+        graphSchemaVersion: 1,
+    };
+
+    await createProjectApi(project);
+    await updateProjectApi(project, 3);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({ id: "shape-contract", graphSchemaVersion: 1 });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({ id: "shape-contract", graphSchemaVersion: 1, expected_version: 3 });
 });
 
 it.each([

@@ -38,6 +38,15 @@ export type CanvasLoadError = {
     readOnly: true;
 };
 
+export class CanvasReadOnlyError extends Error {
+    readonly code = "CANVAS_READ_ONLY";
+
+    constructor() {
+        super("Canvas data is protected in read-only mode");
+        this.name = "CanvasReadOnlyError";
+    }
+}
+
 export type CanvasStore = {
     hydrated: boolean;
     projectsLoaded: boolean;
@@ -139,6 +148,7 @@ export const useCanvasStore = create<CanvasStore>()(
             syncNotice: null,
             loadError: null,
             createProject: (title = "未命名画布") => {
+                if (get().loadError?.readOnly) throw new CanvasReadOnlyError();
                 const now = new Date().toISOString();
                 const id = nanoid();
                 const project: CanvasProject = {
@@ -162,6 +172,7 @@ export const useCanvasStore = create<CanvasStore>()(
                 return id;
             },
             importProject: (source) => {
+                if (get().loadError?.readOnly) throw new CanvasReadOnlyError();
                 const now = new Date().toISOString();
                 const project = normalizeCanvasProject({
                     id: nanoid(),
@@ -175,7 +186,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: normalizeViewport(source.viewport),
-                    graphSchemaVersion: source.graphSchemaVersion,
+                    ...(Object.prototype.hasOwnProperty.call(source, "graphSchemaVersion") ? { graphSchemaVersion: source.graphSchemaVersion } : {}),
                 });
                 set((state) => ({
                     projects: [project, ...state.projects],
@@ -186,11 +197,14 @@ export const useCanvasStore = create<CanvasStore>()(
             openProject: (id) => {
                 return get().projects.find((item) => item.id === id) || null;
             },
-            renameProject: (id, title) =>
+            renameProject: (id, title) => {
+                if (get().loadError?.readOnly) return;
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: new Date().toISOString() } : project)),
-                })),
-            deleteProjects: (ids) =>
+                }));
+            },
+            deleteProjects: (ids) => {
+                if (get().loadError?.readOnly) return;
                 set((state) => {
                     const projects = state.projects.filter((project) => !ids.includes(project.id));
                     const projectSyncMetadata = { ...state.projectSyncMetadata };
@@ -198,23 +212,30 @@ export const useCanvasStore = create<CanvasStore>()(
                         if (projectSyncMetadata[id]?.source !== "server") delete projectSyncMetadata[id];
                     }
                     return { projects, projectSyncMetadata };
-                }),
+                });
+            },
             replaceProjects: (projects, projectSyncMetadata) => {
+                if (get().loadError?.readOnly) return;
                 const normalized = projects.map((project) => normalizeCanvasProject(project));
                 set(projectSyncMetadata ? { projects: normalized, projectSyncMetadata } : { projects: normalized });
             },
-            setProjectSyncMetadata: (id, metadata) => set((state) => {
+            setProjectSyncMetadata: (id, metadata) => {
+                if (get().loadError?.readOnly) return;
+                set((state) => {
                 const projectSyncMetadata = { ...state.projectSyncMetadata };
                 if (metadata) projectSyncMetadata[id] = metadata;
                 else delete projectSyncMetadata[id];
                 return { projectSyncMetadata };
-            }),
+                });
+            },
             setProjectsLoaded: (projectsLoaded) => set({ projectsLoaded }),
             setSyncNotice: (syncNotice) => set({ syncNotice }),
-            updateProject: (id, patch) =>
+            updateProject: (id, patch) => {
+                if (get().loadError?.readOnly) return;
                 set((state) => ({
                     projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
-                })),
+                }));
+            },
         }),
         {
             name: CANVAS_STORE_KEY,
@@ -242,7 +263,7 @@ export const useCanvasStore = create<CanvasStore>()(
                             projectsLoaded: false,
                             loadError: {
                                 code: unsupported ? "UNSUPPORTED_GRAPH_SCHEMA" : "CANVAS_LOAD_FAILED",
-                                message: unsupported ? "此画布由更新版本创建，当前版本只能只读保护原始数据。" : "画布数据无法安全加载，原始数据已进入只读保护。",
+                                message: unsupported ? "此画布由更新版本创建，请升级应用；升级前将以只读方式保护原始数据。" : "画布数据无法安全加载，原始数据已进入只读保护。",
                                 readOnly: true,
                             },
                         });

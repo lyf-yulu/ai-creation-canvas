@@ -79,6 +79,10 @@ export class ProjectSync {
 
     async activate(lease: ScopedStoreLease): Promise<void> {
         this.stop();
+        if (this.store.getState().loadError?.readOnly) {
+            this.store.getState().setProjectsLoaded(true);
+            return;
+        }
         const generation = this.generation;
         this.lease = lease;
         this.store.getState().setProjectsLoaded(false);
@@ -183,13 +187,14 @@ export class ProjectSync {
     }
 
     async save(project: CanvasProject, expectedVersion: number, signal?: AbortSignal): Promise<ProjectEnvelope> {
+        if (this.store.getState().loadError?.readOnly) throw new Error("Canvas project sync is read-only");
         return expectedVersion > 0 ? this.api.update(project, expectedVersion, signal) : this.api.create(project, signal);
     }
 
     stop = () => {
         const generation = this.generation;
         const lease = this.lease;
-        if (lease && this.active(generation, lease)) this.store.getState().setProjectsLoaded(false);
+        if (lease && this.active(generation, lease) && !this.store.getState().loadError?.readOnly) this.store.getState().setProjectsLoaded(false);
         this.generation += 1;
         if (this.timer) clearTimeout(this.timer);
         this.timer = null;
@@ -206,7 +211,7 @@ export class ProjectSync {
     private active(generation: number, lease: ScopedStoreLease) { return this.generation === generation && this.lease === lease && isStorageLeaseActive(lease); }
     private controller() { const controller = new AbortController(); this.controllers.add(controller); return controller; }
     private queue() {
-        if (!this.lease || !isStorageLeaseActive(this.lease)) return;
+        if (!this.lease || !isStorageLeaseActive(this.lease) || this.store.getState().loadError?.readOnly) return;
         if (this.timer) clearTimeout(this.timer);
         this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 400);
     }
@@ -214,7 +219,7 @@ export class ProjectSync {
     private async flush() {
         const lease = this.lease;
         const generation = this.generation;
-        if (!lease || !this.active(generation, lease)) return;
+        if (!lease || !this.active(generation, lease) || this.store.getState().loadError?.readOnly) return;
         if (this.flushingGenerations.has(generation)) {
             this.queuedAgain.add(generation);
             return;
@@ -229,6 +234,7 @@ export class ProjectSync {
     }
 
     private async flushOnce(lease: ScopedStoreLease, generation: number) {
+        if (this.store.getState().loadError?.readOnly) return;
         const projects = this.store.getState().projects;
         const currentIds = new Set(projects.map((project) => project.id));
         for (const id of [...this.snapshots.keys()]) {

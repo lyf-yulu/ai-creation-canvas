@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import type { CanvasProjectInput } from "@/features/graph/normalize-project";
-import { clearCanvasInMemory, migrateCanvasPersistedState, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { CanvasReadOnlyError, clearCanvasInMemory, migrateCanvasPersistedState, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope, storageDatabaseName } from "@/storage/scope";
 import { CanvasNodeType } from "@/types/canvas";
 
@@ -80,8 +80,8 @@ describe("canvas graph persistence", () => {
 
         expect(values.get(futureDatabase)?.get(key)).toBe(raw);
         expect(writes.get(futureDatabase) ?? 0).toBe(0);
-        expect(useCanvasStore.getState().loadError).toMatchObject({ code: "UNSUPPORTED_GRAPH_SCHEMA", message: expect.stringContaining("更新版本"), readOnly: true });
-        useCanvasStore.getState().createProject("must stay memory only");
+        expect(useCanvasStore.getState().loadError).toMatchObject({ code: "UNSUPPORTED_GRAPH_SCHEMA", message: expect.stringMatching(/更新版本.*升级应用.*只读/), readOnly: true });
+        expect(() => useCanvasStore.getState().createProject("must stay memory only")).toThrow(CanvasReadOnlyError);
         await vi.advanceTimersByTimeAsync(500);
         expect(values.get(futureDatabase)?.get(key)).toBe(raw);
         expect(writes.get(futureDatabase) ?? 0).toBe(0);
@@ -118,6 +118,24 @@ describe("canvas graph persistence", () => {
 
         expect(() => useCanvasStore.getState().importProject(source)).toThrow("Unsupported canvas graph schema version");
         expect(useCanvasStore.getState().projects).toBe(before);
+    });
+
+    it("blocks every public project mutation while future data is read-only", () => {
+        const id = useCanvasStore.getState().createProject("Protected");
+        const before = useCanvasStore.getState().projects;
+        const beforeMetadata = useCanvasStore.getState().projectSyncMetadata;
+        useCanvasStore.setState({ loadError: { code: "UNSUPPORTED_GRAPH_SCHEMA", message: "upgrade", readOnly: true } });
+
+        expect(() => useCanvasStore.getState().createProject("Blocked create")).toThrow(CanvasReadOnlyError);
+        expect(() => useCanvasStore.getState().importProject(legacyProject("blocked-import"))).toThrow(CanvasReadOnlyError);
+        useCanvasStore.getState().renameProject(id, "Blocked rename");
+        useCanvasStore.getState().updateProject(id, { nodes: [] });
+        useCanvasStore.getState().deleteProjects([id]);
+        useCanvasStore.getState().replaceProjects([]);
+        useCanvasStore.getState().setProjectSyncMetadata(id, { source: "draft" });
+
+        expect(useCanvasStore.getState().projects).toBe(before);
+        expect(useCanvasStore.getState().projectSyncMetadata).toBe(beforeMetadata);
     });
 
     it("normalizes authoritative server replacements while preserving server IDs and timestamps", () => {

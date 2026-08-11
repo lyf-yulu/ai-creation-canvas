@@ -66,6 +66,25 @@ it("does not let a late user-A load replace user-B projects", async () => {
     sync.stop();
 });
 
+it("does not call any project API while the active canvas store is read-only", async () => {
+    const api = mockApi();
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "future-user" });
+    useCanvasStore.setState({
+        loadError: { code: "UNSUPPORTED_GRAPH_SCHEMA", message: "upgrade", readOnly: true },
+        projectsLoaded: false,
+    });
+
+    await sync.activate(captureAppStorageLease()!);
+
+    expect(api.list).not.toHaveBeenCalled();
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.update).not.toHaveBeenCalled();
+    expect(api.remove).not.toHaveBeenCalled();
+    expect(useCanvasStore.getState().projectsLoaded).toBe(true);
+    sync.stop();
+});
+
 it("marks projects loaded only after the authoritative server list arrives", async () => {
     const pending = deferred<ProjectEnvelope[]>();
     const sync = new ProjectSync(mockApi({ list: vi.fn(() => pending.promise) }), useCanvasStore);

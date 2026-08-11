@@ -233,6 +233,76 @@ describe("legacy graph normalization", () => {
         });
     });
 
+    it.each([
+        [CanvasNodeType.Image, "image"],
+        [CanvasNodeType.Video, "video"],
+        [CanvasNodeType.Audio, "audio"],
+    ] as const)("does not promote legacy %s reference asset IDs into a result asset", (nodeType, mediaType) => {
+        const legacy = node(`failed-${mediaType}`, nodeType, {
+            status: "error",
+            assetIds: ["reference-input-only"],
+            sourceJobId: "job-failed",
+        });
+
+        const normalized = normalizeCanvasProject(project([legacy]));
+
+        expect(normalized.nodes[0].metadata?.assetIds).toEqual(["reference-input-only"]);
+        expect(normalized.nodes[0].metadata?.graph).toEqual({
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "result",
+            mediaType,
+            outputPortId: "media",
+            jobId: "job-failed",
+        });
+    });
+
+    it.each(["1", true, false, 0, -1, 1.5, 2, null])("rejects present non-v1 project graph version %j", (version) => {
+        const source = { ...project([]), graphSchemaVersion: version } as never;
+        expect(() => normalizeCanvasProject(source)).toThrow(UnsupportedGraphSchemaError);
+    });
+
+    it.each(["1", true, false, 0, -1, 1.5, 2, null])("rejects present non-v1 node graph version %j", (version) => {
+        const source = node("versioned", CanvasNodeType.Text, {
+            graph: { schemaVersion: version, role: "prompt", text: "unsafe", outputPortId: "prompt" } as never,
+        });
+        expect(() => normalizeCanvasProject(project([source]))).toThrow(UnsupportedGraphSchemaError);
+    });
+
+    it("deep clones plugin metadata, legacy arrays, and chat message details without invoking getters", () => {
+        let getterCalls = 0;
+        const plugin = node("plugin", "example:nested", {
+            params: { nested: { value: "original" } },
+            references: ["reference-a"],
+            assetIds: ["asset-a"],
+        });
+        const source = project([plugin]);
+        source.chatSessions = [{
+            id: "chat",
+            title: "Chat",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            messages: [{ id: "message", role: "assistant", text: "answer", detail: { nested: { value: "original" } }, references: [{ id: "ref", type: CanvasNodeType.Text, title: "Reference", text: "original" }] }],
+        }];
+
+        const normalized = normalizeCanvasProject(source);
+        ((source.nodes[0].metadata?.params as { nested: { value: string } }).nested.value) = "changed";
+        source.nodes[0].metadata!.references![0] = "changed";
+        source.nodes[0].metadata!.assetIds![0] = "changed";
+        ((source.chatSessions[0].messages[0].detail as { nested: { value: string } }).nested.value) = "changed";
+        source.chatSessions[0].messages[0].references![0].text = "changed";
+
+        expect(normalized.nodes[0].metadata?.params).toEqual({ nested: { value: "original" } });
+        expect(normalized.nodes[0].metadata?.references).toEqual(["reference-a"]);
+        expect(normalized.nodes[0].metadata?.assetIds).toEqual(["asset-a"]);
+        expect(normalized.chatSessions[0].messages[0].detail).toEqual({ nested: { value: "original" } });
+        expect(normalized.chatSessions[0].messages[0].references?.[0].text).toBe("original");
+
+        const accessorProject = project([]) as CanvasProjectInput;
+        Object.defineProperty(accessorProject, "graphSchemaVersion", { enumerable: true, get: () => { getterCalls += 1; return GRAPH_SCHEMA_VERSION; } });
+        expect(() => normalizeCanvasProject(accessorProject)).toThrow(TypeError);
+        expect(getterCalls).toBe(0);
+    });
+
     it("rejects a future graph schema without overwriting its opaque metadata", () => {
         const future = node("future", CanvasNodeType.Text, {
             content: "legacy fallback must not replace this",

@@ -3,7 +3,7 @@ import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
 export class UnsupportedGraphSchemaError extends Error {
-    constructor(version: number) {
+    constructor(version: unknown) {
         super(`Unsupported canvas graph schema version: ${version}`);
         this.name = "UnsupportedGraphSchemaError";
     }
@@ -25,15 +25,16 @@ export type CanvasProjectInput = Omit<CanvasProject, "graphSchemaVersion" | "nod
 };
 
 export function normalizeCanvasProject(project: CanvasProjectInput): CanvasProject {
-    assertSupportedSchema(project);
-    const nodes = project.nodes.map(normalizeNode);
+    const cloned = cloneJsonValue(project) as CanvasProjectInput;
+    assertSupportedSchema(cloned);
+    const nodes = cloned.nodes.map(normalizeNode);
     return {
-        ...project,
+        ...cloned,
         graphSchemaVersion: GRAPH_SCHEMA_VERSION,
         nodes,
-        connections: normalizeConnections(project.connections, nodes),
-        chatSessions: [...project.chatSessions],
-        viewport: { ...project.viewport },
+        connections: normalizeConnections(cloned.connections, nodes),
+        chatSessions: cloned.chatSessions,
+        viewport: cloned.viewport,
     };
 }
 
@@ -46,15 +47,50 @@ export function normalizeCanvasProjectBaselineSnapshot(snapshot: string, fallbac
 }
 
 function assertSupportedSchema(project: CanvasProjectInput) {
-    if (typeof project.graphSchemaVersion === "number" && project.graphSchemaVersion > GRAPH_SCHEMA_VERSION) {
-        throw new UnsupportedGraphSchemaError(project.graphSchemaVersion);
-    }
+    if (Object.prototype.hasOwnProperty.call(project, "graphSchemaVersion")) assertCurrentSchemaVersion(project.graphSchemaVersion);
     for (const node of project.nodes) {
         const graph = node.metadata?.graph;
         if (!graph || typeof graph !== "object") continue;
-        const version = (graph as { schemaVersion?: unknown }).schemaVersion;
-        if (typeof version === "number" && version > GRAPH_SCHEMA_VERSION) throw new UnsupportedGraphSchemaError(version);
+        if (Object.prototype.hasOwnProperty.call(graph, "schemaVersion")) assertCurrentSchemaVersion((graph as { schemaVersion?: unknown }).schemaVersion);
     }
+}
+
+function assertCurrentSchemaVersion(version: unknown) {
+    if (typeof version !== "number" || !Number.isInteger(version) || version !== GRAPH_SCHEMA_VERSION) throw new UnsupportedGraphSchemaError(version);
+}
+
+function cloneJsonValue(value: unknown, depth = 0, budget = { remaining: 100_000 }): unknown {
+    if (depth > 64 || budget.remaining-- <= 0) throw new TypeError("Canvas project JSON exceeds clone bounds");
+    if (value === null || value === undefined || typeof value === "string" || typeof value === "boolean") return value;
+    if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new TypeError("Canvas project JSON contains a non-finite number");
+        return value;
+    }
+    if (typeof value !== "object") throw new TypeError("Canvas project contains a non-JSON value");
+    if (Array.isArray(value)) {
+        const result: unknown[] = new Array(value.length);
+        for (let index = 0; index < value.length; index += 1) {
+            const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+            if (!descriptor) continue;
+            if (!("value" in descriptor)) throw new TypeError("Canvas project contains an accessor");
+            result[index] = cloneJsonValue(descriptor.value, depth + 1, budget);
+        }
+        return result;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("Canvas project contains a non-JSON object");
+    const result: Record<string, unknown> = {};
+    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+        if (!descriptor.enumerable) continue;
+        if (!("value" in descriptor)) throw new TypeError("Canvas project contains an accessor");
+        Object.defineProperty(result, key, {
+            value: cloneJsonValue(descriptor.value, depth + 1, budget),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        });
+    }
+    return result;
 }
 
 function canonicalJson(value: unknown): string {
@@ -109,7 +145,6 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
         role: "result",
         mediaType,
         outputPortId: "media",
-        ...(metadata?.assetIds?.[0] ? { assetId: metadata.assetIds[0] } : {}),
         ...(metadata?.sourceJobId ? { jobId: metadata.sourceJobId } : {}),
     };
 }
