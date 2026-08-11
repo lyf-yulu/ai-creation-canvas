@@ -260,7 +260,7 @@ describe("named-port graph rules", () => {
         const before = JSON.stringify(connections);
 
         expect(resolveActiveConnections(connections, nodes, registry).map(({ connection, active, reason }) => [connection.id, active, reason])).toEqual([
-            ["plugin-edge", false, "unavailable"],
+            ["plugin-edge", false, "opaque"],
             ["builtin-edge", true, undefined],
         ]);
         registry.registerNode({ id: "plugin.dynamic", version: 1, title: "Dynamic", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
@@ -378,7 +378,8 @@ describe("canvas named-port interactions", () => {
         const promptEdge = document.querySelector<SVGPathElement>("[data-connection-id='prompt-edge']")!;
 
         fireEvent.click(promptEdge);
-        expect(promptEdge).toHaveAttribute("aria-selected", "true");
+        expect(promptEdge).toHaveAttribute("aria-pressed", "true");
+        expect(promptEdge).not.toHaveAttribute("aria-selected");
         fireEvent.keyDown(window, { key: "Delete" });
         expect(useCanvasStore.getState().openProject(projectId)?.connections.map((edge) => edge.id)).toEqual(["image-edge"]);
 
@@ -526,6 +527,7 @@ describe("canvas named-port interactions", () => {
         ];
         const { projectId } = await renderProject([plugin, builtin, model], edges);
         expect(document.querySelector("[data-connection-id='plugin-edge']")).toHaveAttribute("data-connection-active", "false");
+        expect(screen.getByRole("button", { name: /连接：plugin out\(out\).*暂不可用：插件或端口暂不可用/ })).not.toHaveAttribute("aria-disabled");
         expect(document.querySelector("[data-connection-id='builtin-edge']")).toHaveAttribute("data-connection-active", "true");
 
         act(() => nodeRegistry.registerNode({ id: pluginType, version: 1, title: "动态提示词", inputs: [], outputs: [{ id: "out", provides: "prompt", label: "动态文本" }], createMetadata: () => ({}), render: () => null }));
@@ -533,10 +535,29 @@ describe("canvas named-port interactions", () => {
         expect(screen.getByRole("button", { name: "连接：plugin 动态文本(out) 到 model 提示词(prompt)" })).toBeInTheDocument();
         expect(document.querySelector("[data-connection-id='plugin-edge']")).toHaveAttribute("data-connection-active", "true");
         expect(document.querySelector("[data-connection-id='builtin-edge']")).toHaveAttribute("data-connection-active", "false");
+        expect(screen.getByRole("button", { name: /连接：builtin 提示词\(prompt\).*暂不可用：提示词冲突/ }).querySelector("title")).toHaveTextContent("暂不可用：提示词冲突");
         fireEvent.click(portButton);
 
         act(() => nodeRegistry.unregisterNode(pluginType));
         await waitFor(() => expect(screen.getByTestId("connection-status")).toHaveTextContent("连接起点已失效。"));
         expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual(edges);
+    });
+
+    it("keeps inactive incompatible and prompt-conflict edges selectable and deletable", async () => {
+        const edges: CanvasConnection[] = [
+            { id: "first", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "conflict", fromNodeId: "prompt-b", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "incompatible", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "reference_audio" },
+            { id: "missing-port", fromNodeId: "prompt-a", fromPortId: "removed", toNodeId: "model", toPortId: "prompt" },
+        ];
+        const { projectId } = await renderProject([promptNode("prompt-a"), promptNode("prompt-b"), mediaNode("image", "image"), modelNode("model", ["prompt", "reference_audio"])], edges);
+        const conflict = screen.getByRole("button", { name: /连接：prompt-b 提示词\(prompt\).*暂不可用：提示词冲突/ });
+        expect(screen.getByRole("button", { name: /连接：image 媒体\(media\).*暂不可用：端口类型不兼容/ })).not.toHaveAttribute("aria-disabled");
+        expect(screen.getByRole("button", { name: /连接：prompt-a removed\(removed\).*暂不可用：端口不存在或已撤销/ })).not.toHaveAttribute("aria-disabled");
+
+        fireEvent.click(conflict);
+        expect(conflict).toHaveAttribute("aria-pressed", "true");
+        fireEvent.keyDown(window, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.connections.map((edge) => edge.id)).toEqual(["first", "incompatible", "missing-port"]);
     });
 });

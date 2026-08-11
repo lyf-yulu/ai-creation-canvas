@@ -13,8 +13,16 @@ export type GraphPortRef = Readonly<{
 export type ResolvedConnectionState = Readonly<{
     connection: CanvasConnection;
     active: boolean;
-    reason?: "unavailable" | "incompatible" | "prompt-conflict";
+    reason?: "opaque" | "missing-node" | "missing-port" | "incompatible" | "prompt-conflict";
 }>;
+
+export function graphConnectionInactiveMessage(reason: NonNullable<ResolvedConnectionState["reason"]>) {
+    if (reason === "prompt-conflict") return "提示词冲突";
+    if (reason === "incompatible") return "端口类型不兼容";
+    if (reason === "missing-node") return "节点不存在";
+    if (reason === "missing-port") return "端口不存在或已撤销";
+    return "插件或端口暂不可用";
+}
 
 export type GraphConnectionResult =
     | { ok: true; connection: CanvasConnection }
@@ -122,10 +130,14 @@ export function resolveActiveConnections(
     return connections.map((connection) => {
         const sourceNode = byId.get(connection.fromNodeId);
         const targetNode = byId.get(connection.toNodeId);
-        if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return { connection, active: false, reason: "unavailable" };
+        if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return { connection, active: false, reason: "missing-node" };
         const source = getNodePorts(sourceNode, registry).sources.find((port) => port.portId === connection.fromPortId);
         const target = getNodePorts(targetNode, registry).targets.find((port) => port.portId === connection.toPortId);
-        if (!source || !target) return { connection, active: false, reason: "unavailable" };
+        if (!source || !target) {
+            const unresolvedNode = !source ? sourceNode : targetNode;
+            const unavailablePlugin = !unresolvedNode.metadata?.graph && !registry.getNode(String(unresolvedNode.type));
+            return { connection, active: false, reason: unavailablePlugin ? "opaque" : "missing-port" };
+        }
         if (!portsAreCompatible(source, target, targetNode)) return { connection, active: false, reason: "incompatible" };
         if (target.portId === GRAPH_PORT_IDS.prompt) {
             if (claimedPromptTargets.has(target.nodeId)) return { connection, active: false, reason: "prompt-conflict" };

@@ -16,7 +16,7 @@ import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { connectGraphPorts, getNodePorts, graphConnectionRejectionMessage, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
+import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
@@ -402,7 +402,7 @@ export default function CanvasProjectPage() {
                     }}
                 >
                     <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
-                        {resolvedConnections.map(({ connection, active: connectionActive }) => {
+                        {resolvedConnections.map(({ connection, active: connectionActive, reason }) => {
                             const from = measuredNodeMap.get(connection.fromNodeId);
                             const to = measuredNodeMap.get(connection.toNodeId);
                             if (!from || !to) return null;
@@ -413,6 +413,7 @@ export default function CanvasProjectPage() {
                                 to={to}
                                 active={selectedConnectionId === connection.id}
                                 enabled={connectionActive}
+                                inactiveReason={reason ? graphConnectionInactiveMessage(reason) : undefined}
                                 fromPortLabel={getNodePorts(from).sources.find((port) => port.portId === connection.fromPortId)?.label}
                                 toPortLabel={getNodePorts(to).targets.find((port) => port.portId === connection.toPortId)?.label}
                                 onSelect={() => {

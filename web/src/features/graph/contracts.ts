@@ -109,6 +109,11 @@ export function assertSafeGraphInputPorts(ports: unknown): asserts ports is Grap
     }
 }
 
+export function assertSafeLegacyGraphInputPortIds(ports: unknown): asserts ports is string[] {
+    if (!Array.isArray(ports) || !ports.every((portId) => typeof portId === "string")) throw new InvalidGraphPortDeclarationError();
+    assertSafeGraphInputPorts(ports.map(graphInputPortDescriptor));
+}
+
 export function isGraphPortValueType(value: unknown): value is GraphPortValueType {
     return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "any";
 }

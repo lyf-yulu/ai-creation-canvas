@@ -12,6 +12,7 @@ export function ConnectionPath({
     to,
     active,
     enabled = true,
+    inactiveReason,
     fromPortLabel,
     toPortLabel,
     interactive = true,
@@ -23,6 +24,7 @@ export function ConnectionPath({
     to: CanvasNodeData;
     active: boolean;
     enabled?: boolean;
+    inactiveReason?: string;
     fromPortLabel?: string;
     toPortLabel?: string;
     interactive?: boolean;
@@ -31,6 +33,8 @@ export function ConnectionPath({
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const pathD = connectionPathData(from, connection.fromPortId, to, connection.toPortId);
+    const inactiveDescription = !enabled && inactiveReason ? `暂不可用：${inactiveReason}` : null;
+    const connectionLabel = `连接：${from.title} ${graphPortDisplayLabel(connection.fromPortId, fromPortLabel)}(${connection.fromPortId}) 到 ${to.title} ${graphPortDisplayLabel(connection.toPortId, toPortLabel)}(${connection.toPortId})${inactiveDescription ? `，${inactiveDescription}` : ""}`;
     const selectWithKeyboard = (event: ReactKeyboardEvent<SVGPathElement>) => {
         if ((event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) && onOpenContextMenu) {
             event.preventDefault();
@@ -50,8 +54,8 @@ export function ConnectionPath({
             {interactive ? <path
                 data-connection-id={connection.id}
                 role="button"
-                aria-label={`连接：${from.title} ${graphPortDisplayLabel(connection.fromPortId, fromPortLabel)}(${connection.fromPortId}) 到 ${to.title} ${graphPortDisplayLabel(connection.toPortId, toPortLabel)}(${connection.toPortId})`}
-                aria-selected={active}
+                aria-label={connectionLabel}
+                aria-pressed={active}
                 data-connection-active={enabled}
                 tabIndex={0}
                 d={pathD}
@@ -69,7 +73,7 @@ export function ConnectionPath({
                     event.stopPropagation();
                     onOpenContextMenu?.({ x: event.clientX, y: event.clientY }, event.currentTarget);
                 }}
-            /> : null}
+            ><title>{inactiveDescription ?? connectionLabel}</title></path> : null}
             <path
                 data-connection-id={interactive ? undefined : connection.id}
                 aria-hidden="true"

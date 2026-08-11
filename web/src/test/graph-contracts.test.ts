@@ -258,6 +258,52 @@ describe("legacy graph normalization", () => {
         expect(normalized.nodes[0].metadata?.graph).not.toHaveProperty("inputPortIds");
     });
 
+    it.each([
+        ["too many", Array.from({ length: 33 }, (_, index) => `input_${index}`)],
+        ["duplicate", ["prompt", "prompt"]],
+        ["empty", [""]],
+        ["space", ["unsafe port"]],
+        ["control", ["unsafe\nport"]],
+        ["unicode", ["参考图"]],
+        ["long", ["a".repeat(65)]],
+    ] as const)("rejects unsafe legacy model inputPortIds without mutating input: %s", (_name, inputPortIds) => {
+        const legacy = node("legacy", CanvasNodeType.Config, { graph: {
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "model",
+            modelId: "legacy",
+            operation: "custom",
+            inputPortIds,
+            outputPortId: "result",
+            parameters: {},
+        } as never });
+        const source = project([legacy]);
+        const before = JSON.stringify(source);
+
+        expect(() => normalizeCanvasProject(source)).toThrow("Invalid graph port declaration");
+        expect(JSON.stringify(source)).toBe(before);
+    });
+
+    it.each(["", "unsafe output", "unsafe\noutput", "结果", "a".repeat(65)])("rejects unsafe legacy model outputPortId %j", (outputPortId) => {
+        const legacy = node("legacy", CanvasNodeType.Config, { graph: {
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "model",
+            modelId: "legacy",
+            operation: "custom",
+            inputPortIds: ["prompt"],
+            outputPortId,
+            parameters: {},
+        } as never });
+        expect(() => normalizeCanvasProject(project([legacy]))).toThrow("Invalid graph port declaration");
+    });
+
+    it.each([
+        [CanvasNodeType.Text, { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "x", outputPortId: "bad port" }],
+        [CanvasNodeType.Image, { schemaVersion: GRAPH_SCHEMA_VERSION, role: "media-collection", mediaType: "image", outputPortId: "媒体", items: [] }],
+        [CanvasNodeType.Video, { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "video", outputPortId: "bad\nport" }],
+    ] as const)("validates legacy %s output IDs through the shared graph boundary", (type, graph) => {
+        expect(() => normalizeCanvasProject(project([node("legacy", type, { graph: graph as never })]))).toThrow("Invalid graph port declaration");
+    });
+
     it("migrates pre-target result metadata without losing persisted result ownership", () => {
         const legacyResult = node("result", CanvasNodeType.Video, { graph: {
             schemaVersion: GRAPH_SCHEMA_VERSION,

@@ -1,4 +1,4 @@
-import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, graphInputPortDescriptor, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, graphInputPortDescriptor, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
 import type { NodeDefinition } from "@/features/nodes/types";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
@@ -58,9 +58,14 @@ function assertSupportedSchema(project: CanvasProjectInput) {
         if (!graph || typeof graph !== "object") continue;
         if (Object.prototype.hasOwnProperty.call(graph, "schemaVersion")) assertCurrentSchemaVersion((graph as { schemaVersion?: unknown }).schemaVersion);
         const candidate = graph as Record<string, unknown>;
-        if (candidate.schemaVersion === GRAPH_SCHEMA_VERSION && candidate.role === "model" && Object.prototype.hasOwnProperty.call(candidate, "inputPorts")) {
-            assertSafeGraphInputPorts(candidate.inputPorts);
-            assertSafeGraphPortId(candidate.outputPortId);
+        if (candidate.schemaVersion === GRAPH_SCHEMA_VERSION && candidate.role === "model") {
+            if (Object.prototype.hasOwnProperty.call(candidate, "inputPorts")) {
+                assertSafeGraphInputPorts(candidate.inputPorts);
+                assertSafeGraphPortId(candidate.outputPortId);
+            } else if (Object.prototype.hasOwnProperty.call(candidate, "inputPortIds")) {
+                assertSafeLegacyGraphInputPortIds(candidate.inputPortIds);
+                assertSafeGraphPortId(candidate.outputPortId);
+            }
         }
         if (candidate.schemaVersion === GRAPH_SCHEMA_VERSION && (candidate.role === "prompt" || candidate.role === "media-collection" || candidate.role === "result")) {
             if (Object.prototype.hasOwnProperty.call(candidate, "outputPortId")) assertSafeGraphPortId(candidate.outputPortId);
