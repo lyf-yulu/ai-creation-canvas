@@ -1,6 +1,25 @@
 #!/bin/sh
 set -eu
 
+fail() { echo "$1" >&2; exit 64; }
+
+[ "${AICC_ALLOW_PAID_ACCEPTANCE:-}" = "YES" ] || fail "Set AICC_ALLOW_PAID_ACCEPTANCE=YES to authorize the bounded paid acceptance."
+[ -n "${ARK_API_KEY:-}" ] || fail "ARK_API_KEY is required in the server environment."
+
+# Remove the paid credential from the inherited environment before starting any
+# verifier/build subprocess. noclobber prevents following or replacing a link.
+umask 077
+aicc_key_file=${TMPDIR:-/tmp}/.aicc-paid-acceptance-key.$$
+set -C
+if ! printf '%s' "$ARK_API_KEY" > "$aicc_key_file"; then
+    set +C
+    fail "Could not create the isolated acceptance credential file."
+fi
+set +C
+unset ARK_API_KEY AICC_ACCEPTANCE_KEY_FILE
+cleanup_key() { rm -f -- "$aicc_key_file"; }
+trap cleanup_key EXIT HUP INT TERM
+
 aicc_repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 AICC_ACCEPTANCE_PORT=${AICC_ACCEPTANCE_PORT:-8998}
 AICC_ACCEPTANCE_DATA=${AICC_ACCEPTANCE_DATA:-"$aicc_repo_root/.paid-acceptance/run-$$"}
@@ -10,10 +29,6 @@ AICC_ACCEPTANCE_VIDEO_MODEL_ID=${AICC_ACCEPTANCE_VIDEO_MODEL_ID:-doubao-seedance
 AICC_ACCEPTANCE_IMAGE_COUNT=${AICC_ACCEPTANCE_IMAGE_COUNT:-1}
 AICC_ACCEPTANCE_VIDEO_COUNT=${AICC_ACCEPTANCE_VIDEO_COUNT:-1}
 
-fail() { echo "$1" >&2; exit 64; }
-
-[ "${AICC_ALLOW_PAID_ACCEPTANCE:-}" = "YES" ] || fail "Set AICC_ALLOW_PAID_ACCEPTANCE=YES to authorize the bounded paid acceptance."
-[ -n "${ARK_API_KEY:-}" ] || fail "ARK_API_KEY is required in the server environment."
 [ "$AICC_ACCEPTANCE_IMAGE_MODEL_ID" = "doubao-seedream-4-0-250828" ] || fail "Image model is outside the paid acceptance allowlist."
 [ "$AICC_ACCEPTANCE_VIDEO_MODEL_ID" = "doubao-seedance-2-0-260128" ] || fail "Video model is outside the paid acceptance allowlist."
 [ "$AICC_ACCEPTANCE_IMAGE_COUNT" = "1" ] && [ "$AICC_ACCEPTANCE_VIDEO_COUNT" = "1" ] || fail "Paid acceptance requires exactly one image call and exactly one video call."
@@ -31,6 +46,40 @@ elif [ -x "$aicc_repo_root/.venv/bin/python" ]; then
     aicc_python="$aicc_repo_root/.venv/bin/python"
 else
     aicc_python=python3
+fi
+
+aicc_data_scope=$(
+    AICC_REPO_ROOT="$aicc_repo_root" AICC_ACCEPTANCE_DATA="$AICC_ACCEPTANCE_DATA" "$aicc_python" - <<'PY'
+import os, pathlib, sys
+repo = pathlib.Path(os.environ["AICC_REPO_ROOT"]).resolve(strict=True)
+candidate = pathlib.Path(os.environ["AICC_ACCEPTANCE_DATA"])
+if not candidate.is_absolute():
+    print("Acceptance data path must be absolute.", file=sys.stderr); raise SystemExit(1)
+for parent in (candidate, *candidate.parents):
+    if parent.is_symlink():
+        print("Acceptance data path cannot use a symlink.", file=sys.stderr); raise SystemExit(1)
+resolved = candidate.resolve(strict=False)
+if resolved != candidate:
+    print("Acceptance data path must be normalized without traversal.", file=sys.stderr); raise SystemExit(1)
+try:
+    relative = resolved.relative_to(repo)
+except ValueError:
+    try:
+        repo.relative_to(resolved)
+    except ValueError:
+        print("external")
+    else:
+        print("Acceptance data path cannot contain the repository.", file=sys.stderr); raise SystemExit(1)
+else:
+    if len(relative.parts) < 2 or relative.parts[0] != ".paid-acceptance":
+        print("Repository data path must stay under .paid-acceptance.", file=sys.stderr); raise SystemExit(1)
+    print("inside")
+PY
+) || fail "Acceptance data path is unsafe."
+if [ "$aicc_data_scope" = "inside" ]; then
+    git -C "$aicc_repo_root" check-ignore -q -- "$AICC_ACCEPTANCE_DATA" || fail "Repository acceptance data path must be ignored by Git."
+elif [ "$aicc_data_scope" != "external" ]; then
+    fail "Acceptance data path is unsafe."
 fi
 
 AICC_ACCEPTANCE_MODELS_CONFIG="$AICC_ACCEPTANCE_MODELS_CONFIG" "$aicc_python" - <<'PY' || exit 64
@@ -54,6 +103,13 @@ if "image.edit" not in image.get("operations", []) or "video.generate" not in vi
     print("The reviewed models do not support the required reference chain.", file=sys.stderr); raise SystemExit(1)
 PY
 
+if [ "${AICC_ACCEPTANCE_ENV_PROBE:-}" = "YES" ]; then
+    [ -z "${ARK_API_KEY+x}" ] || fail "Offline environment still contains the paid credential."
+    [ -z "${AICC_ACCEPTANCE_KEY_FILE+x}" ] || fail "Offline environment can locate the paid credential file."
+    AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py" --probe-key-boundary
+    exit 0
+fi
+
 if [ "${AICC_ACCEPTANCE_GUARD_ONLY:-}" = "YES" ]; then
     echo "Paid acceptance guard ready. No provider request was made."
     exit 0
@@ -75,5 +131,7 @@ bash "$aicc_repo_root/scripts/build-release.sh" --skip-web-build "$aicc_release_
 
 mkdir -m 700 -p "$(dirname -- "$AICC_ACCEPTANCE_DATA")"
 mkdir -m 700 "$AICC_ACCEPTANCE_DATA"
+git status --porcelain --untracked-files=normal | grep -q . && fail "Acceptance data creation changed the worktree."
+bash "$aicc_repo_root/scripts/security-scan.sh"
 export AICC_ACCEPTANCE_PORT AICC_ACCEPTANCE_DATA AICC_ACCEPTANCE_MODELS_CONFIG AICC_ACCEPTANCE_IMAGE_MODEL_ID AICC_ACCEPTANCE_VIDEO_MODEL_ID
-PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" exec "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py"
+AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" exec "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py"

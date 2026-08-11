@@ -60,12 +60,13 @@ def test_acceptance_project_persists_a_canonical_edit_and_video_graph() -> None:
 
 
 def test_acceptance_project_round_trips_through_the_owned_api(tmp_path: Path) -> None:
-    _app, _accounts, _admin, user, _admin_headers, user_headers = local_clients(tmp_path)
+    _app, _accounts, admin, user, _admin_headers, user_headers = local_clients(tmp_path)
     project = module._project_document("owned-asset", "image-model", "video-model", 123)
     response = user.post("/api/v1/projects", headers=user_headers, json=project)
     assert response.status_code == 201
     assert response.json()["project"]["nodes"] == project["nodes"]
     assert response.json()["project"]["connections"] == project["connections"]
+    assert admin.get("/api/v1/projects/paid-acceptance-canvas").status_code == 404
 
 
 def test_two_paid_poll_flows_keep_the_result_reference_chain_and_stream_checks(monkeypatch) -> None:

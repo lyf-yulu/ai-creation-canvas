@@ -13,6 +13,7 @@ import struct
 import subprocess
 import sys
 import time
+import stat
 import zlib
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
@@ -45,6 +46,32 @@ def reference_png() -> bytes:
     header = struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0)
     row = b"\x00" + b"\x00\xff\x55" * 64
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(row * 64, 9)) + chunk(b"IEND", b"")
+
+
+def consume_server_key() -> str:
+    if "ARK_API_KEY" in os.environ:
+        raise RuntimeError("paid credential leaked into acceptance environment")
+    path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "")
+    path = Path(path_text)
+    try:
+        details = path.lstat()
+        if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077:
+            raise RuntimeError("unsafe acceptance credential file")
+        value = path.read_text(encoding="utf-8")
+    finally:
+        if path_text:
+            path.unlink(missing_ok=True)
+    if len(value) < 8 or len(value) > 4096 or any(char in value for char in "\r\n\0"):
+        raise RuntimeError("invalid acceptance credential")
+    return value
+
+
+def server_environment(api_key: str) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.pop("AICC_ACCEPTANCE_KEY_FILE", None)
+    environment["ARK_API_KEY"] = api_key
+    environment["PYTHONUNBUFFERED"] = "1"
+    return environment
 
 
 class ApiSession:
@@ -182,19 +209,20 @@ def _credentials(log_path: Path, process: subprocess.Popen[bytes]) -> tuple[str,
 
 
 def main() -> int:
+    api_key = consume_server_key()
     root = Path(__file__).resolve().parents[1]
     data_dir = Path(os.environ["AICC_ACCEPTANCE_DATA"])
     port = int(os.environ["AICC_ACCEPTANCE_PORT"])
     origin = f"http://127.0.0.1:{port}"
     server_log = data_dir / ".server-bootstrap.log"
     server_log.touch(mode=0o600)
-    environment = dict(os.environ)
-    environment["PYTHONUNBUFFERED"] = "1"
+    environment = server_environment(api_key)
     with server_log.open("ab", buffering=0) as output:
         process = subprocess.Popen(
             [sys.executable, "-m", "ai_creation_canvas", "serve-local", "--port", str(port), "--data-dir", str(data_dir), "--static-dir", str(root / "web/dist"), "--ark-models", os.environ["AICC_ACCEPTANCE_MODELS_CONFIG"], "--bootstrap-if-empty"],
             cwd=root, env=environment, stdout=output, stderr=output,
         )
+        del api_key, environment
         try:
             admin_password, user_password = _credentials(server_log, process)
             admin, user = ApiSession(origin), ApiSession(origin)
@@ -238,7 +266,18 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        result = main()
+        if sys.argv[1:] == ["--probe-key-boundary"]:
+            probe_key = consume_server_key()
+            probe_environment = server_environment(probe_key)
+            if "ARK_API_KEY" in os.environ or probe_environment.get("ARK_API_KEY") != probe_key:
+                raise RuntimeError("paid credential boundary failed")
+            del probe_key, probe_environment
+            print("Paid acceptance key boundary ready. No provider request was made.")
+            result = 0
+        elif sys.argv[1:]:
+            raise RuntimeError("unsupported acceptance argument")
+        else:
+            result = main()
     except Exception:
         print('{"status":"failed","stage":"paid_acceptance"}', file=sys.stderr, flush=True)
         result = 1

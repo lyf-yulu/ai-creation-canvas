@@ -62,6 +62,31 @@ def test_paid_acceptance_guard_requires_a_new_data_directory_and_safe_port(tmp_p
 
 def test_paid_acceptance_runs_every_release_gate_before_the_client() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
-    client = source.index("acceptance_real_media.py")
+    client = source.rindex("acceptance_real_media.py")
     for gate in ("git diff --check", "security-scan.sh", "verify:release", "build-release.sh", "--skip-web-build"):
         assert 0 <= source.index(gate) < client
+
+
+def test_paid_acceptance_key_boundary_hides_key_from_offline_environment(tmp_path: Path) -> None:
+    result = run_guard(tmp_path, AICC_ACCEPTANCE_GUARD_ONLY="NO", AICC_ACCEPTANCE_ENV_PROBE="YES", ARK_API_KEY="sentinel-paid-key-never-log")
+    assert result.returncode == 0
+    assert result.stdout.strip() == "Paid acceptance key boundary ready. No provider request was made."
+    assert "sentinel-paid-key" not in result.stdout + result.stderr
+
+
+def test_paid_acceptance_rejects_repo_paths_outside_ignored_acceptance_root(tmp_path: Path) -> None:
+    rejected = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(ROOT / "work" / "paid-data"))
+    assert rejected.returncode == 64
+    assert "data path" in rejected.stderr.lower()
+    traversal = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(ROOT / ".paid-acceptance" / ".." / "state" / "paid-data"))
+    assert traversal.returncode == 64
+
+
+def test_paid_acceptance_allows_only_ignored_repo_data_or_strictly_external_data(tmp_path: Path) -> None:
+    ignored = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(ROOT / ".paid-acceptance" / "guard-test-never-created"))
+    assert ignored.returncode == 0
+    link = tmp_path / "linked-parent"
+    link.symlink_to(tmp_path / "real-parent", target_is_directory=True)
+    symlinked = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(link / "data"))
+    assert symlinked.returncode == 64
+    assert "symlink" in symlinked.stderr.lower()
