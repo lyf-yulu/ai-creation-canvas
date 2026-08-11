@@ -357,6 +357,35 @@ it("shares the three-upload scheduler across multiple collection nodes", async (
     expect(maxActive).toBeLessThanOrEqual(3);
 });
 
+it("releases shared scheduler slots after synchronous upload failures", async () => {
+    let calls = 0;
+    const upload = vi.fn((file: File, mediaType: GraphMediaType): Promise<OwnedMediaAsset> => {
+        calls += 1;
+        if (calls <= 3) throw new Error("synchronous upload failure");
+        return Promise.resolve({
+            id: "asset-recovered",
+            kind: "reference",
+            status: "active",
+            media_type: mediaType,
+            mime_type: file.type,
+            size_bytes: file.size,
+            content_url: "/api/v1/assets/asset-recovered/content",
+        });
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    let current: GraphMediaItem[] = [];
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(update) => { current = update(current); }} />);
+
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files: Array.from(
+        { length: 4 },
+        (_, index) => new File([String(index)], `sync-${index}.png`, { type: "image/png" }),
+    ) } });
+
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(current.map((item) => item.assetId)).toEqual(["asset-recovered"]));
+    expect(screen.getAllByText(/上传失败，请重试/)).toHaveLength(3);
+});
+
 it("never starts a queued cancelled upload and releases repeated cancellation state", async () => {
     const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => new Promise<OwnedMediaAsset>((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });

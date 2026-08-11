@@ -87,6 +87,41 @@ def test_portrait_finalize_failure_keeps_reserved_file_and_durable_recovery_meta
     assert not list((data_dir / "assets").glob(".portrait-recovery-*.pending"))
 
 
+def test_restart_marks_unknown_portrait_reservation_failed_without_polling_upstream(tmp_path):
+    data_dir = tmp_path / "data"
+    store = CanvasStore(data_dir)
+    local_file = store.assets_dir / "stale.png"
+    local_file.write_bytes(b"x")
+    store.create_asset(
+        asset_id="stale-portrait",
+        user_id="u-a",
+        kind="portrait",
+        media_type="image",
+        mime_type="image/png",
+        relative_path="assets/stale.png",
+        size_bytes=1,
+        status="processing",
+        service_id=None,
+        upstream_asset_id=None,
+    )
+
+    registry = AdapterRegistry()
+    app = create_app(
+        Settings("test", 8992, data_dir, "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/api/v1/assets/stale-portrait", headers={**headers(), "Cookie": "s=a"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    stored, _ = app.state.canvas_store.asset_for_owner("stale-portrait", "u-a")
+    assert stored is not None and stored["status"] == "failed" and stored["upstream_asset_id"] is None
+    assert local_file.read_bytes() == b"x"
+
+
 class FailingPortrait(Portrait):
     def __init__(self, failure):
         super().__init__()

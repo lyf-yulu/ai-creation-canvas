@@ -38,7 +38,7 @@ class MediaUploadScheduler {
                 continue;
             }
             this.active += 1;
-            void entry.run().then(entry.resolve, entry.reject).finally(() => {
+            void Promise.resolve().then(entry.run).then(entry.resolve, entry.reject).finally(() => {
                 this.active -= 1;
                 this.drain();
             });

@@ -364,7 +364,25 @@ def _stage_safe_asset(item: dict[str, object], request: Request) -> str:
         ):
             raise ValueError("unsafe asset file")
         tombstone = f".{secrets.token_hex(20)}.delete"
-        os.rename(relative.name, tombstone, src_dir_fd=root_descriptor, dst_dir_fd=root_descriptor)
+        journal = f"{tombstone}.journal"
+        journal_descriptor = os.open(journal, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=root_descriptor)
+        try:
+            payload = f"{item['asset_id']}\n{relative.name}\n".encode("ascii")
+            written = 0
+            while written < len(payload):
+                count = os.write(journal_descriptor, payload[written:])
+                if count <= 0:
+                    raise OSError("asset deletion journal write failed")
+                written += count
+            os.fsync(journal_descriptor)
+        finally:
+            os.close(journal_descriptor)
+        try:
+            os.rename(relative.name, tombstone, src_dir_fd=root_descriptor, dst_dir_fd=root_descriptor)
+            os.fsync(root_descriptor)
+        except BaseException:
+            os.unlink(journal, dir_fd=root_descriptor)
+            raise
         return tombstone
     finally:
         if descriptor is not None:
@@ -379,6 +397,8 @@ def _restore_staged_asset(item: dict[str, object], tombstone: object, request: R
     root_descriptor = _asset_root_descriptor(request)
     try:
         os.rename(tombstone, relative.name, src_dir_fd=root_descriptor, dst_dir_fd=root_descriptor)
+        os.unlink(f"{tombstone}.journal", dir_fd=root_descriptor)
+        os.fsync(root_descriptor)
     finally:
         os.close(root_descriptor)
 
@@ -389,6 +409,8 @@ def _purge_staged_asset(tombstone: object, request: Request) -> None:
     root_descriptor = _asset_root_descriptor(request)
     try:
         os.unlink(tombstone, dir_fd=root_descriptor)
+        os.unlink(f"{tombstone}.journal", dir_fd=root_descriptor)
+        os.fsync(root_descriptor)
     finally:
         os.close(root_descriptor)
 

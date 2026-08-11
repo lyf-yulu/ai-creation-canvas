@@ -213,6 +213,54 @@ def test_asset_delete_commit_survives_tombstone_purge_failure(tmp_path, monkeypa
     assert foreign.read_bytes() == b"foreign"
 
 
+def test_restart_recovers_journaled_delete_before_or_after_db_commit_and_ignores_mismatch(tmp_path):
+    def stage(store: CanvasStore, *, token: str, asset_id: str, basename: str) -> tuple[Path, Path]:
+        tombstone = store.assets_dir / f".{token}.delete"
+        journal = store.assets_dir / f".{token}.delete.journal"
+        journal.write_text(f"{asset_id}\n{basename}\n", encoding="ascii")
+        (store.assets_dir / basename).replace(tombstone)
+        return tombstone, journal
+
+    before_dir = tmp_path / "before"
+    before = CanvasStore(before_dir)
+    original = before.assets_dir / "before.png"; original.write_bytes(PNG)
+    before.create_asset(asset_id="asset-before", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/before.png", size_bytes=len(PNG))
+    tombstone, journal = stage(before, token="b" * 40, asset_id="asset-before", basename="before.png")
+
+    CanvasStore(before_dir)
+
+    assert original.read_bytes() == PNG
+    assert not tombstone.exists() and not journal.exists()
+
+    after_dir = tmp_path / "after"
+    after = CanvasStore(after_dir)
+    committed = after.assets_dir / "after.png"; committed.write_bytes(PNG)
+    after.create_asset(asset_id="asset-after", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/after.png", size_bytes=len(PNG))
+    tombstone, journal = stage(after, token="c" * 40, asset_id="asset-after", basename="after.png")
+    with after._connection(immediate=True) as db:
+        db.execute("DELETE FROM canvas_assets WHERE asset_id='asset-after'")
+
+    CanvasStore(after_dir)
+
+    assert not tombstone.exists() and not journal.exists() and not committed.exists()
+
+    mismatch_dir = tmp_path / "mismatch"
+    mismatch = CanvasStore(mismatch_dir)
+    actual = mismatch.assets_dir / "actual.png"; actual.write_bytes(PNG)
+    mismatch.create_asset(asset_id="asset-mismatch", user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path="assets/actual.png", size_bytes=len(PNG))
+    claimed = mismatch.assets_dir / "claimed.png"; claimed.write_bytes(PNG)
+    tombstone, journal = stage(mismatch, token="d" * 40, asset_id="asset-mismatch", basename="claimed.png")
+    foreign = mismatch.assets_dir / ".not-a-delete.journal"; foreign.write_bytes(b"foreign")
+    symlink_tombstone = mismatch.assets_dir / ("." + "e" * 40 + ".delete"); symlink_tombstone.symlink_to(actual)
+    symlink_journal = mismatch.assets_dir / ("." + "e" * 40 + ".delete.journal"); symlink_journal.write_text("asset-mismatch\nactual.png\n", encoding="ascii")
+
+    CanvasStore(mismatch_dir)
+
+    assert tombstone.is_file() and journal.is_file()
+    assert foreign.read_bytes() == b"foreign"
+    assert symlink_tombstone.is_symlink() and symlink_journal.is_file() and actual.read_bytes() == PNG
+
+
 def test_upload_enforces_each_configured_limit_from_stream_not_content_length(tmp_path):
     client, data_dir = asset_client(tmp_path, image=len(PNG) - 1, video=len(MP4) - 1, audio=len(MP3) - 1)
     samples = (("image", "image/png", "large.png", PNG), ("video", "video/mp4", "large.mp4", MP4), ("audio", "audio/mpeg", "large.mp3", MP3))

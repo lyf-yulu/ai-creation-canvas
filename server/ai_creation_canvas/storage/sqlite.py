@@ -24,6 +24,7 @@ _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
 _TOMBSTONE_NAME = re.compile(r"\.[0-9a-f]{40}\.delete\Z")
+_TOMBSTONE_JOURNAL_NAME = re.compile(r"\.([0-9a-f]{40})\.delete\.journal\Z")
 _PORTRAIT_RECOVERY_NAME = re.compile(r"\.portrait-recovery-([A-Za-z0-9_-]{1,128})\.pending\Z")
 
 
@@ -68,23 +69,53 @@ class CanvasStore:
         if self.assets_dir.is_symlink():
             raise ValueError("asset root must not be a symlink")
         os.chmod(self.assets_dir, 0o700)
-        self._sweep_tombstones()
         self.database = self.data_dir / "canvas.sqlite3"
         if self.database.exists() and self.database.is_symlink():
             raise ValueError("database must not be a symlink")
         self._init()
+        self._recover_asset_deletions()
         self._recover_portrait_finalizations()
+        self._fail_stale_portrait_reservations()
 
-    def _sweep_tombstones(self) -> None:
-        for candidate in self.assets_dir.iterdir():
-            if not _TOMBSTONE_NAME.fullmatch(candidate.name):
+    def _fsync_assets_dir(self) -> None:
+        descriptor = os.open(self.assets_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _recover_asset_deletions(self) -> None:
+        for journal in self.assets_dir.iterdir():
+            matched = _TOMBSTONE_JOURNAL_NAME.fullmatch(journal.name)
+            if matched is None:
                 continue
+            tombstone = self.assets_dir / f".{matched.group(1)}.delete"
             try:
-                info = candidate.lstat()
-                if stat.S_ISREG(info.st_mode) and not candidate.is_symlink():
-                    candidate.unlink()
-            except OSError:
-                pass
+                journal_info = journal.lstat()
+                if not stat.S_ISREG(journal_info.st_mode) or journal.is_symlink() or journal_info.st_size > 512:
+                    continue
+                asset_id, basename = journal.read_text(encoding="ascii").splitlines()
+                if not _RESULT_ID.fullmatch(asset_id) or not basename or basename != Path(basename).name or any(ord(char) < 32 for char in basename):
+                    continue
+                with self._connection() as db:
+                    row = db.execute("SELECT relative_path FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+                if row is not None and str(row["relative_path"]) != f"assets/{basename}":
+                    continue
+                if tombstone.is_symlink() or (tombstone.exists() and not stat.S_ISREG(tombstone.lstat().st_mode)):
+                    continue
+                original = self.assets_dir / basename
+                if row is not None:
+                    if tombstone.is_file() and not original.exists():
+                        os.replace(tombstone, original)
+                    elif tombstone.exists() or not original.is_file() or original.is_symlink():
+                        continue
+                else:
+                    if tombstone.is_file() and not tombstone.is_symlink():
+                        tombstone.unlink()
+                journal.unlink()
+                self._fsync_assets_dir()
+            except (OSError, UnicodeError, ValueError):
+                continue
 
     def _tombstone_bytes(self) -> int:
         total = 0
@@ -117,6 +148,10 @@ class CanvasStore:
                     candidate.unlink()
             except (OSError, UnicodeError, ValueError):
                 continue
+
+    def _fail_stale_portrait_reservations(self) -> None:
+        with self._connection(immediate=True) as db:
+            db.execute("UPDATE canvas_assets SET status='failed',updated_at=? WHERE kind='portrait' AND upstream_asset_id IS NULL AND status='processing'", (_now(),))
 
     def _prepare_root(self) -> None:
         # Do this before resolve(): resolve would hide a lexical symlink component.
