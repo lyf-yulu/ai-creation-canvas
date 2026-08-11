@@ -34,6 +34,22 @@ type QueuedUpload = {
     controller: AbortController;
 };
 
+const MEDIA_UPLOAD_CONCURRENCY = 3;
+
+async function mapWithConcurrency<Item, Result>(items: readonly Item[], worker: (item: Item) => Promise<Result>): Promise<Result[]> {
+    const results = new Array<Result>(items.length);
+    let cursor = 0;
+    const run = async () => {
+        while (cursor < items.length) {
+            const index = cursor;
+            cursor += 1;
+            results[index] = await worker(items[index]);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(MEDIA_UPLOAD_CONCURRENCY, items.length) }, () => run()));
+    return results;
+}
+
 const copyByType: Readonly<Record<GraphMediaType, { noun: string; accept: string }>> = {
     image: { noun: "图片", accept: "image/png,image/jpeg,image/webp" },
     video: { noun: "视频", accept: "video/mp4,video/webm" },
@@ -80,6 +96,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
     const releaseEntry = (entry: QueuedUpload) => {
         if (entry.previewUrl && objectUrlsRef.current.delete(entry.previewUrl)) URL.revokeObjectURL(entry.previewUrl);
         entriesRef.current.delete(entry.id);
+        cancelledRef.current.delete(entry.id);
     };
 
     const cancelEntry = (id: string, updateUi = true) => {
@@ -95,6 +112,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
         activeRef.current = false;
         for (const id of [...entriesRef.current.keys()]) cancelEntry(id, false);
         queueRef.current = [];
+        cancelledRef.current.clear();
         if (updateUi && mountedRef.current) setPending([]);
     };
 
@@ -108,7 +126,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
         try {
             while (queueRef.current.length) {
                 const batch = queueRef.current.shift() ?? [];
-                const results = await Promise.all(batch.map(async (entry) => {
+                const results = await mapWithConcurrency(batch, async (entry) => {
                     if (cancelledRef.current.has(entry.id) || entry.controller.signal.aborted) return { entry, asset: null, cancelled: true } as const;
                     if (mountedRef.current) setPending((current) => current.map((candidate) => candidate.id === entry.id ? { ...candidate, progress: 0 } : candidate));
                     try {
@@ -127,7 +145,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                     } catch (error) {
                         return { entry, asset: null, cancelled: entry.controller.signal.aborted || isAbortError(error) } as const;
                     }
-                }));
+                });
                 const accepted = results.flatMap(({ entry, asset, cancelled }) => asset && !cancelled ? [{
                     id: nanoid(),
                     assetId: asset.id,
@@ -150,6 +168,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                 }
                 const failures = new Set(results.filter((result) => !result.asset && !result.cancelled).map((result) => result.entry.id));
                 for (const { entry } of results) releaseEntry(entry);
+                for (const entry of batch) cancelledRef.current.delete(entry.id);
                 if (mountedRef.current) setPending((current) => current.flatMap((candidate) => {
                     if (failures.has(candidate.id)) return [{ ...candidate, failed: true }];
                     return results.some((result) => result.entry.id === candidate.id) ? [] : [candidate];

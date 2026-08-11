@@ -244,6 +244,82 @@ it("serializes overlapping batches and applies upload results to the latest reor
     expect(new Set(current.map((item) => item.assetId)).size).toBe(current.length);
 });
 
+it("limits one 30-item batch to three active uploads and preserves selection order under reverse cohort completion", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const completed: string[] = [];
+    const resolvers = new Map<number, () => void>();
+    const upload = vi.fn((file: File, mediaType: GraphMediaType) => {
+        const index = Number(file.name.slice(5, 7));
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        return new Promise<OwnedMediaAsset>((resolve) => resolvers.set(index, () => {
+            active -= 1;
+            completed.push(file.name);
+            resolve({ id: `asset-${index}`, kind: "reference", status: "active", media_type: mediaType, mime_type: file.type, size_bytes: file.size, content_url: `/api/v1/assets/asset-${index}/content` });
+        }));
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    let current: GraphMediaItem[] = [];
+    render(<MediaCollectionNode node={collectionNode("image", [])} upload={upload} onItemsChange={(update) => { current = update(current); }} />);
+    const files = Array.from({ length: 30 }, (_, index) => new File([String(index)], `item-${String(index + 1).padStart(2, "0")}.png`, { type: "image/png" }));
+
+    fireEvent.change(screen.getByLabelText("添加图片"), { target: { files } });
+
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(3));
+    let completedCount = 0;
+    for (let cohort = 1; cohort <= 30; cohort += 3) {
+        for (let index = cohort + 2; index >= cohort; index -= 1) {
+            resolvers.get(index)?.();
+            completedCount += 1;
+            await waitFor(() => expect(upload).toHaveBeenCalledTimes(Math.min(30, 3 + completedCount)));
+        }
+    }
+    await waitFor(() => expect(current).toHaveLength(30), { timeout: 5000 });
+    expect(maxActive).toBeLessThanOrEqual(3);
+    expect(current.map((item) => item.assetId)).toEqual(Array.from({ length: 30 }, (_, index) => `asset-${index + 1}`));
+    expect(completed.slice(0, 3)).toEqual(["item-03.png", "item-02.png", "item-01.png"]);
+});
+
+it("never starts a queued cancelled upload and releases repeated cancellation state", async () => {
+    const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => new Promise<OwnedMediaAsset>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true });
+    }));
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    render(<MediaCollectionNode node={collectionNode("video", [])} upload={upload} onItemsChange={() => undefined} />);
+    const input = screen.getByLabelText("添加视频");
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+        const files = Array.from({ length: 4 }, (_, index) => new File([String(index)], `cycle-${cycle}-${index}.mp4`, { type: "video/mp4" }));
+        fireEvent.change(input, { target: { files } });
+        await waitFor(() => expect(upload).toHaveBeenCalledTimes((cycle + 1) * 3));
+        for (const file of files) fireEvent.click(screen.getByRole("button", { name: `取消上传 ${file.name}` }));
+        await waitFor(() => expect(screen.queryByText(new RegExp(`cycle-${cycle}-`))).not.toBeInTheDocument());
+    }
+
+    expect(upload).toHaveBeenCalledTimes(15);
+    expect(upload.mock.calls.some(([file]) => (file as File).name.endsWith("-3.mp4"))).toBe(false);
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+});
+
+it("aborts only the three active workers and clears the remaining queue on unmount", async () => {
+    const signals: AbortSignal[] = [];
+    const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise<OwnedMediaAsset>((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("cancelled", "AbortError")), { once: true }));
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn((file: File) => `blob:${file.name}`), revokeObjectURL: vi.fn() });
+    const view = render(<MediaCollectionNode node={collectionNode("audio", [])} upload={upload} onItemsChange={() => undefined} />);
+    const files = Array.from({ length: 8 }, (_, index) => new File([String(index)], `queued-${index}.mp3`, { type: "audio/mpeg" }));
+    fireEvent.change(screen.getByLabelText("添加音频"), { target: { files } });
+    await waitFor(() => expect(upload).toHaveBeenCalledTimes(3));
+
+    view.unmount();
+    await waitFor(() => expect(signals.every((signal) => signal.aborted)).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(upload).toHaveBeenCalledTimes(3);
+});
+
 it("cancels an in-flight item immediately and aborts all remaining uploads on unmount", async () => {
     const signals: AbortSignal[] = [];
     const upload = vi.fn((_file: File, _mediaType: GraphMediaType, _progress: (percent: number) => void, signal: AbortSignal) => {

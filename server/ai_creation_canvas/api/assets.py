@@ -59,10 +59,10 @@ def _safe_upload_basename(filename: str, mime_type: str) -> str:
     if not isinstance(filename, str) or any(ord(char) < 32 or ord(char) == 127 for char in filename):
         raise MediaUploadInvalid("invalid filename")
     basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
-    parts = basename.split(".")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
+    stem, separator, suffix = basename.rpartition(".")
+    if not separator or not stem or not suffix:
         raise MediaUploadInvalid("invalid filename")
-    extension = f".{parts[1].lower()}"
+    extension = f".{suffix.lower()}"
     if extension not in _INPUT_EXTENSIONS.get(mime_type, frozenset()):
         raise MediaUploadInvalid("invalid filename")
     return basename

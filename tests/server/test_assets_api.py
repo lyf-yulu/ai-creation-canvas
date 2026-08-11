@@ -279,16 +279,41 @@ async def test_cancelled_chunked_upload_closes_starlette_spool_and_leaves_no_app
         ("video", "video/webm", b"not-webm"),
         ("audio", "audio/mpeg", b"not-mp3"),
         ("audio", "audio/wav", b"not-wave"),
-        ("image", "video/mp4", MP4),
     ],
 )
-def test_upload_rejects_mime_signature_or_media_category_mismatch_and_cleans_temp(tmp_path, media_type, mime_type, payload):
+def test_upload_rejects_invalid_signature_after_reaching_bounded_content_validation(tmp_path, monkeypatch, media_type, mime_type, payload):
     client, data_dir = asset_client(tmp_path)
+    extension = {"image/png": "png", "video/mp4": "mp4", "video/webm": "webm", "audio/mpeg": "mp3", "audio/wav": "wav"}[mime_type]
+    calls = []
+    from ai_creation_canvas.api import assets as assets_api
+    real_validate = assets_api._is_valid
+
+    def tracking_validate(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(assets_api, "_is_valid", tracking_validate)
 
     response = client.post(
         "/api/v1/assets",
-        files={"file": ("unsafe.bin", payload, mime_type)},
+        files={"file": (f"invalid.{extension}", payload, mime_type)},
         data={"media_type": media_type},
+        headers=headers(),
+    )
+
+    assert response.status_code == 415
+    assert len(calls) == 1
+    assert not list((data_dir / "assets").iterdir())
+
+
+def test_upload_rejects_media_category_mismatch_before_content_validation(tmp_path, monkeypatch):
+    client, data_dir = asset_client(tmp_path)
+    monkeypatch.setattr("ai_creation_canvas.api.assets._is_valid", lambda *_args: pytest.fail("category mismatch must not reach signature validation"))
+
+    response = client.post(
+        "/api/v1/assets",
+        files={"file": ("clip.mp4", MP4, "video/mp4")},
+        data={"media_type": "image"},
         headers=headers(),
     )
 
@@ -300,7 +325,11 @@ def test_upload_rejects_mime_signature_or_media_category_mismatch_and_cleans_tem
     ("filename", "mime_type", "payload", "expected"),
     [
         ("FRAME.PNG", "image/png", PNG, 201),
+        ("scene.v2.png", "image/png", PNG, 201),
+        ("project.final.mp4", "video/mp4", MP4, 201),
         ("frame", "image/png", PNG, 415),
+        (".png", "image/png", PNG, 415),
+        ("frame.", "image/png", PNG, 415),
         ("frame.png.exe", "image/png", PNG, 415),
         ("frame.jpg", "image/png", PNG, 415),
         ("clip.mov", "video/mp4", MP4, 415),
