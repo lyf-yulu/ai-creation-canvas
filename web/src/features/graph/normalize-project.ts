@@ -1,4 +1,5 @@
 import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, graphInputPortDescriptor, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
+import type { NodeDefinition } from "@/features/nodes/types";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
@@ -24,7 +25,11 @@ export type CanvasProjectInput = Omit<CanvasProject, "graphSchemaVersion" | "nod
     connections: CanvasConnectionInput[];
 };
 
-export function normalizeCanvasProject(project: CanvasProjectInput): CanvasProject {
+export type CanvasNodePortResolver = {
+    getNode: (id: string) => Pick<NodeDefinition, "inputs" | "outputs"> | undefined;
+};
+
+export function normalizeCanvasProject(project: CanvasProjectInput, portResolver?: CanvasNodePortResolver): CanvasProject {
     const cloned = cloneJsonValue(project) as CanvasProjectInput;
     assertSupportedSchema(cloned);
     const nodes = cloned.nodes.map(normalizeNode);
@@ -32,16 +37,16 @@ export function normalizeCanvasProject(project: CanvasProjectInput): CanvasProje
         ...cloned,
         graphSchemaVersion: GRAPH_SCHEMA_VERSION,
         nodes,
-        connections: normalizeConnections(cloned.connections, nodes),
+        connections: normalizeConnections(cloned.connections, nodes, portResolver),
         chatSessions: cloned.chatSessions,
         viewport: cloned.viewport,
     };
 }
 
-export function normalizeCanvasProjectBaselineSnapshot(snapshot: string, fallbackProject: CanvasProjectInput): string {
+export function normalizeCanvasProjectBaselineSnapshot(snapshot: string, fallbackProject: CanvasProjectInput, portResolver?: CanvasNodePortResolver): string {
     const parsed = JSON.parse(snapshot) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError("Invalid canvas project baseline snapshot");
-    const normalized = normalizeCanvasProject({ ...fallbackProject, ...(parsed as Partial<CanvasProjectInput>), updatedAt: fallbackProject.updatedAt });
+    const normalized = normalizeCanvasProject({ ...fallbackProject, ...(parsed as Partial<CanvasProjectInput>), updatedAt: fallbackProject.updatedAt }, portResolver);
     const { updatedAt: _timestamp, ...content } = normalized;
     return canonicalJson(content);
 }
@@ -272,7 +277,7 @@ function mediaTypeForNode(type: CanvasNodeData["type"]): GraphMediaType | null {
     return null;
 }
 
-function normalizeConnections(connections: CanvasConnectionInput[], nodes: CanvasNodeData[]): CanvasConnection[] {
+function normalizeConnections(connections: CanvasConnectionInput[], nodes: CanvasNodeData[], portResolver?: CanvasNodePortResolver): CanvasConnection[] {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const seen = new Set<string>();
     const promptTargets = new Set<string>();
@@ -290,40 +295,67 @@ function normalizeConnections(connections: CanvasConnectionInput[], nodes: Canva
             ? { fromPortId: connection.fromPortId!, toPortId: connection.toPortId! }
             : inferLegacyPorts(from, to);
         if (!ports) continue;
-        if (explicit && !isValidExplicitConnection(from, ports.fromPortId, to, ports.toPortId)) continue;
+        const validity = explicit ? classifyExplicitConnection(from, ports.fromPortId, to, ports.toPortId, portResolver) : "valid";
+        if (validity === "invalid") continue;
         const key = `${from.id}\u0000${ports.fromPortId}\u0000${to.id}\u0000${ports.toPortId}`;
         if (seen.has(key)) continue;
-        if (ports.toPortId === "prompt" && promptTargets.has(to.id)) continue;
+        if (ports.toPortId === "prompt" && validity === "valid" && promptTargets.has(to.id)) continue;
         seen.add(key);
-        if (ports.toPortId === "prompt") promptTargets.add(to.id);
+        if (ports.toPortId === "prompt" && validity === "valid") promptTargets.add(to.id);
         normalized.push({ id: connection.id, fromNodeId: from.id, fromPortId: ports.fromPortId, toNodeId: to.id, toPortId: ports.toPortId });
     }
     return normalized;
 }
 
-function isValidExplicitConnection(from: CanvasNodeData, fromPortId: string, to: CanvasNodeData, toPortId: string) {
+type ConnectionValidity = "valid" | "invalid" | "opaque";
+
+function classifyExplicitConnection(from: CanvasNodeData, fromPortId: string, to: CanvasNodeData, toPortId: string, portResolver?: CanvasNodePortResolver): ConnectionValidity {
     const source = from.metadata?.graph;
     const target = to.metadata?.graph;
-    if (!source && !target) return !isBuiltInGraphNode(from.type) && !isBuiltInGraphNode(to.type);
-    if (!source && target?.role === "model") {
-        const input = target.inputPorts.find((port) => port.id === toPortId);
-        return Boolean(!isBuiltInGraphNode(from.type) && input && !STANDARD_MODEL_INPUT_PORTS[toPortId]);
+    const sourceType = resolveSourceType(from, fromPortId, portResolver);
+    if (sourceType === "invalid") return "invalid";
+    if (!target) {
+        const targetType = resolveRegisteredTargetType(to, toPortId, portResolver);
+        if (targetType === "unknown") return isBuiltInGraphNode(to.type) ? "invalid" : "opaque";
+        if (targetType === "invalid") return "invalid";
+        if (sourceType === "unknown") return "opaque";
+        return portTypesMatch(sourceType, targetType) ? "valid" : "invalid";
     }
-    if (!source || fromPortId !== source.outputPortId) return false;
-    if (!target) return !isBuiltInGraphNode(to.type);
     if (target.role === "model") {
         const input = target.inputPorts.find((port) => port.id === toPortId);
-        if (!input) return false;
+        if (!input) return "invalid";
+        if (sourceType === "unknown") return "opaque";
         const standard = STANDARD_MODEL_INPUT_PORTS[toPortId];
-        if (standard?.accepts === "prompt") return source.role === "prompt";
-        if (standard && standard.accepts !== "any") return isMediaSource(source, standard.accepts);
-        return input.accepts === "any" || graphSourceValueType(source) === "any" || graphSourceValueType(source) === input.accepts;
+        if (standard) return sourceType === standard.accepts ? "valid" : "invalid";
+        return portTypesMatch(sourceType, input.accepts) ? "valid" : "invalid";
     }
-    return target.role === "result" && toPortId === "result" && source.role === "model";
+    if (target.role === "result" && toPortId === "result" && source?.role === "model" && fromPortId === source.outputPortId) return "valid";
+    return sourceType === "unknown" && !isBuiltInGraphNode(from.type) ? "opaque" : "invalid";
 }
 
-function isMediaSource(metadata: CanvasGraphNodeMetadata, mediaType: GraphMediaType) {
-    return (metadata.role === "media-collection" || metadata.role === "result") && metadata.mediaType === mediaType;
+function resolveSourceType(node: CanvasNodeData, portId: string, portResolver?: CanvasNodePortResolver): GraphPortValueType | "invalid" | "unknown" {
+    const graph = node.metadata?.graph;
+    if (graph) {
+        if (portId !== graph.outputPortId) return "invalid";
+        return graphSourceValueType(graph);
+    }
+    const definition = portResolver?.getNode(String(node.type));
+    if (!definition) return "unknown";
+    const output = definition.outputs.find((declaration) => (typeof declaration === "string" ? declaration : declaration.id) === portId);
+    if (!output) return "invalid";
+    return typeof output === "string" ? "any" : output.provides;
+}
+
+function resolveRegisteredTargetType(node: CanvasNodeData, portId: string, portResolver?: CanvasNodePortResolver): GraphPortValueType | "invalid" | "unknown" {
+    const definition = portResolver?.getNode(String(node.type));
+    if (!definition) return "unknown";
+    const input = definition.inputs.find((declaration) => (typeof declaration === "string" ? declaration : declaration.id) === portId);
+    if (!input) return "invalid";
+    return typeof input === "string" ? "any" : input.accepts;
+}
+
+function portTypesMatch(source: GraphPortValueType, target: GraphPortValueType) {
+    return source === "any" || target === "any" || source === target;
 }
 
 function graphSourceValueType(metadata: CanvasGraphNodeMetadata): GraphPortValueType {

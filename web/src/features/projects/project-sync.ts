@@ -4,6 +4,7 @@ import type { StoreApi } from "zustand";
 import * as projectsApi from "@/api/projects";
 import { ApiRequestError } from "@/api/client";
 import { normalizeCanvasProject, type CanvasProjectInput } from "@/features/graph/normalize-project";
+import { nodeRegistry } from "@/features/nodes/registry";
 import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import {
     useCanvasStore,
@@ -102,7 +103,7 @@ export class ProjectSync {
             let recoveryCopies = 0;
 
             for (const item of serverEnvelopes) {
-                const serverProject = normalizeCanvasProject(item.project);
+                const serverProject = normalizeCanvasProject(item.project, nodeRegistry);
                 this.versions.set(serverProject.id, item.version);
                 const serverSerialized = serverSnapshot(item.project, serverProject);
                 const local = localById.get(serverProject.id);
@@ -283,7 +284,7 @@ export class ProjectSync {
         try {
             const server = await this.api.get(project.id, controller.signal);
             if (!this.active(generation, lease)) return;
-            const serverProject = normalizeCanvasProject(server.project);
+            const serverProject = normalizeCanvasProject(server.project, nodeRegistry);
             const latestLocal = this.store.getState().projects.find((item) => item.id === project.id) || project;
             const copy = localCopy(latestLocal, "冲突副本");
             const state = this.store.getState();

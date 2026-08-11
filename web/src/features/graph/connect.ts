@@ -78,7 +78,7 @@ export function connectGraphPorts(
     if (!sourceNode || !targetNode) return { ok: false, reason: "incompatible" };
     const source = getNodePorts(sourceNode, registry).sources.find((candidate) => candidate.portId === sourceCandidate.portId);
     const target = getNodePorts(targetNode, registry).targets.find((candidate) => candidate.portId === targetCandidate.portId);
-    if (!source || !target || !portsAreCompatible(source, target, sourceNode, targetNode)) return { ok: false, reason: "incompatible" };
+    if (!source || !target || !portsAreCompatible(source, target, targetNode)) return { ok: false, reason: "incompatible" };
 
     const duplicate = connections.some((connection) => connection.fromNodeId === source.nodeId
         && connection.fromPortId === source.portId
@@ -108,19 +108,9 @@ function targetPort(nodeId: string, portId: string, valueType: GraphPortValueTyp
     return { nodeId, portId, direction: "target", valueType };
 }
 
-function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, sourceNode: CanvasNodeData, targetNode: CanvasNodeData) {
+function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, targetNode: CanvasNodeData) {
     const targetGraph = targetNode.metadata?.graph;
     const standard = targetGraph?.role === "model" || targetNode.type === "config" ? STANDARD_MODEL_INPUT_PORTS[target.portId] : undefined;
-    if (standard?.accepts === "prompt") return sourceNode.metadata?.graph?.role === "prompt" || sourceNode.type === "text";
-    if (standard && standard.accepts !== "any") return isStrictMediaSource(sourceNode, source.valueType, standard.accepts);
+    if (standard) return source.valueType === standard.accepts;
     return source.valueType === "any" || target.valueType === "any" || source.valueType === target.valueType;
-}
-
-function isStrictMediaSource(sourceNode: CanvasNodeData, actual: GraphPortValueType | undefined, expected: GraphPortValueType) {
-    if (actual !== expected) return false;
-    const graph = sourceNode.metadata?.graph;
-    if (graph?.role === "media-collection" || graph?.role === "result") return graph.mediaType === expected;
-    return (expected === "image" && sourceNode.type === "image")
-        || (expected === "video" && sourceNode.type === "video")
-        || (expected === "audio" && sourceNode.type === "audio");
 }

@@ -152,6 +152,43 @@ describe("named-port graph rules", () => {
         expect(connectGraphPorts(port("image", "media", "source"), port("model", "reference_audio", "target"), nodes, [], "image-audio")).toEqual({ ok: false, reason: "incompatible" });
         expect(connectGraphPorts(port("prompt", "prompt", "source"), port("model", "prompt", "target"), nodes, [], "prompt-model")).toMatchObject({ ok: true });
     });
+
+    it("connects trusted typed plugin outputs to every matching standard model port", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.prompt", version: 1, title: "Prompt Provider", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.image", version: 1, title: "Image Provider", inputs: [], outputs: [{ id: "out", provides: "image" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.video", version: 1, title: "Video Provider", inputs: [], outputs: [{ id: "out", provides: "video" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.audio", version: 1, title: "Audio Provider", inputs: [], outputs: [{ id: "out", provides: "audio" }], createMetadata: () => ({}), render: () => null });
+        const prompt = baseNode("plugin-prompt", "plugin.prompt", 0, 0, {});
+        const image = baseNode("plugin-image", "plugin.image", 0, 0, {});
+        const video = baseNode("plugin-video", "plugin.video", 0, 0, {});
+        const audio = baseNode("plugin-audio", "plugin.audio", 0, 0, {});
+        const model = modelNode("model", ["prompt", "reference_images", "first_frame", "last_frame", "reference_video", "reference_audio"]);
+        const nodes = [prompt, image, video, audio, model];
+        const cases = [
+            [prompt, "prompt"],
+            [image, "reference_images"],
+            [image, "first_frame"],
+            [image, "last_frame"],
+            [video, "reference_video"],
+            [audio, "reference_audio"],
+        ] as const;
+
+        for (const [source, targetPortId] of cases) {
+            expect(connectGraphPorts(port(source.id, "out", "source"), port("model", targetPortId, "target"), nodes, [], `edge-${targetPortId}`, registry)).toMatchObject({ ok: true });
+        }
+    });
+
+    it("rejects legacy any outputs and ignores a caller-spoofed valueType for standard ports", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.legacy", version: 1, title: "Legacy", inputs: [], outputs: ["out"], createMetadata: () => ({}), render: () => null });
+        const plugin = baseNode("plugin", "plugin.legacy", 0, 0, {});
+        const model = modelNode("model", ["reference_images"]);
+        const nodes = [plugin, model];
+        const spoofed: GraphPortRef = { nodeId: "plugin", portId: "out", direction: "source", valueType: "image" };
+
+        expect(connectGraphPorts(spoofed, port("model", "reference_images", "target"), nodes, [], "spoofed", registry)).toEqual({ ok: false, reason: "incompatible" });
+    });
 });
 
 describe("canvas named-port interactions", () => {

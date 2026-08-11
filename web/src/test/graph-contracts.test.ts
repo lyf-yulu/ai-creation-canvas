@@ -9,6 +9,7 @@ import {
     type GraphResultMetadata,
 } from "@/features/graph/contracts";
 import { normalizeCanvasProject, UnsupportedGraphSchemaError, type CanvasProjectInput } from "@/features/graph/normalize-project";
+import { createNodeRegistry } from "@/features/nodes/registry";
 import { normalizeConnection } from "@/lib/canvas/canvas-node-geometry";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
@@ -207,6 +208,7 @@ describe("legacy graph normalization", () => {
         expect(normalized.connections).toEqual([
             { id: "plugin-plugin", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" },
             { id: "plugin-model", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" },
+            { id: "plugin-reserved", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "prompt" },
             { id: "builtin-plugin", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "plugin-2", toPortId: "custom_input" },
         ]);
     });
@@ -252,6 +254,56 @@ describe("legacy graph normalization", () => {
             inputPorts: [{ id: "reference_audio", accepts: "audio" }, { id: "custom_input", accepts: "any" }],
         });
         expect(normalized.nodes[0].metadata?.graph).not.toHaveProperty("inputPortIds");
+    });
+
+    it("validates and preserves typed plugin edges to every standard model port across reload", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.prompt", version: 1, title: "Prompt", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.image", version: 1, title: "Image", inputs: [], outputs: [{ id: "out", provides: "image" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.video", version: 1, title: "Video", inputs: [], outputs: [{ id: "out", provides: "video" }], createMetadata: () => ({}), render: () => null });
+        registry.registerNode({ id: "plugin.audio", version: 1, title: "Audio", inputs: [], outputs: [{ id: "out", provides: "audio" }], createMetadata: () => ({}), render: () => null });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "video.generate", inputPorts: [
+            { id: "prompt", accepts: "prompt" },
+            { id: "reference_images", accepts: "image" },
+            { id: "first_frame", accepts: "image" },
+            { id: "last_frame", accepts: "image" },
+            { id: "reference_video", accepts: "video" },
+            { id: "reference_audio", accepts: "audio" },
+        ], outputPortId: "result", parameters: {} } });
+        const nodes = [node("plugin-prompt", "plugin.prompt"), node("plugin-image", "plugin.image"), node("plugin-video", "plugin.video"), node("plugin-audio", "plugin.audio"), model];
+        const connections = [
+            { id: "prompt", fromNodeId: "plugin-prompt", fromPortId: "out", toNodeId: "model", toPortId: "prompt" },
+            { id: "images", fromNodeId: "plugin-image", fromPortId: "out", toNodeId: "model", toPortId: "reference_images" },
+            { id: "first", fromNodeId: "plugin-image", fromPortId: "out", toNodeId: "model", toPortId: "first_frame" },
+            { id: "last", fromNodeId: "plugin-image", fromPortId: "out", toNodeId: "model", toPortId: "last_frame" },
+            { id: "video", fromNodeId: "plugin-video", fromPortId: "out", toNodeId: "model", toPortId: "reference_video" },
+            { id: "audio", fromNodeId: "plugin-audio", fromPortId: "out", toNodeId: "model", toPortId: "reference_audio" },
+        ];
+
+        const once = normalizeCanvasProject(project(nodes, connections), registry);
+        const twice = normalizeCanvasProject(once, registry);
+
+        expect(once.connections.map((edge) => edge.id)).toEqual(["prompt", "images", "first", "last", "video", "audio"]);
+        expect(twice).toEqual(once);
+    });
+
+    it("drops a registered untyped standard edge but preserves unknown opaque edges without consuming prompt quota", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.any", version: 1, title: "Any", inputs: [], outputs: ["out"], createMetadata: () => ({}), render: () => null });
+        const unknown = node("unknown", "plugin.unknown");
+        const untyped = node("untyped", "plugin.any");
+        const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "valid", outputPortId: "prompt" } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.generate", inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }], outputPortId: "result", parameters: {} } });
+        const source = project([unknown, untyped, prompt, model], [
+            { id: "opaque-prompt", fromNodeId: "unknown", fromPortId: "mystery", toNodeId: "model", toPortId: "prompt" },
+            { id: "drop-untyped", fromNodeId: "untyped", fromPortId: "out", toNodeId: "model", toPortId: "reference_images" },
+            { id: "valid-prompt", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+        ]);
+
+        const normalized = normalizeCanvasProject(source, registry);
+
+        expect(normalized.connections.map((edge) => edge.id)).toEqual(["opaque-prompt", "valid-prompt"]);
+        expect(normalizeCanvasProject(normalized).connections.map((edge) => edge.id)).toEqual(["opaque-prompt", "valid-prompt"]);
     });
 
     it("rebuilds malformed current-version metadata from bounded legacy fields", () => {

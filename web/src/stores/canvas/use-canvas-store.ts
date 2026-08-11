@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { normalizeCanvasProject, normalizeCanvasProjectBaselineSnapshot, UnsupportedGraphSchemaError, type CanvasProjectInput } from "@/features/graph/normalize-project";
+import { nodeRegistry } from "@/features/nodes/registry";
 import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
 import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -93,14 +94,14 @@ export function clearCanvasInMemory() {
 export function migrateCanvasPersistedState(persistedState: unknown, persistedVersion: number) {
     const state = persistedState && typeof persistedState === "object" ? persistedState as { projects?: CanvasProjectInput[]; projectSyncMetadata?: ProjectSyncMetadataMap } : {};
     const sourceProjects = Array.isArray(state.projects) ? state.projects : [];
-    const projects = sourceProjects.map((project) => normalizeCanvasProject(project));
+    const projects = sourceProjects.map((project) => normalizeCanvasProject(project, nodeRegistry));
     if (persistedVersion >= 1 && state.projectSyncMetadata && typeof state.projectSyncMetadata === "object") {
         const projectSyncMetadata = { ...state.projectSyncMetadata };
         for (const source of sourceProjects) {
             const metadata = projectSyncMetadata[source.id];
             if (metadata?.source !== "server") continue;
             try {
-                projectSyncMetadata[source.id] = { ...metadata, snapshot: normalizeCanvasProjectBaselineSnapshot(metadata.snapshot, source) };
+                projectSyncMetadata[source.id] = { ...metadata, snapshot: normalizeCanvasProjectBaselineSnapshot(metadata.snapshot, source, nodeRegistry) };
             } catch {
                 // Preserve an unreadable baseline so sync recovery remains conservative.
             }
@@ -187,7 +188,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     showImageInfo: source.showImageInfo || false,
                     viewport: normalizeViewport(source.viewport),
                     ...(Object.prototype.hasOwnProperty.call(source, "graphSchemaVersion") ? { graphSchemaVersion: source.graphSchemaVersion } : {}),
-                });
+                }, nodeRegistry);
                 set((state) => ({
                     projects: [project, ...state.projects],
                     projectSyncMetadata: { ...state.projectSyncMetadata, [project.id]: { source: "draft" } },
@@ -216,7 +217,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             replaceProjects: (projects, projectSyncMetadata) => {
                 if (get().loadError?.readOnly) return;
-                const normalized = projects.map((project) => normalizeCanvasProject(project));
+                const normalized = projects.map((project) => normalizeCanvasProject(project, nodeRegistry));
                 set(projectSyncMetadata ? { projects: normalized, projectSyncMetadata } : { projects: normalized });
             },
             setProjectSyncMetadata: (id, metadata) => {
