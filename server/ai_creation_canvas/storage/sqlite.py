@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 import os
 from pathlib import Path
 import secrets
@@ -281,7 +282,7 @@ class CanvasStore:
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-                error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                error_code TEXT, result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
         marker = db.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()
@@ -314,14 +315,15 @@ class CanvasStore:
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                     upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, error_code TEXT,
-                    result_id TEXT, submission_token TEXT, lease_until REAL,
+                    result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL,
                     attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     UNIQUE(user_id,idempotency_key))""")
+            projection.insert(10, "NULL")
             db.execute("INSERT INTO canvas_jobs SELECT " + ",".join(projection) + " FROM canvas_jobs_legacy")
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
@@ -717,7 +719,7 @@ class CanvasStore:
             raise KeyError(job_id)
         return dict(row)
 
-    def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None) -> dict[str, object]:
+    def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
@@ -727,8 +729,15 @@ class CanvasStore:
             if old["status"] in {"succeeded", "failed"} or ranks.get(status, -1) < ranks.get(str(old["status"]), 0):
                 return old
             now = _now()
-            result_id = result_id if result_id is not None else result_ref
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=COALESCE(?, upstream_job_id), error_code=COALESCE(?, error_code), result_id=COALESCE(?, result_id), updated_at=? WHERE id=?", (status, upstream_job_id, error_code, result_id, now, job_id))
+            if result_ids is not None:
+                if not 1 <= len(result_ids) <= 8 or len(set(result_ids)) != len(result_ids) or any(not _RESULT_ID.fullmatch(item) for item in result_ids):
+                    raise ValueError("result IDs are invalid")
+                result_id = result_ids[0]
+                result_ids_json = json.dumps(result_ids, separators=(",", ":"))
+            else:
+                result_id = result_id if result_id is not None else result_ref
+                result_ids_json = None
+            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=COALESCE(?, upstream_job_id), error_code=COALESCE(?, error_code), result_id=COALESCE(?, result_id), result_ids_json=COALESCE(?, result_ids_json), updated_at=? WHERE id=?", (status, upstream_job_id, error_code, result_id, result_ids_json, now, job_id))
             updated = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert updated is not None
         return dict(updated)

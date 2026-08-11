@@ -19,6 +19,20 @@ router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 64
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_RESULT_ASSET = re.compile(r"job-result\.([A-Za-z0-9_-]{1,128})\.([0-7])\Z")
+
+
+def _result_ids(item: Mapping[str, object]) -> tuple[str, ...]:
+    encoded = item.get("result_ids_json")
+    if isinstance(encoded, str):
+        try:
+            values = json.loads(encoded)
+        except ValueError:
+            values = None
+        if isinstance(values, list) and 1 <= len(values) <= 8 and all(isinstance(value, str) and _RESULT_ID.fullmatch(value) for value in values):
+            return tuple(values)
+    legacy = item.get("result_id")
+    return (legacy,) if isinstance(legacy, str) and _RESULT_ID.fullmatch(legacy) else ()
 
 
 def _bounded(value: object, depth: int = 0) -> bool:
@@ -102,6 +116,11 @@ def _response(item: dict[str, object], request: Request) -> dict[str, object]:
     body: dict[str, object] = {"id": item["id"], "status": item["status"]}
     if item["status"] == "succeeded":
         body["result_url"] = f"/api/v1/results/{item['id']}"
+        media_type = "video" if str(item.get("operation", "")).startswith("video.") else "image"
+        body["results"] = [
+            {"url": f"/api/v1/results/{item['id']}/{index}", "asset_id": f"job-result.{item['id']}.{index}", "media_type": media_type}
+            for index, _ in enumerate(_result_ids(item))
+        ]
     if item["status"] == "failed":
         body["error"] = {"code": item["error_code"] or "TASK_FAILED", "message": "The generation task failed.", "retryable": False, "request_id": getattr(request.state, "request_id", "request"), "phase": "generation"}
     return body
@@ -119,12 +138,11 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
             state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
         else:
             state = await adapter.poll(context, str(item["upstream_job_id"]))
-        result_id = None
-        if state.result is not None:
-            result_id = state.result.asset_id
-            if not _RESULT_ID.fullmatch(result_id):
+        result_ids = tuple(result.asset_id for result in state.results)
+        if state.status.value == "succeeded":
+            if not result_ids or len(result_ids) > 8 or any(not _RESULT_ID.fullmatch(result_id) for result_id in result_ids):
                 raise InvalidUpstreamResult("provider success result is invalid")
-        return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_id=result_id)
+        return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_ids=result_ids or None)
     except (InvalidUpstreamResult, ValueError):
         return request.app.state.canvas_store.fail_invalid_upstream_result(
             str(item["id"]), "INVALID_UPSTREAM_RESULT"
@@ -152,6 +170,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     except (TypeError, ValueError):
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
     selected_adapter = request.app.state.adapter_registry.generation(model.service_id)
+    reusable_result_services = getattr(selected_adapter, "reusable_result_services", frozenset({model.service_id}))
     if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
@@ -168,6 +187,17 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     legacy_asset_ids = [("legacy", asset_id) for asset_id in domain_request.asset_ids]
     for port_id, asset_id in (*typed_asset_ids, *legacy_asset_ids):
         asset, forbidden = store.asset_for_owner(asset_id, context.user.user_id)
+        if asset is None and not forbidden:
+            matched = _RESULT_ASSET.fullmatch(asset_id)
+            if matched is not None:
+                source, source_forbidden = store.job_for_owner(matched.group(1), context.user.user_id)
+                source_results = _result_ids(source or {})
+                index = int(matched.group(2))
+                expected_media = "video" if source and str(source.get("operation", "")).startswith("video.") else "image"
+                if source_forbidden:
+                    forbidden = True
+                elif source and source.get("status") == "succeeded" and source.get("service_id") in reusable_result_services and index < len(source_results):
+                    asset = {"status": "active", "kind": "reference", "media_type": expected_media, "resolved_result_id": source_results[index]}
         if forbidden:
             raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
         if asset is None or asset["status"] != "active":
@@ -179,7 +209,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         elif asset["kind"] != "reference":
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
         else:
-            upstream_asset_ids.append(asset_id)
+            upstream_asset_ids.append(str(asset.get("resolved_result_id") or asset_id))
         if port_id != "legacy":
             port = declared_ports[port_id]
             if asset.get("media_type") != port.media_type:

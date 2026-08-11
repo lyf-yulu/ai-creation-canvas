@@ -58,6 +58,30 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
     asyncio.run(scenario())
 
 
+def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    urls = ["https://download.volces.com/one.png", "https://download.volces.com/two.png"]
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": url} for url in urls]})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=request.url.path.encode())
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path,
+            models=(ArkModelDeclaration("image-endpoint", "ark-image", "Seedream", ("image.generate",), {"type": "object", "properties": {}, "additionalProperties": False}),),
+            transport=httpx.MockTransport(handler),
+        )
+        upstream = await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "two", "multi"))
+        state = await adapter.poll(context(), upstream.upstream_job_id)
+        assert state.result is state.results[0]
+        assert len(state.results) == 2
+        assert len({item.asset_id for item in state.results}) == 2
+
+    asyncio.run(scenario())
+
+
 def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
 

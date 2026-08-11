@@ -87,13 +87,14 @@ class ArkGenerationAdapter:
 
     requires_portal_cookie = False
 
-    def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None) -> None:
+    def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None, reusable_result_services: frozenset[str] | None = None) -> None:
         if not isinstance(api_key, str) or len(api_key.strip()) < 8:
             raise ValueError("Ark API key is unavailable")
         if not models or len({model.model_id for model in models}) != len(models) or len({model.service_id for model in models}) != 1:
             raise ValueError("Ark model declarations are invalid")
         self._api_key, self._models, self._transport, self._asset_loader = api_key, {model.model_id: model for model in models}, transport, asset_loader
         self.service_id = models[0].service_id
+        self.reusable_result_services = reusable_result_services or frozenset({self.service_id})
         root = Path(data_dir) / "ark-results"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if root.is_symlink():
@@ -127,10 +128,10 @@ class ArkGenerationAdapter:
             response = await self._api("POST", "/api/v3/images/generations", json=payload)
             data = self._json(response)
             items = data.get("data")
-            if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], Mapping) or not isinstance(items[0].get("url"), str):
+            if not isinstance(items, list) or not 1 <= len(items) <= 8 or any(not isinstance(item, Mapping) or not isinstance(item.get("url"), str) for item in items):
                 raise InvalidUpstreamResult("Ark image response is invalid")
             upstream_id = "ark_image_" + hashlib.sha256(f"{request.model_id}\n{request.idempotency_key}".encode()).hexdigest()
-            await self._record_pending(upstream_id, str(items[0]["url"]), "image")
+            await self._record_pending(upstream_id, tuple(str(item["url"]) for item in items), "image")
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         if request.operation is ModelOperation.VIDEO_GENERATE:
             content = self._video_content(declaration, request)
@@ -179,9 +180,9 @@ class ArkGenerationAdapter:
         del context
         pending = await self._pending(upstream_job_id)
         if pending is not None:
-            result = await self._download(upstream_job_id, pending["url"], pending["kind"])
+            results = tuple([await self._download(upstream_job_id if index == 0 else f"{upstream_job_id}\n{index}", url, pending["kind"]) for index, url in enumerate(pending["urls"])])
             await self._clear_pending(upstream_job_id)
-            return JobState(upstream_job_id, JobStatus.SUCCEEDED, result)
+            return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
         if not upstream_job_id.startswith("cgt-"):
             raise ValueError("Ark job is invalid")
         response = await self._api("GET", f"/api/v3/contents/generations/tasks/{upstream_job_id}")
@@ -263,21 +264,29 @@ class ArkGenerationAdapter:
             result[key] = value
         return result
 
-    async def _record_pending(self, job_id: str, url: str, kind: str) -> None:
-        self._safe_result_url(url)
+    async def _record_pending(self, job_id: str, urls: tuple[str, ...], kind: str) -> None:
+        if not 1 <= len(urls) <= 8:
+            raise InvalidUpstreamResult("Ark result count is invalid")
+        for url in urls:
+            self._safe_result_url(url)
         async with self._lock:
-            values = self._read_index(); values[job_id] = {"url": url, "kind": kind}; self._write_index(values)
+            values = self._read_index(); values[job_id] = {"urls": list(urls), "kind": kind}; self._write_index(values)
 
-    async def _pending(self, job_id: str) -> dict[str, str] | None:
+    async def _pending(self, job_id: str) -> dict[str, object] | None:
         async with self._lock:
             item = self._read_index().get(job_id)
-        return item if isinstance(item, dict) and isinstance(item.get("url"), str) and item.get("kind") in {"image", "video"} else None
+        if not isinstance(item, dict) or item.get("kind") not in {"image", "video"}:
+            return None
+        urls = item.get("urls")
+        if urls is None and isinstance(item.get("url"), str):
+            urls = [item["url"]]
+        return {"urls": urls, "kind": item["kind"]} if isinstance(urls, list) and 1 <= len(urls) <= 8 and all(isinstance(url, str) for url in urls) else None
 
     async def _clear_pending(self, job_id: str) -> None:
         async with self._lock:
             values = self._read_index(); values.pop(job_id, None); self._write_index(values)
 
-    def _read_index(self) -> dict[str, dict[str, str]]:
+    def _read_index(self) -> dict[str, dict[str, object]]:
         if not self._index_path.exists(): return {}
         try:
             value = json.loads(self._index_path.read_text(encoding="utf-8"))
@@ -403,7 +412,7 @@ def build_ark_adapters(*, api_key: str, data_dir: Path | str, config_path: Path 
     for declaration in load_ark_model_declarations(config_path, config_root):
         grouped.setdefault(declaration.service_id, []).append(declaration)
     return tuple(
-        ArkGenerationAdapter(api_key=api_key, data_dir=data_dir, models=tuple(items), transport=transport, asset_loader=_local_asset_loader(Path(data_dir)))
+        ArkGenerationAdapter(api_key=api_key, data_dir=data_dir, models=tuple(items), transport=transport, asset_loader=_local_asset_loader(Path(data_dir)), reusable_result_services=frozenset(grouped))
         for _, items in sorted(grouped.items())
     )
 
@@ -415,6 +424,17 @@ def _local_asset_loader(data_dir: Path) -> Callable[[str], tuple[bytes, str]]:
     def load(asset_id: str) -> tuple[bytes, str]:
         if not isinstance(asset_id, str) or not asset_id or len(asset_id) > 128:
             raise ValueError("Ark asset ID is invalid")
+        if _RESULT_ID.fullmatch(asset_id):
+            candidate, metadata = data_dir / "ark-results" / asset_id, data_dir / "ark-results" / f"{asset_id}.json"
+            if candidate.is_symlink() or metadata.is_symlink() or not candidate.is_file() or not metadata.is_file() or not 0 < candidate.stat().st_size <= 20 * 1024 * 1024:
+                raise ValueError("Ark result asset is invalid")
+            try:
+                mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ValueError("Ark result asset is invalid") from None
+            if mime not in _IMAGE_MIME:
+                raise ValueError("Ark result asset is invalid")
+            return candidate.read_bytes(), mime
         with sqlite3.connect(database) as connection:
             row = connection.execute("SELECT relative_path,mime_type,status,kind,size_bytes FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
         if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:

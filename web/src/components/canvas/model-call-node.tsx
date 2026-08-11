@@ -14,13 +14,14 @@ type Props = {
     message?: string;
     onChange: (graph: GraphModelMetadata) => void;
     onRun: () => void;
+    onRetry?: (token: string) => void;
 };
 
 function defaults(model: ModelSpec) {
-    return Object.fromEntries(parameterControls(model.parameter_schema).flatMap((control) => control.default === undefined ? [] : [[control.name, control.default]])) as Record<string, GraphParameterValue>;
+    return Object.fromEntries(parameterControls(model.parameter_schema).flatMap((control) => (control.default === undefined ? [] : [[control.name, control.default]]))) as Record<string, GraphParameterValue>;
 }
 
-export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun }: Props) {
+export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun, onRetry }: Props) {
     const graph = node.metadata?.graph;
     if (graph?.role !== "model") return null;
     const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
@@ -32,14 +33,85 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
         if (!next) return;
         onChange({ ...graph, modelId, operation: next.operations[0], inputPorts: graphPortsForModel(next), parameters: defaults(next) });
     };
-    return <article className="max-w-full overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
-        <header className="flex items-center gap-2 border-b border-[#1c3826] px-3 py-2"><Sparkles className="size-4 text-[#58ed87]" /><strong>{node.title}</strong></header>
-        <div className="space-y-3 p-3" data-canvas-no-zoom>
-            <label className="block text-[11px] text-[#9fb5a5]">模型<select aria-label="模型" disabled={disabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">{models.map((model) => <option key={model.model_id} value={model.model_id}>{model.display_name}</option>)}</select></label>
-            <div className="flex flex-wrap gap-1 text-[10px] text-[#8fa596]">{declaredModelPorts(selected).map((port) => <span key={port.port_id} className="rounded border border-[#264532] px-1.5 py-1">{port.port_id === "prompt" ? "提示词" : port.port_id}：{port.max_items}</span>)}</div>
-            {controls.map((control) => <label key={control.name} className="block text-[11px] text-[#9fb5a5]">{control.name}{control.type === "enum" ? <select aria-label={control.name} disabled={disabled} value={String(control.enum?.findIndex((value) => Object.is(value, graph.parameters[control.name])) ?? 0)} onChange={(event) => updateParameter(control.name, control.enum?.[Number(event.target.value)] ?? null)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2">{control.enum?.map((value, index) => <option key={String(value)} value={index}>{String(value)}</option>)}</select> : control.type === "boolean" ? <input aria-label={control.name} disabled={disabled} type="checkbox" checked={graph.parameters[control.name] === true} onChange={(event) => updateParameter(control.name, event.target.checked)} className="ml-2 accent-[#58ed87]" /> : <input aria-label={control.name} disabled={disabled} value={String(graph.parameters[control.name] ?? "")} onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? Number(event.target.value) : event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2" />}</label>)}
-            <button type="button" disabled={disabled} onClick={onRun} className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#47d978] px-3 py-2 font-semibold text-[#041008] disabled:opacity-40"><Play className="size-3.5" />运行模型</button>
-            {message ? <p role="status" className="text-[#ffbd73]">{message}</p> : null}
-        </div>
-    </article>;
+    return (
+        <article className="max-w-full overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
+            <header className="flex items-center gap-2 border-b border-[#1c3826] px-3 py-2">
+                <Sparkles className="size-4 text-[#58ed87]" />
+                <strong>{node.title}</strong>
+            </header>
+            <div className="space-y-3 p-3" data-canvas-no-zoom>
+                <p role="status" className="text-[11px] text-[#9fb5a5]">
+                    任务状态：{node.metadata?.status === "loading" ? "运行中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
+                </p>
+                <label className="block text-[11px] text-[#9fb5a5]">
+                    模型
+                    <select aria-label="模型" disabled={disabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
+                        {models.map((model) => (
+                            <option key={model.model_id} value={model.model_id}>
+                                {model.display_name}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+                <div className="flex flex-wrap gap-1 text-[10px] text-[#8fa596]">
+                    {declaredModelPorts(selected).map((port) => (
+                        <span key={port.port_id} className="rounded border border-[#264532] px-1.5 py-1">
+                            {port.port_id === "prompt" ? "提示词" : port.port_id}：{port.max_items}
+                        </span>
+                    ))}
+                </div>
+                {controls.map((control) => (
+                    <label key={control.name} className="block text-[11px] text-[#9fb5a5]">
+                        {control.name}
+                        {control.type === "enum" ? (
+                            <select
+                                aria-label={control.name}
+                                disabled={disabled}
+                                value={String(control.enum?.findIndex((value) => Object.is(value, graph.parameters[control.name])) ?? 0)}
+                                onChange={(event) => updateParameter(control.name, control.enum?.[Number(event.target.value)] ?? null)}
+                                className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                            >
+                                {control.enum?.map((value, index) => (
+                                    <option key={String(value)} value={index}>
+                                        {String(value)}
+                                    </option>
+                                ))}
+                            </select>
+                        ) : control.type === "boolean" ? (
+                            <input
+                                aria-label={control.name}
+                                disabled={disabled}
+                                type="checkbox"
+                                checked={graph.parameters[control.name] === true}
+                                onChange={(event) => updateParameter(control.name, event.target.checked)}
+                                className="ml-2 accent-[#58ed87]"
+                            />
+                        ) : (
+                            <input
+                                aria-label={control.name}
+                                disabled={disabled}
+                                value={String(graph.parameters[control.name] ?? "")}
+                                onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? Number(event.target.value) : event.target.value)}
+                                className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                            />
+                        )}
+                    </label>
+                ))}
+                <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={node.metadata?.status === "error" && node.metadata.idempotencyKey && onRetry ? () => onRetry(node.metadata!.idempotencyKey!) : onRun}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#47d978] px-3 py-2 font-semibold text-[#041008] disabled:opacity-40"
+                >
+                    <Play className="size-3.5" />
+                    {node.metadata?.status === "error" && node.metadata.idempotencyKey ? "使用原任务键重试" : "运行模型"}
+                </button>
+                {message ? (
+                    <p role="status" className="text-[#ffbd73]">
+                        {message}
+                    </p>
+                ) : null}
+            </div>
+        </article>
+    );
 }

@@ -3,9 +3,20 @@ export type PortalSession = { user_id: string; username: string; role: "admin" |
 export type SessionResponse = PortalSession & { csrf_token?: string };
 export type AuthResponse = { user: PortalSession; csrf_token: string };
 export type ModelInputPort = { port_id: string; media_type: "text" | "image" | "video" | "audio"; min_items: number; max_items: number };
-export type ModelSpec = { model_id: string; service_id: string; display_name: string; operations: ModelOperation[]; input_media: ("text" | "image" | "video" | "audio")[]; parameter_schema: Record<string, unknown>; requires_asset_kind?: "portrait"; input_ports?: ModelInputPort[]; parameter_mappings?: Record<string, string> };
+export type ModelSpec = {
+    model_id: string;
+    service_id: string;
+    display_name: string;
+    operations: ModelOperation[];
+    input_media: ("text" | "image" | "video" | "audio")[];
+    parameter_schema: Record<string, unknown>;
+    requires_asset_kind?: "portrait";
+    input_ports?: ModelInputPort[];
+    parameter_mappings?: Record<string, string>;
+};
 export type AssetRef = { id: string; kind: "reference" | "portrait"; status: "processing" | "active" | "failed"; mime_type: string; media_type?: "image" | "video" | "audio"; size_bytes?: number; content_url?: string };
 export type OwnedMediaAsset = AssetRef & { kind: "reference"; status: "active"; media_type: "image" | "video" | "audio"; size_bytes: number; content_url: string };
 export type JobRequest = { operation: ModelOperation; model_id: string; prompt: string; params: Record<string, unknown>; asset_ids: string[]; inputs?: Record<string, string[]>; idempotency_key: string };
 export type ApiError = { code: string; message: string; retryable: boolean; request_id: string; phase: string };
-export type JobState = { id: string; operation?: ModelOperation; status: "uploading" | "submitting" | "queued" | "running" | "succeeded" | "failed"; result_url?: string; error?: ApiError };
+export type JobResult = { url: string; asset_id: string; media_type: "image" | "video" };
+export type JobState = { id: string; operation?: ModelOperation; status: "uploading" | "submitting" | "queued" | "running" | "succeeded" | "failed"; result_url?: string; results?: JobResult[]; error?: ApiError };

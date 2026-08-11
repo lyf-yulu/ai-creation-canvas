@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
@@ -7,7 +7,12 @@ import { clearGenerationTasks, useGenerationTasks } from "@/features/generation/
 import { TaskTray } from "@/components/layout/task-tray";
 import { appendResultNode, createResultNode } from "@/features/generation/result-node";
 
-afterEach(() => { clearStorageScope(); setScopedStoreFactoryForTest(); clearGenerationTasks(); });
+afterEach(() => {
+    cleanup();
+    clearStorageScope();
+    setScopedStoreFactoryForTest();
+    clearGenerationTasks();
+});
 
 it("resumes an existing job without submitting another job", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
@@ -38,7 +43,15 @@ it("reuses the pending idempotency key after an ambiguous submit failure", async
 });
 
 it("restores this user's saved job references and only polls them", async () => {
-    setScopedStoreFactoryForTest(() => ({ getItem: async () => [{ jobId: "j-saved", request: { operation: "video.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "key" } }], setItem: async () => undefined, removeItem: async () => undefined, iterate: async () => undefined }) as never);
+    setScopedStoreFactoryForTest(
+        () =>
+            ({
+                getItem: async () => [{ jobId: "j-saved", request: { operation: "video.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "key" } }],
+                setItem: async () => undefined,
+                removeItem: async () => undefined,
+                iterate: async () => undefined,
+            }) as never,
+    );
     await setStorageScope({ environment: "test", userId: "u-a" });
     const api = { create: vi.fn(), fetch: vi.fn().mockResolvedValue({ id: "j-saved", status: "succeeded", result_url: "/api/v1/results/r" }) };
     renderHook(() => useGenerationJob({ api: api as any, pollDelayMs: 1 }));
@@ -50,11 +63,24 @@ it("polls two resumed jobs independently", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     let first!: (value: any) => void;
     let second!: (value: any) => void;
-    const api = { create: vi.fn(), fetch: vi.fn((id: string) => new Promise((resolve) => { if (id === "j-1") first = resolve; else second = resolve; })) };
+    const api = {
+        create: vi.fn(),
+        fetch: vi.fn(
+            (id: string) =>
+                new Promise((resolve) => {
+                    if (id === "j-1") first = resolve;
+                    else second = resolve;
+                }),
+        ),
+    };
     const { result } = renderHook(() => useGenerationJob({ api: api as any }));
-    void result.current.resume("j-1"); void result.current.resume("j-2");
+    void result.current.resume("j-1");
+    void result.current.resume("j-2");
     await waitFor(() => expect(api.fetch).toHaveBeenCalledTimes(2));
-    await act(async () => { first({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/a" }); second({ id: "j-2", status: "succeeded", result_url: "/api/v1/results/b" }); });
+    await act(async () => {
+        first({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/a" });
+        second({ id: "j-2", status: "succeeded", result_url: "/api/v1/results/b" });
+    });
     expect(api.fetch).toHaveBeenCalledWith("j-1", expect.any(Object));
     expect(api.fetch).toHaveBeenCalledWith("j-2", expect.any(Object));
 });
@@ -68,7 +94,14 @@ it("publishes each concurrent job independently to the shared task tray", async 
 
     void result.current.resume("job-image");
     void result.current.resume("job-second");
-    await waitFor(() => expect(useGenerationTasks.getState().tasks.map((task) => task.jobId).sort()).toEqual(["job-image", "job-second"]));
+    await waitFor(() =>
+        expect(
+            useGenerationTasks
+                .getState()
+                .tasks.map((task) => task.jobId)
+                .sort(),
+        ).toEqual(["job-image", "job-second"]),
+    );
     expect(screen.getByText("job-image")).toBeVisible();
     expect(screen.getByText("job-second")).toBeVisible();
 
@@ -78,7 +111,15 @@ it("publishes each concurrent job independently to the shared task tray", async 
 });
 
 it("keeps an ambiguous saved submission dormant until a manual retry reuses its key", async () => {
-    setScopedStoreFactoryForTest(() => ({ getItem: async () => [{ request: { operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "accepted-key" } }], setItem: async () => undefined, removeItem: async () => undefined, iterate: async () => undefined }) as never);
+    setScopedStoreFactoryForTest(
+        () =>
+            ({
+                getItem: async () => [{ request: { operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "accepted-key" } }],
+                setItem: async () => undefined,
+                removeItem: async () => undefined,
+                iterate: async () => undefined,
+            }) as never,
+    );
     await setStorageScope({ environment: "test", userId: "u-a" });
     const api = { create: vi.fn().mockResolvedValue({ id: "j-1", status: "succeeded", result_url: "/api/v1/results/r" }), fetch: vi.fn() };
     const { result } = renderHook(() => useGenerationJob({ api: api as any }));
@@ -90,7 +131,15 @@ it("keeps an ambiguous saved submission dormant until a manual retry reuses its 
 it("cancels an old scope poll and never publishes it into a new scope", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     let resolve!: (job: { id: string; status: "succeeded"; result_url: string }) => void;
-    const api = { create: vi.fn(), fetch: vi.fn(() => new Promise((done) => { resolve = done; })) };
+    const api = {
+        create: vi.fn(),
+        fetch: vi.fn(
+            () =>
+                new Promise((done) => {
+                    resolve = done;
+                }),
+        ),
+    };
     const { result } = renderHook(() => useGenerationJob({ api: api as any, pollDelayMs: 1 }));
     void act(async () => result.current.resume("j-a"));
     await waitFor(() => expect(api.fetch).toHaveBeenCalled());
@@ -103,8 +152,32 @@ it("creates typed same-origin result nodes once with a safe source offset", () =
     const source = { id: "source", type: "text", title: "source", position: { x: 10, y: 20 }, width: 100, height: 100 };
     const image = createResultNode({ id: "image-job", operation: "image.generate", status: "succeeded", result_url: "/api/v1/results/image" }, source);
     const video = createResultNode({ id: "video-job", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video" });
-    expect(image).toMatchObject({ type: "image", position: { x: 58, y: 68 }, metadata: { content: "/api/v1/results/image", sourceJobId: "image-job", graph: { role: "result", inputPortId: "result", outputPortId: "media", mediaType: "image", jobId: "image-job" } } });
+    expect(image).toMatchObject({
+        type: "image",
+        position: { x: 58, y: 68 },
+        metadata: { content: "/api/v1/results/image", sourceJobId: "image-job", graph: { role: "result", inputPortId: "result", outputPortId: "media", mediaType: "image", jobId: "image-job" } },
+    });
     expect(video).toMatchObject({ metadata: { graph: { role: "result", inputPortId: "result", outputPortId: "media", mediaType: "video", jobId: "video-job" } } });
     expect(video).toMatchObject({ type: "video", position: { x: 80, y: 80 } });
     expect(appendResultNode([image], { id: "image-job", operation: "image.generate", status: "succeeded", result_url: "/api/v1/results/image" }, source)).toHaveLength(1);
+});
+
+it("creates one reusable result node per protected multi-result item", () => {
+    const source = { id: "source", type: "config", title: "source", position: { x: 10, y: 20 }, width: 100, height: 100 };
+    const job = {
+        id: "multi-job",
+        operation: "image.generate" as const,
+        status: "succeeded" as const,
+        results: [
+            { url: "/api/v1/results/multi-job/0", asset_id: "job-result.multi-job.0", media_type: "image" as const },
+            { url: "/api/v1/results/multi-job/1", asset_id: "job-result.multi-job.1", media_type: "image" as const },
+        ],
+    };
+    const nodes = appendResultNode([], job, source);
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => node.metadata?.graph)).toEqual([
+        expect.objectContaining({ role: "result", assetId: "job-result.multi-job.0", mediaType: "image" }),
+        expect.objectContaining({ role: "result", assetId: "job-result.multi-job.1", mediaType: "image" }),
+    ]);
+    expect(appendResultNode(nodes, job, source)).toHaveLength(2);
 });

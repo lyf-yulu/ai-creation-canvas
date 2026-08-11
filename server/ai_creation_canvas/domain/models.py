@@ -271,6 +271,7 @@ class JobState:
     result: AssetRef | None = None
     error: ApiError | None = None
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    results: tuple[AssetRef, ...] = ()
 
     def __post_init__(self) -> None:
         _stable_id(self.job_id, "job_id")
@@ -278,21 +279,33 @@ class JobState:
             object.__setattr__(self, "status", JobStatus(self.status))
         except ValueError as error:
             raise ValueError("status must be a supported JobStatus") from error
+        values = tuple(self.results)
         if self.result is not None and not isinstance(self.result, AssetRef):
             raise ValueError("result must be an AssetRef")
+        if any(not isinstance(item, AssetRef) for item in values) or len(values) > 8:
+            raise ValueError("results must contain at most eight AssetRef values")
+        if self.result is not None and not values:
+            values = (self.result,)
+        elif self.result is None and values:
+            object.__setattr__(self, "result", values[0])
+        elif self.result is not None and values and self.result != values[0]:
+            raise ValueError("result must be the first results item")
+        if len({item.asset_id for item in values}) != len(values):
+            raise ValueError("results must contain unique assets")
+        object.__setattr__(self, "results", values)
         if self.error is not None and not isinstance(self.error, ApiError):
             raise ValueError("error must be an ApiError")
         if self.status is JobStatus.SUCCEEDED:
-            if self.result is None:
+            if not values:
                 raise ValueError("succeeded jobs require a result")
             if self.error is not None:
                 raise ValueError("succeeded jobs cannot include an error")
         elif self.status is JobStatus.FAILED:
-            if self.result is not None:
+            if values:
                 raise ValueError("failed jobs cannot include a result")
             if self.error is None:
                 raise ValueError("failed jobs require an error")
-        elif self.result is not None or self.error is not None:
+        elif values or self.error is not None:
             raise ValueError("in-progress jobs cannot include a result or error")
         object.__setattr__(self, "updated_at", _utc_timestamp(self.updated_at, "updated_at"))
 

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.errors import DomainError
+from ai_creation_canvas.api.jobs import _result_ids
 
 router = APIRouter(prefix="/api/v1")
 _MAX = 64 * 1024 * 1024
@@ -86,11 +87,14 @@ async def _close(stream) -> None:
         raise
 
 @router.api_route("/results/{job_id}", methods=["GET", "HEAD"])
-async def get_result(job_id: str, request: Request):
+@router.api_route("/results/{job_id}/{result_index}", methods=["GET", "HEAD"])
+async def get_result(job_id: str, request: Request, result_index: int | None = None):
     context = context_for(request)
     item, forbidden = request.app.state.canvas_store.job_for_owner(job_id, context.user.user_id)
     if forbidden: raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
-    if item is None or item["status"] != "succeeded" or not item.get("result_id") or not item.get("upstream_job_id"):
+    results = _result_ids(item or {})
+    index = 0 if result_index is None else result_index
+    if item is None or item["status"] != "succeeded" or index < 0 or index >= len(results) or not item.get("upstream_job_id"):
         raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
     adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
     if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
@@ -103,7 +107,7 @@ async def get_result(job_id: str, request: Request):
         raise problem(request, "RANGE_NOT_SATISFIABLE", "The requested range is invalid.", status=416)
     stream = None
     try:
-        stream = await open_result(context, str(item["result_id"]), cookie_header=request.headers.get("cookie", ""), range_header=range_header, head=request.method == "HEAD")
+        stream = await open_result(context, results[index], cookie_header=request.headers.get("cookie", ""), range_header=range_header, head=request.method == "HEAD")
         length = stream.headers.get("content-length")
         if stream.status_code == 416:
             content_range = stream.headers.get("content-range", "")

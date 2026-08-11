@@ -69,6 +69,7 @@ export type CanvasNodeMetadata = {
     interactive?: boolean;
     /** Local provenance only; result URLs always remain same-origin API paths. */
     sourceJobId?: string;
+    sourceResultIndex?: number;
     requestId?: string;
     phase?: string;
     params?: Record<string, unknown>;

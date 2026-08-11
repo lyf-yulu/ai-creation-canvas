@@ -194,7 +194,7 @@ export default function CanvasProjectPage() {
             const current = useCanvasStore.getState().openProject(targetProjectId);
             if (!current) return;
             const source = current.nodes.find((node) => node.id === ref?.sourceNodeId);
-            const nodes = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "success" as const } } : node));
+            const nodes = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "success" as const, idempotencyKey: undefined } } : node));
             updateProject(targetProjectId, { nodes: appendResultNode(nodes, job, source) });
         },
         [updateProject],
@@ -222,7 +222,7 @@ export default function CanvasProjectPage() {
             const current = useCanvasStore.getState().openProject(projectId);
             if (!current) return;
             const source = current.nodes.find((node) => node.id === sourceNodeId);
-            const existing = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "error" as const } } : node));
+            const existing = current.nodes.map((node) => (node.id === source?.id ? { ...node, metadata: { ...node.metadata, status: "error" as const, idempotencyKey: retryToken } } : node));
             const failed: CanvasNodeData = {
                 id: nanoid(),
                 type: CanvasNodeType.Image,
@@ -363,7 +363,7 @@ export default function CanvasProjectPage() {
 
     const runModelNode = useCallback(
         (nodeId: string) => {
-            if (readOnly || generation.state.status === "submitting") return;
+            if (readOnly) return;
             const current = useCanvasStore.getState().openProject(id);
             const graph = current?.nodes.find((node) => node.id === nodeId)?.metadata?.graph;
             const model = graph?.role === "model" ? models.find((candidate) => candidate.model_id === graph.modelId) : undefined;
@@ -663,7 +663,7 @@ export default function CanvasProjectPage() {
                             const promptNode = nodeGraph?.role === "prompt";
                             const mediaCollectionNode = nodeGraph?.role === "media-collection";
                             const modelNode = nodeGraph?.role === "model";
-                            const modelOperation = modelNode ? nodeGraph.operation as ModelOperation : undefined;
+                            const modelOperation = modelNode ? (nodeGraph.operation as ModelOperation) : undefined;
                             const ports = getNodePorts(node);
                             const measuredNode = measuredNodeMap.get(node.id) ?? node;
                             return (
@@ -693,13 +693,14 @@ export default function CanvasProjectPage() {
                                         <ModelCallNode
                                             node={node}
                                             models={models.filter((model) => modelOperation && model.operations.includes(modelOperation))}
-                                            disabled={readOnly || generation.state.status === "submitting"}
+                                            disabled={readOnly}
                                             message={modelMessages[node.id]}
                                             onChange={(graph) => updateModelNode(node.id, graph)}
                                             onRun={() => runModelNode(node.id)}
+                                            onRetry={(token) => void generation.retry(token).catch(() => undefined)}
                                         />
                                     ) : (
-                                        <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} />
+                                        <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} onDelete={readOnly ? undefined : () => deleteNodes(new Set([node.id]))} />
                                     )}
                                     {[...ports.targets, ...ports.sources].map((port) => (
                                         <NodePort

@@ -106,6 +106,57 @@ def test_protected_result_supports_one_valid_range(tmp_path):
     assert client.get("/api/v1/results/job", headers={**headers(), "range":"bytes=0-1,3-4"}).status_code == 416
 
 
+def test_multi_result_contract_is_indexed_owned_and_legacy_first_result_compatible(tmp_path):
+    adapter = FakeGeneration(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="multi-job", service_id="images", operation="image.generate", idempotency_key="multi-key", request_hash="a" * 64)
+    store.mark_submitted("multi-job", "upstream-1", "queued")
+    store._update("multi-job", status="succeeded", result_ids=("opaque-one", "opaque-two"))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    state = client.get("/api/v1/jobs/multi-job", headers=headers()).json()
+    assert state["result_url"] == "/api/v1/results/multi-job"
+    assert state["results"] == [
+        {"url": "/api/v1/results/multi-job/0", "asset_id": "job-result.multi-job.0", "media_type": "image"},
+        {"url": "/api/v1/results/multi-job/1", "asset_id": "job-result.multi-job.1", "media_type": "image"},
+    ]
+    assert client.get("/api/v1/results/multi-job", headers=headers()).content == b"abcdef"
+    assert client.get("/api/v1/results/multi-job/1", headers=headers()).content == b"abcdef"
+    assert client.get("/api/v1/results/multi-job/2", headers=headers()).status_code == 404
+    assert client.get("/api/v1/results/multi-job/1", headers=headers("u-b")).status_code == 404
+
+
+def test_owned_result_output_can_be_reused_as_a_typed_input_without_exposing_provider_id(tmp_path):
+    class ResultInputGeneration(FakeGeneration):
+        service_id = "videos"
+        def __init__(self): super().__init__(); self.requests = []
+        reusable_result_services = frozenset({"images", "videos"})
+        async def list_models(self, context):
+            return (ModelSpec("model-1", self.service_id, "Model", ("image.edit",),
+                input_ports=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 2))),)
+        async def submit(self, context, request):
+            self.requests.append(request)
+            return await super().submit(context, request)
+
+    adapter = ResultInputGeneration(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="source-job", service_id="images", operation="image.generate", idempotency_key="source", request_hash="a" * 64)
+    store.mark_submitted("source-job", "source-upstream", "queued")
+    store._update("source-job", status="succeeded", result_ids=("provider-one", "provider-two"))
+    payload = {"operation": "image.edit", "model_id": "model-1", "prompt": "reuse", "params": {}, "inputs": {"reference_images": ["job-result.source-job.1"]}, "idempotency_key": "reuse"}
+
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers=headers())
+    assert response.status_code == 201
+    assert adapter.requests[0].inputs["reference_images"] == ("provider-two",)
+    assert "provider-two" not in json.dumps(response.json())
+    assert TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json={**payload, "idempotency_key": "other"}, headers=headers("u-b")).status_code == 403
+    leaked = {**payload, "inputs": {"reference_images": ["provider-two"]}, "idempotency_key": "raw-provider-id"}
+    assert TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=leaked, headers=headers()).status_code == 400
+    assert adapter.submit_count == 1
+
+
 def _succeeded_result_app(tmp_path, adapter):
     registry = AdapterRegistry(); registry.register_generation(adapter)
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
