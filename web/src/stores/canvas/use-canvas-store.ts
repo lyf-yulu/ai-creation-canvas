@@ -4,9 +4,9 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { normalizeCanvasProject, normalizeCanvasProjectBaselineSnapshot, type CanvasProjectInput } from "@/features/graph/normalize-project";
+import { normalizeCanvasProject, normalizeCanvasProjectBaselineSnapshot, UnsupportedGraphSchemaError, type CanvasProjectInput } from "@/features/graph/normalize-project";
 import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
-import type { ScopedStoreLease } from "@/storage/scope";
+import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 
@@ -32,12 +32,19 @@ export type ProjectSyncMetadata =
 
 export type ProjectSyncMetadataMap = Record<string, ProjectSyncMetadata>;
 
+export type CanvasLoadError = {
+    code: "UNSUPPORTED_GRAPH_SCHEMA" | "CANVAS_LOAD_FAILED";
+    message: string;
+    readOnly: true;
+};
+
 export type CanvasStore = {
     hydrated: boolean;
     projectsLoaded: boolean;
     projects: CanvasProject[];
     projectSyncMetadata: ProjectSyncMetadataMap;
     syncNotice: string | null;
+    loadError: CanvasLoadError | null;
     createProject: (title?: string) => string;
     importProject: (project: Partial<CanvasProjectInput>) => string;
     openProject: (id: string) => CanvasProject | null;
@@ -56,13 +63,22 @@ type PersistedCanvasState = Pick<CanvasStore, "projects" | "projectSyncMetadata"
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPersistState: PersistedCanvasState | null = null;
 let queuedLease: ScopedStoreLease | null = null;
+let blockedPersistScopeVersion: number | null = null;
 
-export function clearCanvasInMemory() {
+function cancelQueuedCanvasPersist() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
     queuedPersistState = null;
     queuedLease = null;
-    useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, hydrated: false, projectsLoaded: false, syncNotice: null });
+}
+
+function isPersistBlocked(lease: ScopedStoreLease) {
+    return blockedPersistScopeVersion === lease.version;
+}
+
+export function clearCanvasInMemory() {
+    cancelQueuedCanvasPersist();
+    useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, hydrated: false, projectsLoaded: false, syncNotice: null, loadError: null });
 }
 
 export function migrateCanvasPersistedState(persistedState: unknown, persistedVersion: number) {
@@ -99,7 +115,7 @@ const canvasStorage: PersistStorage<PersistedCanvasState> = {
         const nextState = value.state as PersistedCanvasState;
         if (queuedPersistState && queuedPersistState.projects === nextState.projects && queuedPersistState.projectSyncMetadata === nextState.projectSyncMetadata) return;
         const lease = captureAppStorageLease();
-        if (!lease) return;
+        if (!lease || isPersistBlocked(lease)) return;
         queuedPersistState = nextState;
         queuedLease = lease;
         if (saveTimer) clearTimeout(saveTimer);
@@ -107,7 +123,7 @@ const canvasStorage: PersistStorage<PersistedCanvasState> = {
             saveTimer = null;
             const scheduledLease = queuedLease;
             queuedLease = null;
-            if (scheduledLease) void setItemForLease(scheduledLease, name, JSON.stringify(value));
+            if (scheduledLease && !isPersistBlocked(scheduledLease)) void setItemForLease(scheduledLease, name, JSON.stringify(value));
         }, 400);
     },
     removeItem: (name) => localForageStorage.removeItem(name),
@@ -121,6 +137,7 @@ export const useCanvasStore = create<CanvasStore>()(
             projects: [],
             projectSyncMetadata: {},
             syncNotice: null,
+            loadError: null,
             createProject: (title = "未命名画布") => {
                 const now = new Date().toISOString();
                 const id = nanoid();
@@ -158,6 +175,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     backgroundMode: source.backgroundMode || "lines",
                     showImageInfo: source.showImageInfo || false,
                     viewport: normalizeViewport(source.viewport),
+                    graphSchemaVersion: source.graphSchemaVersion,
                 });
                 set((state) => ({
                     projects: [project, ...state.projects],
@@ -203,14 +221,41 @@ export const useCanvasStore = create<CanvasStore>()(
             storage: canvasStorage,
             version: 2,
             migrate: migrateCanvasPersistedState,
+            merge: (persistedState, currentState) => ({
+                ...currentState,
+                ...migrateCanvasPersistedState(persistedState, 2),
+            }),
             partialize: (state) =>
                 ({
                     projects: state.projects,
                     projectSyncMetadata: state.projectSyncMetadata,
                 }),
-            onRehydrateStorage: () => () => {
-                useCanvasStore.setState({ hydrated: true });
+            onRehydrateStorage: () => {
+                const lease = captureAppStorageLease();
+                return (_state, error) => {
+                    if (error && lease && isStorageLeaseActive(lease)) {
+                        blockedPersistScopeVersion = lease.version;
+                        cancelQueuedCanvasPersist();
+                        const unsupported = error instanceof UnsupportedGraphSchemaError;
+                        useCanvasStore.setState({
+                            hydrated: true,
+                            projectsLoaded: false,
+                            loadError: {
+                                code: unsupported ? "UNSUPPORTED_GRAPH_SCHEMA" : "CANVAS_LOAD_FAILED",
+                                message: unsupported ? "此画布由更新版本创建，当前版本只能只读保护原始数据。" : "画布数据无法安全加载，原始数据已进入只读保护。",
+                                readOnly: true,
+                            },
+                        });
+                        return;
+                    }
+                    useCanvasStore.setState({ hydrated: true, loadError: null });
+                };
             },
         },
     ),
 );
+
+onStorageScopeCleared(() => {
+    blockedPersistScopeVersion = null;
+    cancelQueuedCanvasPersist();
+});

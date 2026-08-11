@@ -180,12 +180,23 @@ describe("legacy graph normalization", () => {
     it("preserves unknown plugin nodes and already-valid named ports", () => {
         const plugin = node("plugin", "example:processor", { content: "opaque" });
         const secondPlugin = node("plugin-2", "example:sink", { content: "opaque-2" });
-        const source = project([plugin, secondPlugin], [{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" }]);
+        const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "custom", inputPortIds: ["custom_input", "prompt"], outputPortId: "result", parameters: {} } });
+        const source = project([plugin, secondPlugin, prompt, model], [
+            { id: "plugin-plugin", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" },
+            { id: "plugin-model", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" },
+            { id: "plugin-reserved", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "prompt" },
+            { id: "builtin-plugin", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "plugin-2", toPortId: "custom_input" },
+        ]);
 
         const normalized = normalizeCanvasProject(source);
 
         expect(normalized.nodes.find((item) => item.id === "plugin")).toEqual(plugin);
-        expect(normalized.connections).toEqual([{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" }]);
+        expect(normalized.connections).toEqual([
+            { id: "plugin-plugin", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" },
+            { id: "plugin-model", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" },
+            { id: "builtin-plugin", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "plugin-2", toPortId: "custom_input" },
+        ]);
     });
 
     it("validates explicit built-in roles and ports before consuming a model prompt slot", () => {

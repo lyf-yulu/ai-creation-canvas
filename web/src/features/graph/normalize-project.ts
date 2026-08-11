@@ -228,8 +228,10 @@ function isValidExplicitConnection(from: CanvasNodeData, fromPortId: string, to:
     const source = from.metadata?.graph;
     const target = to.metadata?.graph;
     if (!source && !target) return !isBuiltInGraphNode(from.type) && !isBuiltInGraphNode(to.type);
-    if (!source) return false;
-    if (fromPortId !== source.outputPortId) return false;
+    if (!source && target?.role === "model") {
+        return !isBuiltInGraphNode(from.type) && target.inputPortIds.includes(toPortId) && !isReservedModelInput(toPortId);
+    }
+    if (!source || fromPortId !== source.outputPortId) return false;
     if (!target) return !isBuiltInGraphNode(to.type);
     if (target.role === "model") {
         if (!target.inputPortIds.includes(toPortId)) return false;
@@ -237,9 +239,13 @@ function isValidExplicitConnection(from: CanvasNodeData, fromPortId: string, to:
         if (toPortId === "reference_images" || toPortId === "first_frame" || toPortId === "last_frame") return isMediaSource(source, "image");
         if (toPortId === "reference_video") return isMediaSource(source, "video");
         if (toPortId === "reference_audio") return isMediaSource(source, "audio");
-        return false;
+        return true;
     }
     return target.role === "result" && toPortId === "result" && source.role === "model";
+}
+
+function isReservedModelInput(portId: string) {
+    return ["prompt", "reference_images", "first_frame", "last_frame", "reference_video", "reference_audio"].includes(portId);
 }
 
 function isMediaSource(metadata: CanvasGraphNodeMetadata, mediaType: GraphMediaType) {

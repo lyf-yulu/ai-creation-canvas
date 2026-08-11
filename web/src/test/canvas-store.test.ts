@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import type { CanvasProjectInput } from "@/features/graph/normalize-project";
 import { clearCanvasInMemory, migrateCanvasPersistedState, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope, storageDatabaseName } from "@/storage/scope";
 import { CanvasNodeType } from "@/types/canvas";
 
 const timestamp = "2026-08-11T01:02:03.000Z";
@@ -23,7 +24,12 @@ function legacyProject(id = "legacy"): CanvasProjectInput {
     };
 }
 
-afterEach(() => clearCanvasInMemory());
+afterEach(() => {
+    vi.useRealTimers();
+    clearCanvasInMemory();
+    clearStorageScope();
+    setScopedStoreFactoryForTest();
+});
 
 describe("canvas graph persistence", () => {
     it("creates graph-versioned projects", () => {
@@ -40,6 +46,78 @@ describe("canvas graph persistence", () => {
         expect(imported.graphSchemaVersion).toBe(GRAPH_SCHEMA_VERSION);
         expect(imported.nodes[0].metadata?.graph).toMatchObject({ role: "prompt", text: "hello" });
         expect(imported.nodes[0].metadata?.content).toBe("hello");
+    });
+
+    it.each([1, 2])("protects raw future-schema bytes after a version-%i rehydrate failure and resets protection for another user", async (persistedVersion) => {
+        vi.useFakeTimers();
+        const key = "infinite-canvas:canvas_store";
+        const futureProject: CanvasProjectInput = {
+            ...legacyProject("future-project"),
+            graphSchemaVersion: GRAPH_SCHEMA_VERSION + 1,
+            nodes: [],
+        };
+        const raw = JSON.stringify({ state: { projects: [futureProject], projectSyncMetadata: {} }, version: persistedVersion });
+        const values = new Map<string, Map<string, string>>();
+        const writes = new Map<string, number>();
+        const futureDatabase = storageDatabaseName({ environment: "test", userId: `future-v${persistedVersion}` });
+        values.set(futureDatabase, new Map([[key, raw]]));
+        setScopedStoreFactoryForTest(({ name }) => ({
+            getItem: async (itemKey: string) => values.get(name)?.get(itemKey) ?? null,
+            setItem: async (itemKey: string, value: string) => {
+                writes.set(name, (writes.get(name) ?? 0) + 1);
+                const database = values.get(name) ?? new Map<string, string>();
+                database.set(itemKey, value);
+                values.set(name, database);
+                return value;
+            },
+            removeItem: async (itemKey: string) => { values.get(name)?.delete(itemKey); },
+            iterate: async () => undefined,
+        }) as never);
+
+        await setStorageScope({ environment: "test", userId: `future-v${persistedVersion}` });
+        await useCanvasStore.persist.rehydrate();
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(values.get(futureDatabase)?.get(key)).toBe(raw);
+        expect(writes.get(futureDatabase) ?? 0).toBe(0);
+        expect(useCanvasStore.getState().loadError).toMatchObject({ code: "UNSUPPORTED_GRAPH_SCHEMA", message: expect.stringContaining("更新版本"), readOnly: true });
+        useCanvasStore.getState().createProject("must stay memory only");
+        await vi.advanceTimersByTimeAsync(500);
+        expect(values.get(futureDatabase)?.get(key)).toBe(raw);
+        expect(writes.get(futureDatabase) ?? 0).toBe(0);
+
+        clearCanvasInMemory();
+        expect(values.get(futureDatabase)?.get(key)).toBe(raw);
+        await setStorageScope({ environment: "test", userId: "supported-user" });
+        await useCanvasStore.persist.rehydrate();
+        useCanvasStore.getState().createProject("supported write");
+        await vi.advanceTimersByTimeAsync(500);
+        const supportedDatabase = storageDatabaseName({ environment: "test", userId: "supported-user" });
+        expect(writes.get(supportedDatabase)).toBeGreaterThan(0);
+        expect(values.get(supportedDatabase)?.get(key)).toContain("supported write");
+    });
+
+    it.each([
+        { version: GRAPH_SCHEMA_VERSION + 1, nodeVersion: undefined },
+        { version: GRAPH_SCHEMA_VERSION + 1, nodeVersion: GRAPH_SCHEMA_VERSION },
+    ])("rejects imported future project version $version without adding a project", ({ version, nodeVersion }) => {
+        const before = useCanvasStore.getState().projects;
+        const source: CanvasProjectInput = {
+            ...legacyProject("future-import"),
+            graphSchemaVersion: version,
+            nodes: nodeVersion === undefined ? [] : [{
+                id: "prompt",
+                type: CanvasNodeType.Text,
+                title: "Prompt",
+                position: { x: 0, y: 0 },
+                width: 100,
+                height: 100,
+                metadata: { graph: { schemaVersion: nodeVersion, role: "prompt", text: "hello", outputPortId: "prompt" } },
+            }],
+        };
+
+        expect(() => useCanvasStore.getState().importProject(source)).toThrow("Unsupported canvas graph schema version");
+        expect(useCanvasStore.getState().projects).toBe(before);
     });
 
     it("normalizes authoritative server replacements while preserving server IDs and timestamps", () => {
