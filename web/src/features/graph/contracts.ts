@@ -3,7 +3,7 @@ export const GRAPH_SCHEMA_VERSION = 1 as const;
 export type GraphParameterValue = string | number | boolean | null;
 export type GraphMediaType = "image" | "video" | "audio";
 export type GraphNodeRole = "prompt" | "media-collection" | "model" | "result";
-export type GraphPortValueType = "prompt" | GraphMediaType | "any";
+export type GraphPortValueType = "prompt" | GraphMediaType | "result" | "any";
 
 export type GraphInputPortDescriptor = {
     id: string;
@@ -115,7 +115,7 @@ export function assertSafeLegacyGraphInputPortIds(ports: unknown): asserts ports
 }
 
 export function isGraphPortValueType(value: unknown): value is GraphPortValueType {
-    return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "any";
+    return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "result" || value === "any";
 }
 
 export type CanvasGraphNodeMetadata = GraphPromptMetadata | GraphMediaCollectionMetadata | GraphModelMetadata | GraphResultMetadata;

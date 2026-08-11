@@ -18,7 +18,7 @@ function validate(definition: NodeDefinition) {
 
 const MAX_PORTS = 32;
 const SAFE_PORT_ID = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
-const PORT_VALUE_TYPES = new Set(["prompt", "image", "video", "audio", "any"]);
+const PORT_VALUE_TYPES = new Set(["prompt", "image", "video", "audio", "result", "any"]);
 
 function validatePorts(ports: NodeDefinition["inputs"] | NodeDefinition["outputs"], valueKey: "accepts" | "provides") {
     if (!Array.isArray(ports) || ports.length > MAX_PORTS) throw new Error("invalid node port declaration");

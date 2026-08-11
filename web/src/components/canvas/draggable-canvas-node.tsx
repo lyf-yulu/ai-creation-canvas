@@ -66,7 +66,9 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
     useEffect(() => {
         const element = elementRef.current;
         if (!element || !onMeasuredSize || typeof ResizeObserver === "undefined") return;
+        let active = true;
         const observer = new ResizeObserver((entries) => {
+            if (!active) return;
             const entry = entries[0];
             if (!entry) return;
             const width = entry.contentRect.width;
@@ -74,7 +76,10 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
             if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) onMeasuredSize(node.id, { width, height });
         });
         observer.observe(element);
-        return () => observer.disconnect();
+        return () => {
+            active = false;
+            observer.disconnect();
+        };
     }, [node.id, onMeasuredSize]);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {

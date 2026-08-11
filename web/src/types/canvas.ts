@@ -155,4 +155,5 @@ export type ContextMenuState =
           x: number;
           y: number;
           connectionId: string;
+          connectionKey: string;
       };

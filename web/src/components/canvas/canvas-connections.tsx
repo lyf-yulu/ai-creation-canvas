@@ -8,6 +8,7 @@ import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } fro
 
 export function ConnectionPath({
     connection,
+    connectionKey,
     from,
     to,
     active,
@@ -20,6 +21,7 @@ export function ConnectionPath({
     onOpenContextMenu,
 }: {
     connection: CanvasConnection;
+    connectionKey: string;
     from: CanvasNodeData;
     to: CanvasNodeData;
     active: boolean;
@@ -53,6 +55,7 @@ export function ConnectionPath({
         <g>
             {interactive ? <path
                 data-connection-id={connection.id}
+                data-connection-key={connectionKey}
                 role="button"
                 aria-label={connectionLabel}
                 aria-pressed={active}
@@ -76,6 +79,7 @@ export function ConnectionPath({
             ><title>{inactiveDescription ?? connectionLabel}</title></path> : null}
             <path
                 data-connection-id={interactive ? undefined : connection.id}
+                data-connection-key={interactive ? undefined : connectionKey}
                 aria-hidden="true"
                 d={pathD}
                 stroke={active ? theme.node.activeStroke : theme.node.muted}

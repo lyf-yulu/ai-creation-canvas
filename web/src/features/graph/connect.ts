@@ -12,8 +12,9 @@ export type GraphPortRef = Readonly<{
 
 export type ResolvedConnectionState = Readonly<{
     connection: CanvasConnection;
+    connectionKey: string;
     active: boolean;
-    reason?: "opaque" | "missing-node" | "missing-port" | "incompatible" | "prompt-conflict";
+    reason?: "duplicate" | "duplicate-id" | "opaque" | "missing-node" | "missing-port" | "incompatible" | "prompt-conflict";
 }>;
 
 export function graphConnectionInactiveMessage(reason: NonNullable<ResolvedConnectionState["reason"]>) {
@@ -21,7 +22,13 @@ export function graphConnectionInactiveMessage(reason: NonNullable<ResolvedConne
     if (reason === "incompatible") return "端口类型不兼容";
     if (reason === "missing-node") return "节点不存在";
     if (reason === "missing-port") return "端口不存在或已撤销";
+    if (reason === "duplicate-id") return "连接 ID 重复";
+    if (reason === "duplicate") return "连接端口重复";
     return "插件或端口暂不可用";
+}
+
+export function graphConnectionTransientKey(connection: CanvasConnection, index: number) {
+    return `${index}:${JSON.stringify([connection.id, connection.fromNodeId, connection.fromPortId, connection.toNodeId, connection.toPortId])}`;
 }
 
 export type GraphConnectionResult =
@@ -56,14 +63,14 @@ export function getNodePorts(node: CanvasNodeData, registry: Pick<NodeRegistry, 
     }
     if (graph?.role === "result") return {
         sources: [sourcePort(node.id, graph.outputPortId, graph.mediaType)],
-        targets: [targetPort(node.id, graph.inputPortId, "any")],
+        targets: [targetPort(node.id, graph.inputPortId, "result")],
     };
     if (graph?.role === "model") {
         const inputPorts = Array.isArray(graph.inputPorts)
             ? graph.inputPorts
             : ((graph as unknown as { inputPortIds?: unknown }).inputPortIds as unknown[] | undefined)?.filter((portId): portId is string => typeof portId === "string").map(graphInputPortDescriptor) ?? [];
         return {
-            sources: [sourcePort(node.id, graph.outputPortId, "any")],
+            sources: [sourcePort(node.id, graph.outputPortId, "result")],
             targets: inputPorts.map((descriptor) => targetPort(node.id, descriptor.id, descriptor.accepts, descriptor.label)),
         };
     }
@@ -97,7 +104,7 @@ export function connectGraphPorts(
     if (!sourceNode || !targetNode) return { ok: false, reason: "incompatible" };
     const source = getNodePorts(sourceNode, registry).sources.find((candidate) => candidate.portId === sourceCandidate.portId);
     const target = getNodePorts(targetNode, registry).targets.find((candidate) => candidate.portId === targetCandidate.portId);
-    if (!source || !target || !portsAreCompatible(source, target, targetNode)) return { ok: false, reason: "incompatible" };
+    if (!source || !target || !portsAreCompatible(source, target, sourceNode, targetNode)) return { ok: false, reason: "incompatible" };
 
     const duplicate = connections.some((connection) => connection.fromNodeId === source.nodeId
         && connection.fromPortId === source.portId
@@ -127,23 +134,33 @@ export function resolveActiveConnections(
 ): ResolvedConnectionState[] {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const claimedPromptTargets = new Set<string>();
-    return connections.map((connection) => {
+    const seenIds = new Set<string>();
+    const seenTuples = new Set<string>();
+    return connections.map((connection, index) => {
+        const connectionKey = graphConnectionTransientKey(connection, index);
+        const tuple = JSON.stringify([connection.fromNodeId, connection.fromPortId, connection.toNodeId, connection.toPortId]);
+        const duplicateId = seenIds.has(connection.id);
+        const duplicateTuple = seenTuples.has(tuple);
+        seenIds.add(connection.id);
+        seenTuples.add(tuple);
+        if (duplicateId) return { connection, connectionKey, active: false, reason: "duplicate-id" };
+        if (duplicateTuple) return { connection, connectionKey, active: false, reason: "duplicate" };
         const sourceNode = byId.get(connection.fromNodeId);
         const targetNode = byId.get(connection.toNodeId);
-        if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return { connection, active: false, reason: "missing-node" };
+        if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return { connection, connectionKey, active: false, reason: "missing-node" };
         const source = getNodePorts(sourceNode, registry).sources.find((port) => port.portId === connection.fromPortId);
         const target = getNodePorts(targetNode, registry).targets.find((port) => port.portId === connection.toPortId);
         if (!source || !target) {
             const unresolvedNode = !source ? sourceNode : targetNode;
             const unavailablePlugin = !unresolvedNode.metadata?.graph && !registry.getNode(String(unresolvedNode.type));
-            return { connection, active: false, reason: unavailablePlugin ? "opaque" : "missing-port" };
+            return { connection, connectionKey, active: false, reason: unavailablePlugin ? "opaque" : "missing-port" };
         }
-        if (!portsAreCompatible(source, target, targetNode)) return { connection, active: false, reason: "incompatible" };
+        if (!portsAreCompatible(source, target, sourceNode, targetNode)) return { connection, connectionKey, active: false, reason: "incompatible" };
         if (target.portId === GRAPH_PORT_IDS.prompt) {
-            if (claimedPromptTargets.has(target.nodeId)) return { connection, active: false, reason: "prompt-conflict" };
+            if (claimedPromptTargets.has(target.nodeId)) return { connection, connectionKey, active: false, reason: "prompt-conflict" };
             claimedPromptTargets.add(target.nodeId);
         }
-        return { connection, active: true };
+        return { connection, connectionKey, active: true };
     });
 }
 
@@ -157,7 +174,7 @@ export function isResolvedGraphConnectionValid(
     if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     const source = getNodePorts(sourceNode, registry).sources.find((port) => port.portId === connection.fromPortId);
     const target = getNodePorts(targetNode, registry).targets.find((port) => port.portId === connection.toPortId);
-    return Boolean(source && target && portsAreCompatible(source, target, targetNode));
+    return Boolean(source && target && portsAreCompatible(source, target, sourceNode, targetNode));
 }
 
 export function graphPortDisplayLabel(portId: string, declaredLabel?: string) {
@@ -177,8 +194,12 @@ function targetPort(nodeId: string, portId: string, valueType: GraphPortValueTyp
     return { nodeId, portId, direction: "target", valueType, label: graphPortDisplayLabel(portId, declaredLabel) };
 }
 
-function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, targetNode: CanvasNodeData) {
+function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, sourceNode: CanvasNodeData, targetNode: CanvasNodeData) {
     const targetGraph = targetNode.metadata?.graph;
+    if (targetGraph?.role === "result" && target.portId === targetGraph.inputPortId) {
+        const sourceGraph = sourceNode.metadata?.graph;
+        return sourceGraph?.role === "model" && source.portId === sourceGraph.outputPortId && source.valueType === "result" && target.valueType === "result";
+    }
     const standard = targetGraph?.role === "model" || targetNode.type === "config" ? STANDARD_MODEL_INPUT_PORTS[target.portId] : undefined;
     if (standard) return source.valueType === standard.accepts;
     return source.valueType === "any" || target.valueType === "any" || source.valueType === target.valueType;

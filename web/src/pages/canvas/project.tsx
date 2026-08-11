@@ -16,7 +16,7 @@ import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
+import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
@@ -61,7 +61,7 @@ export default function CanvasProjectPage() {
     const [inspector, setInspector] = useState<GenerationInspectorValue>({ prompt: "", modelId: "", params: {} });
     const [operation, setOperation] = useState<ModelOperation>("image.generate");
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
-    const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+    const [selectedConnectionKey, setSelectedConnectionKey] = useState<string | null>(null);
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
     const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
@@ -128,7 +128,7 @@ export default function CanvasProjectPage() {
 
     useEffect(() => {
         setSelectedNodeIds(new Set());
-        setSelectedConnectionId(null);
+        setSelectedConnectionKey(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
         setMeasuredNodeSizes(new Map());
@@ -138,7 +138,7 @@ export default function CanvasProjectPage() {
     useEffect(() => {
         if (!readOnly) return;
         setSelectedNodeIds(new Set());
-        setSelectedConnectionId(null);
+        setSelectedConnectionKey(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
         clearPendingConnection();
@@ -146,6 +146,10 @@ export default function CanvasProjectPage() {
 
     useEffect(() => {
         const existing = new Set(project?.nodes.map((node) => node.id) ?? []);
+        setMeasuredNodeSizes((current) => {
+            if ([...current.keys()].every((nodeId) => existing.has(nodeId))) return current;
+            return new Map([...current].filter(([nodeId]) => existing.has(nodeId)));
+        });
         setSelectedNodeIds((current) => {
             if ([...current].every((nodeId) => existing.has(nodeId))) return current;
             return new Set([...current].filter((nodeId) => existing.has(nodeId)));
@@ -153,9 +157,9 @@ export default function CanvasProjectPage() {
     }, [project?.nodes]);
 
     useEffect(() => {
-        if (!selectedConnectionId || project?.connections.some((connection) => connection.id === selectedConnectionId)) return;
-        setSelectedConnectionId(null);
-    }, [project?.connections, selectedConnectionId]);
+        if (!selectedConnectionKey || resolvedConnections.some((state) => state.connectionKey === selectedConnectionKey)) return;
+        setSelectedConnectionKey(null);
+    }, [resolvedConnections, selectedConnectionKey]);
 
     useEffect(() => {
         if (!pendingPort || pendingPort.direction !== "source") return;
@@ -221,26 +225,28 @@ export default function CanvasProjectPage() {
         setSelectedNodeIds((selected) => new Set([...selected].filter((nodeId) => !nodeIds.has(nodeId))));
         setContextMenu(null);
     }, [id, readOnly, updateProject]);
-    const deleteConnection = useCallback((connectionId: string) => {
+    const deleteConnection = useCallback((connectionKey: string) => {
         if (readOnly) return;
         const current = useCanvasStore.getState().openProject(id);
         if (!current) return;
-        updateProject(id, { connections: current.connections.filter((connection) => connection.id !== connectionId) });
-        setSelectedConnectionId((selected) => selected === connectionId ? null : selected);
+        const connectionIndex = current.connections.findIndex((connection, index) => graphConnectionTransientKey(connection, index) === connectionKey);
+        if (connectionIndex < 0) return;
+        updateProject(id, { connections: current.connections.filter((_connection, index) => index !== connectionIndex) });
+        setSelectedConnectionKey((selected) => selected === connectionKey ? null : selected);
         setContextMenu(null);
     }, [id, readOnly, updateProject]);
 
     useEffect(() => {
         const handleDeleteShortcut = (event: KeyboardEvent) => {
             if (readOnly || (event.key !== "Delete" && event.key !== "Backspace") || isEditableEventTarget(event.target)) return;
-            if (selectedNodeIds.size === 0 && !selectedConnectionId) return;
+            if (selectedNodeIds.size === 0 && !selectedConnectionKey) return;
             event.preventDefault();
             if (selectedNodeIds.size > 0) deleteNodes(selectedNodeIds);
-            else if (selectedConnectionId) deleteConnection(selectedConnectionId);
+            else if (selectedConnectionKey) deleteConnection(selectedConnectionKey);
         };
         window.addEventListener("keydown", handleDeleteShortcut);
         return () => window.removeEventListener("keydown", handleDeleteShortcut);
-    }, [deleteConnection, deleteNodes, readOnly, selectedConnectionId, selectedNodeIds]);
+    }, [deleteConnection, deleteNodes, readOnly, selectedConnectionKey, selectedNodeIds]);
 
     const finishPortConnection = useCallback((first: GraphPortRef, second: GraphPortRef) => {
         if (readOnly) return false;
@@ -253,7 +259,7 @@ export default function CanvasProjectPage() {
         }
         updateProject(id, { connections: [...current.connections, result.connection] });
         setSelectedNodeIds(new Set());
-        setSelectedConnectionId(result.connection.id);
+        setSelectedConnectionKey(graphConnectionTransientKey(result.connection, current.connections.length));
         setPendingPort(null);
         setConnectionMessage("连接已创建。");
         return true;
@@ -360,16 +366,16 @@ export default function CanvasProjectPage() {
         if (readOnly) return;
         contextTriggerRef.current = trigger;
         setSelectedNodeIds(new Set([nodeId]));
-        setSelectedConnectionId(null);
+        setSelectedConnectionKey(null);
         setContextMenu({ type: "node", nodeId, x: position.x, y: position.y });
     }, [readOnly]);
 
-    const openConnectionContextMenu = useCallback((connectionId: string, position: { x: number; y: number }, trigger: SVGPathElement) => {
+    const openConnectionContextMenu = useCallback((connectionId: string, connectionKey: string, position: { x: number; y: number }, trigger: SVGPathElement) => {
         if (readOnly) return;
         contextTriggerRef.current = trigger;
         setSelectedNodeIds(new Set());
-        setSelectedConnectionId(connectionId);
-        setContextMenu({ type: "connection", connectionId, x: position.x, y: position.y });
+        setSelectedConnectionKey(connectionKey);
+        setContextMenu({ type: "connection", connectionId, connectionKey, x: position.x, y: position.y });
     }, [readOnly]);
 
     const closeContextMenu = useCallback((restoreFocus = false) => {
@@ -396,22 +402,23 @@ export default function CanvasProjectPage() {
                     onViewportChange={changeViewport}
                     onCanvasDeselect={() => {
                         setSelectedNodeIds(new Set());
-                        setSelectedConnectionId(null);
+                        setSelectedConnectionKey(null);
                         setContextMenu(null);
                         clearPendingConnection();
                     }}
                 >
                     <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
-                        {resolvedConnections.map(({ connection, active: connectionActive, reason }) => {
+                        {resolvedConnections.map(({ connection, connectionKey, active: connectionActive, reason }) => {
                             const from = measuredNodeMap.get(connection.fromNodeId);
                             const to = measuredNodeMap.get(connection.toNodeId);
                             if (!from || !to) return null;
                             return <ConnectionPath
-                                key={connection.id}
+                                key={connectionKey}
                                 connection={connection}
+                                connectionKey={connectionKey}
                                 from={from}
                                 to={to}
-                                active={selectedConnectionId === connection.id}
+                                active={selectedConnectionKey === connectionKey}
                                 enabled={connectionActive}
                                 inactiveReason={reason ? graphConnectionInactiveMessage(reason) : undefined}
                                 fromPortLabel={getNodePorts(from).sources.find((port) => port.portId === connection.fromPortId)?.label}
@@ -419,11 +426,11 @@ export default function CanvasProjectPage() {
                                 onSelect={() => {
                                     if (readOnly) return;
                                     setSelectedNodeIds(new Set());
-                                    setSelectedConnectionId(connection.id);
+                                    setSelectedConnectionKey(connectionKey);
                                     setContextMenu(null);
                                 }}
                                 interactive={!readOnly}
-                                onOpenContextMenu={readOnly ? undefined : (position, trigger) => openConnectionContextMenu(connection.id, position, trigger)}
+                                onOpenContextMenu={readOnly ? undefined : (position, trigger) => openConnectionContextMenu(connection.id, connectionKey, position, trigger)}
                             />;
                         })}
                         {pendingPort?.direction === "source" ? (
@@ -446,7 +453,7 @@ export default function CanvasProjectPage() {
                                 selected={selectedNodeIds.has(node.id)}
                                 disabled={readOnly}
                                 onSelect={readOnly ? undefined : (nodeId, additive) => {
-                                    setSelectedConnectionId(null);
+                                    setSelectedConnectionKey(null);
                                     setSelectedNodeIds((current) => selectNode(current, nodeId, additive));
                                 }}
                                 onContextMenu={readOnly ? undefined : openNodeContextMenu}
@@ -485,7 +492,7 @@ export default function CanvasProjectPage() {
                     <CanvasNodeContextMenu
                         menu={contextMenu}
                         onClose={closeContextMenu}
-                        onDelete={() => deleteConnection(contextMenu.connectionId)}
+                        onDelete={() => deleteConnection(contextMenu.connectionKey)}
                     />
                 ) : null}
             </section>

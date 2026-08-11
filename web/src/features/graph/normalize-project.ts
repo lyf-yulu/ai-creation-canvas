@@ -308,7 +308,6 @@ function mediaTypeForNode(type: CanvasNodeData["type"]): GraphMediaType | null {
 function normalizeConnections(connections: CanvasConnectionInput[], nodes: CanvasNodeData[], portResolver?: CanvasNodePortResolver): CanvasConnection[] {
     void portResolver;
     const byId = new Map(nodes.map((node) => [node.id, node]));
-    const seen = new Set<string>();
     const normalized: CanvasConnection[] = [];
     for (const connection of connections) {
         const from = byId.get(connection.fromNodeId);
@@ -325,9 +324,6 @@ function normalizeConnections(connections: CanvasConnectionInput[], nodes: Canva
         if (!ports) continue;
         const validity = explicit ? classifyExplicitConnection(from, ports.fromPortId, to, ports.toPortId) : "valid";
         if (validity === "invalid") continue;
-        const key = `${from.id}\u0000${ports.fromPortId}\u0000${to.id}\u0000${ports.toPortId}`;
-        if (validity !== "opaque" && seen.has(key)) continue;
-        if (validity !== "opaque") seen.add(key);
         normalized.push({ id: connection.id, fromNodeId: from.id, fromPortId: ports.fromPortId, toNodeId: to.id, toPortId: ports.toPortId });
     }
     return normalized;
@@ -376,7 +372,7 @@ function portTypesMatch(source: GraphPortValueType, target: GraphPortValueType) 
 function graphSourceValueType(metadata: CanvasGraphNodeMetadata): GraphPortValueType {
     if (metadata.role === "prompt") return "prompt";
     if (metadata.role === "media-collection" || metadata.role === "result") return metadata.mediaType;
-    return "any";
+    return "result";
 }
 
 function inferLegacyPorts(from: CanvasNodeData, to: CanvasNodeData) {

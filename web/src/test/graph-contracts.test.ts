@@ -171,7 +171,7 @@ describe("legacy graph normalization", () => {
         ]);
     });
 
-    it("rejects dangling, self, duplicate and ambiguous edges while preserving prompt conflicts", () => {
+    it("rejects dangling, self and ambiguous edges while preserving raw duplicates and prompt conflicts", () => {
         const legacy = project(
             [node("prompt-a", CanvasNodeType.Text), node("prompt-b", CanvasNodeType.Text), node("model", CanvasNodeType.Config), node("image-a", CanvasNodeType.Image), node("image-b", CanvasNodeType.Image)],
             [
@@ -188,7 +188,7 @@ describe("legacy graph normalization", () => {
         const once = normalizeCanvasProject(legacy);
         const twice = normalizeCanvasProject(once);
 
-        expect(once.connections.map((edge) => edge.id)).toEqual(["keep-prompt", "drop-second-prompt", "keep-image"]);
+        expect(once.connections.map((edge) => edge.id)).toEqual(["keep-prompt", "drop-second-prompt", "keep-image", "drop-duplicate"]);
         expect(twice).toEqual(once);
     });
 
@@ -231,6 +231,24 @@ describe("legacy graph normalization", () => {
         ]);
 
         expect(normalizeCanvasProject(source).connections.map((edge) => edge.id)).toEqual(["valid-prompt", "valid-image"]);
+    });
+
+    it("keeps only canonical model-result built-in edges valid across reload while preserving plugin raw data", () => {
+        const plugin = node("plugin", "plugin.result");
+        const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "x", outputPortId: "prompt" } });
+        const image = node("image", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.generate", inputPorts: [], outputPortId: "result", parameters: {} } });
+        const result = node("result", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" } });
+        const source = project([plugin, prompt, image, model, result], [
+            { id: "plugin-spoof", fromNodeId: "plugin", fromPortId: "out", toNodeId: "result", toPortId: "result" },
+            { id: "prompt-spoof", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "result", toPortId: "result" },
+            { id: "media-spoof", fromNodeId: "image", fromPortId: "media", toNodeId: "result", toPortId: "result" },
+            { id: "model-result", fromNodeId: "model", fromPortId: "result", toNodeId: "result", toPortId: "result" },
+        ]);
+
+        const once = normalizeCanvasProject(source);
+        expect(once.connections.map((edge) => edge.id)).toEqual(["plugin-spoof", "model-result"]);
+        expect(normalizeCanvasProject(once)).toEqual(once);
     });
 
     it("migrates legacy model inputPortIds to typed descriptors and deep-clones canonical descriptors", () => {

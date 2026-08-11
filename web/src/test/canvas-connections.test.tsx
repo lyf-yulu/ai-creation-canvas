@@ -95,7 +95,7 @@ describe("named-port graph rules", () => {
         const model = modelNode("model", ["prompt", "first_frame", "reference_audio"]);
 
         expect(getNodePorts(model)).toEqual({
-            sources: [{ nodeId: "model", portId: "result", direction: "source", valueType: "any", label: "结果" }],
+            sources: [{ nodeId: "model", portId: "result", direction: "source", valueType: "result", label: "结果" }],
             targets: [
                 { nodeId: "model", portId: "prompt", direction: "target", valueType: "prompt", label: "提示词" },
                 { nodeId: "model", portId: "first_frame", direction: "target", valueType: "image", label: "首帧" },
@@ -111,9 +111,33 @@ describe("named-port graph rules", () => {
 
         expect(ports).toEqual({
             sources: [{ nodeId: "result", portId: "media", direction: "source", valueType: "video", label: "媒体" }],
-            targets: [{ nodeId: "result", portId: "result", direction: "target", valueType: "any", label: "结果" }],
+            targets: [{ nodeId: "result", portId: "result", direction: "target", valueType: "result", label: "结果" }],
         });
         expect(connectGraphPorts(port("model", "result", "source"), port("result", "result", "target"), [model, result], [], "output")).toMatchObject({ ok: true });
+    });
+
+    it("reserves result inputs for declared graph model outputs and rejects typed plugin spoofing", () => {
+        const registry = createNodeRegistry();
+        registry.registerNode({ id: "plugin.result", version: 1, title: "Spoof", inputs: [], outputs: [{ id: "out", provides: "result" }], createMetadata: () => ({}), render: () => null });
+        const plugin = baseNode("plugin", "plugin.result", 0, 0, {});
+        const result = mediaNode("result", "image");
+        const model = modelNode("model", []);
+        const prompt = promptNode("prompt");
+        const image = mediaNode("image", "image");
+        const nodes = [plugin, result, model, prompt, image];
+
+        expect(connectGraphPorts(port("plugin", "out", "source"), port("result", "result", "target"), nodes, [], "plugin", registry)).toEqual({ ok: false, reason: "incompatible" });
+        expect(connectGraphPorts(port("prompt", "prompt", "source"), port("result", "result", "target"), nodes, [], "prompt", registry)).toEqual({ ok: false, reason: "incompatible" });
+        expect(connectGraphPorts(port("image", "media", "source"), port("result", "result", "target"), nodes, [], "image", registry)).toEqual({ ok: false, reason: "incompatible" });
+        const raw: CanvasConnection[] = [
+            { id: "plugin", fromNodeId: "plugin", fromPortId: "out", toNodeId: "result", toPortId: "result" },
+            { id: "prompt", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "result", toPortId: "result" },
+            { id: "image", fromNodeId: "image", fromPortId: "media", toNodeId: "result", toPortId: "result" },
+            { id: "model", fromNodeId: "model", fromPortId: "result", toNodeId: "result", toPortId: "result" },
+        ];
+        expect(resolveActiveConnections(raw, nodes, registry).map(({ connection, active }) => [connection.id, active])).toEqual([
+            ["plugin", false], ["prompt", false], ["image", false], ["model", true],
+        ]);
     });
 
     it("resolves custom plugin ports from an isolated typed registry without title-based rules", () => {
@@ -270,6 +294,26 @@ describe("named-port graph rules", () => {
         ]);
         expect(JSON.stringify(connections)).toBe(before);
     });
+
+    it("arbitrates duplicate ids and tuples in raw order with stable transient keys", () => {
+        const nodes = [promptNode("prompt-a"), promptNode("prompt-b"), promptNode("prompt-c"), modelNode("model", ["prompt"])];
+        const connections: CanvasConnection[] = [
+            { id: "same", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "same", fromNodeId: "prompt-b", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "tuple-copy", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "unique", fromNodeId: "prompt-c", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+        ];
+
+        const resolved = resolveActiveConnections(connections, nodes, createNodeRegistry());
+        expect(resolved.map(({ active, reason }) => [active, reason])).toEqual([
+            [true, undefined],
+            [false, "duplicate-id"],
+            [false, "duplicate"],
+            [false, "prompt-conflict"],
+        ]);
+        expect(new Set(resolved.map((state) => state.connectionKey)).size).toBe(4);
+        expect(resolved.map((state) => state.connection)).toEqual(connections);
+    });
 });
 
 describe("canvas named-port interactions", () => {
@@ -331,6 +375,24 @@ describe("canvas named-port interactions", () => {
         expect(useCanvasStore.getState().openProject(projectId)?.connections).toHaveLength(1);
     });
 
+    it("connects model result to a result node by pointer and click with stable result ports", async () => {
+        const model = modelNode("model", []);
+        const result = mediaNode("result", "video", 760, 80);
+        const { projectId } = await renderProject([model, result]);
+        const source = screen.getByRole("button", { name: "model：结果输出端口" });
+        const target = screen.getByRole("button", { name: "result：结果输入端口" });
+
+        fireEvent.pointerDown(source, { button: 0, pointerId: 51, clientX: 660, clientY: 160 });
+        fireEvent.pointerUp(target, { button: 0, pointerId: 51, clientX: 760, clientY: 160 });
+        expect(useCanvasStore.getState().openProject(projectId)?.connections[0]).toMatchObject({ fromPortId: "result", toPortId: "result" });
+
+        useCanvasStore.getState().updateProject(projectId, { connections: [] });
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        fireEvent.click(source);
+        fireEvent.click(target);
+        expect(useCanvasStore.getState().openProject(projectId)?.connections).toHaveLength(1);
+    });
+
     it("renders world-coordinate edge geometry once under pan and zoom", async () => {
         const prompt = promptNode("prompt", 40, 50);
         const model = modelNode("model", ["prompt"], 420, 80);
@@ -364,6 +426,43 @@ describe("canvas named-port interactions", () => {
         expect(useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.id === "model")?.height).toBe(160);
         unmount();
         expect(disconnect).toHaveBeenCalled();
+    });
+
+    it("prunes deleted measured sizes and ignores late observer callbacks before recreating an id", async () => {
+        const callbacks = new Map<Element, ResizeObserverCallback>();
+        class TestResizeObserver {
+            constructor(private readonly callback: ResizeObserverCallback) {}
+            observe(element: Element) { callbacks.set(element, this.callback); }
+            unobserve(element: Element) { callbacks.delete(element); }
+            disconnect() {}
+        }
+        vi.stubGlobal("ResizeObserver", TestResizeObserver);
+        const prompt = promptNode("prompt");
+        const model = modelNode("model", ["prompt"]);
+        const edge: CanvasConnection = { id: "edge", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" };
+        const { projectId } = await renderProject([prompt, model], [edge]);
+        const modelElement = screen.getByTestId("draggable-node-model");
+        const lateCallback = callbacks.get(modelElement)!;
+        act(() => lateCallback([{ target: modelElement, contentRect: { width: 240, height: 320 } } as unknown as ResizeObserverEntry], {} as ResizeObserver));
+        await waitFor(() => expect(document.querySelector("[data-connection-id='edge']")).toHaveAttribute("d", "M 280 130 C 350 130, 350 240, 420 240"));
+
+        fireEvent.keyDown(modelElement, { key: "Enter" });
+        fireEvent.keyDown(window, { key: "Delete" });
+        await waitFor(() => expect(screen.queryByTestId("draggable-node-model")).not.toBeInTheDocument());
+        act(() => lateCallback([{ target: modelElement, contentRect: { width: 240, height: 480 } } as unknown as ResizeObserverEntry], {} as ResizeObserver));
+
+        useCanvasStore.getState().updateProject(projectId, { nodes: [prompt, model], connections: [edge] });
+        await waitFor(() => expect(document.querySelector("[data-connection-id='edge']")).toHaveAttribute("d", "M 280 130 C 350 130, 350 160, 420 160"));
+
+        const recreatedElement = screen.getByTestId("draggable-node-model");
+        const secondLateCallback = callbacks.get(recreatedElement)!;
+        act(() => secondLateCallback([{ target: recreatedElement, contentRect: { width: 240, height: 360 } } as unknown as ResizeObserverEntry], {} as ResizeObserver));
+        fireEvent.keyDown(recreatedElement, { key: "Enter" });
+        fireEvent.keyDown(window, { key: "Delete" });
+        await waitFor(() => expect(screen.queryByTestId("draggable-node-model")).not.toBeInTheDocument());
+        act(() => secondLateCallback([{ target: recreatedElement, contentRect: { width: 240, height: 500 } } as unknown as ResizeObserverEntry], {} as ResizeObserver));
+        useCanvasStore.getState().updateProject(projectId, { nodes: [prompt, model], connections: [edge] });
+        await waitFor(() => expect(document.querySelector("[data-connection-id='edge']")).toHaveAttribute("d", "M 280 130 C 350 130, 350 160, 420 160"));
     });
 
     it("selects and deletes an edge with the keyboard, and deletes another from its context menu", async () => {
@@ -559,5 +658,26 @@ describe("canvas named-port interactions", () => {
         expect(conflict).toHaveAttribute("aria-pressed", "true");
         fireEvent.keyDown(window, { key: "Delete" });
         expect(useCanvasStore.getState().openProject(projectId)?.connections.map((edge) => edge.id)).toEqual(["first", "incompatible", "missing-port"]);
+    });
+
+    it("renders duplicate raw edges without key ambiguity and deletes exactly the selected entry", async () => {
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const edges: CanvasConnection[] = [
+            { id: "same-id", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model-a", toPortId: "prompt" },
+            { id: "same-id", fromNodeId: "prompt-b", fromPortId: "prompt", toNodeId: "model-b", toPortId: "prompt" },
+            { id: "tuple-copy", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model-a", toPortId: "prompt" },
+        ];
+        const { projectId } = await renderProject([promptNode("prompt-a"), promptNode("prompt-b"), modelNode("model-a", ["prompt"]), modelNode("model-b", ["prompt"])], edges);
+        expect(consoleError.mock.calls.flat().join(" ")).not.toContain("same key");
+        const duplicateId = screen.getByRole("button", { name: /连接：prompt-b.*model-b.*暂不可用：连接 ID 重复/ });
+        expect(screen.getByRole("button", { name: /连接：prompt-a.*model-a.*暂不可用：连接端口重复/ })).toBeInTheDocument();
+
+        fireEvent.contextMenu(duplicateId, { clientX: 50, clientY: 60 });
+        fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+        expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual([edges[0], edges[2]]);
+
+        fireEvent.click(screen.getByRole("button", { name: /连接：prompt-a.*model-a.*暂不可用：连接端口重复/ }));
+        fireEvent.keyDown(window, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual([edges[0]]);
     });
 });
