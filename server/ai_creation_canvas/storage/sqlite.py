@@ -154,7 +154,7 @@ class CanvasStore:
         """Run all schema work inside the secure, exclusive migration transaction."""
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_assets (
                 asset_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL,
-                mime_type TEXT NOT NULL, status TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
+                media_type TEXT NOT NULL, mime_type TEXT NOT NULL, status TEXT NOT NULL, relative_path TEXT NOT NULL UNIQUE,
                 size_bytes INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 service_id TEXT, upstream_asset_id TEXT
             )""")
@@ -199,6 +199,9 @@ class CanvasStore:
         for name in ("service_id", "upstream_asset_id"):
             if name not in asset_columns:
                 db.execute(f"ALTER TABLE canvas_assets ADD COLUMN {name} TEXT")
+        if "media_type" not in asset_columns:
+            db.execute("ALTER TABLE canvas_assets ADD COLUMN media_type TEXT")
+            db.execute("UPDATE canvas_assets SET media_type=CASE WHEN mime_type LIKE 'video/%' THEN 'video' WHEN mime_type LIKE 'audio/%' THEN 'audio' ELSE 'image' END")
         if "result_ref" in columns:
             scrub_pending = True
             # Copy only opaque IDs, then rebuild so URLs cannot remain in a legacy column.
@@ -278,10 +281,13 @@ class CanvasStore:
     def _row(row: sqlite3.Row | None) -> dict[str, object] | None:
         return dict(row) if row is not None else None
 
-    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int, status: str = "active", service_id: str | None = None, upstream_asset_id: str | None = None) -> dict[str, object]:
+    def create_asset(self, *, asset_id: str, user_id: str, kind: str, mime_type: str, relative_path: str, size_bytes: int, media_type: str | None = None, status: str = "active", service_id: str | None = None, upstream_asset_id: str | None = None) -> dict[str, object]:
         now = _now()
+        safe_media_type = media_type or mime_type.split("/", 1)[0]
+        if safe_media_type not in {"image", "video", "audio"}:
+            raise ValueError("media_type is invalid")
         with self._connection(immediate=True) as db:
-            db.execute("INSERT INTO canvas_assets (asset_id,user_id,kind,mime_type,status,relative_path,size_bytes,created_at,updated_at,service_id,upstream_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, mime_type, status, relative_path, size_bytes, now, now, service_id, upstream_asset_id))
+            db.execute("INSERT INTO canvas_assets (asset_id,user_id,kind,media_type,mime_type,status,relative_path,size_bytes,created_at,updated_at,service_id,upstream_asset_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (asset_id, user_id, kind, safe_media_type, mime_type, status, relative_path, size_bytes, now, now, service_id, upstream_asset_id))
             row = db.execute("SELECT * FROM canvas_assets WHERE asset_id = ?", (asset_id,)).fetchone()
         assert row is not None
         return dict(row)
@@ -410,7 +416,7 @@ class CanvasStore:
         safe_limit = min(max(limit, 1), 100)
         with self._connection() as db:
             rows = db.execute(
-                "SELECT asset_id,kind,mime_type,status,size_bytes,created_at,updated_at FROM canvas_assets WHERE user_id=? ORDER BY created_at DESC,asset_id DESC LIMIT ?",
+                "SELECT asset_id,kind,media_type,mime_type,status,size_bytes,created_at,updated_at FROM canvas_assets WHERE user_id=? ORDER BY created_at DESC,asset_id DESC LIMIT ?",
                 (user_id, safe_limit),
             ).fetchall()
         return tuple(dict(row) for row in rows)

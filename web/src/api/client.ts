@@ -6,6 +6,10 @@ let csrfToken: string | null = null;
 export function setCsrfToken(value: string | null) {
     csrfToken = value;
 }
+
+export function csrfTokenForRequest() {
+    return csrfToken;
+}
 const unsafePathError = () => new Error("API requests must use a normalized relative /api/v1/ path");
 
 function fullyDecode(value: string) {

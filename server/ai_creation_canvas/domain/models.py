@@ -96,6 +96,12 @@ class AssetKind(StrEnum):
     PORTRAIT = "portrait"
 
 
+class AssetMediaType(StrEnum):
+    IMAGE = "image"
+    VIDEO = "video"
+    AUDIO = "audio"
+
+
 class AssetStatus(StrEnum):
     PROCESSING = "processing"
     ACTIVE = "active"
@@ -178,6 +184,7 @@ class AssetRef:
     kind: AssetKind | str
     status: AssetStatus | str
     mime_type: str
+    media_type: AssetMediaType | str | None = None
 
     def __post_init__(self) -> None:
         _stable_id(self.asset_id, "asset_id")
@@ -190,6 +197,12 @@ class AssetRef:
         except ValueError as error:
             raise ValueError("status must be a supported AssetStatus") from error
         _non_empty_text(self.mime_type, "mime_type")
+        if self.media_type is None:
+            return
+        try:
+            object.__setattr__(self, "media_type", AssetMediaType(self.media_type))
+        except ValueError as error:
+            raise ValueError("media_type must be a supported AssetMediaType") from error
 
 
 @dataclass(frozen=True, slots=True)

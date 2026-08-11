@@ -104,6 +104,9 @@ class Settings:
     enable_ark_adapter: bool = False
     ark_models_config_path: Path | str | None = None
     ark_models_config_root: Path | str | None = None
+    max_image_upload_bytes: int = 10 * 1024 * 1024
+    max_video_upload_bytes: int = 64 * 1024 * 1024
+    max_audio_upload_bytes: int = 32 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -146,6 +149,10 @@ class Settings:
             raise ValueError("enable_demo_adapter must be a bool")
         if type(self.enable_ark_adapter) is not bool:
             raise ValueError("enable_ark_adapter must be a bool")
+        for field_name in ("max_image_upload_bytes", "max_video_upload_bytes", "max_audio_upload_bytes"):
+            value = getattr(self, field_name)
+            if type(value) is not int or not 1 <= value <= 2 * 1024 * 1024 * 1024:
+                raise ValueError(f"{field_name} must be a positive bounded integer")
         if self.enable_ark_adapter:
             if self.ark_models_config_path is None or self.ark_models_config_root is None:
                 raise ValueError("Ark adapter requires an explicit administrator configuration")

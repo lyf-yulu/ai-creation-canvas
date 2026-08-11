@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Navigate, useParams } from "react-router-dom";
-import { ImagePlus, MessageSquareText } from "lucide-react";
+import { Film, ImagePlus, MessageSquareText, Music2 } from "lucide-react";
 import { nanoid } from "nanoid";
 
 import type { JobState, ModelOperation, ModelSpec } from "@/api/contracts";
@@ -11,11 +11,12 @@ import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
 import { GenerationInspector, type GenerationInspectorValue } from "@/components/canvas/generation-inspector";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
+import { MediaCollectionNode } from "@/components/canvas/media-collection-node";
 import { NodePort } from "@/components/canvas/node-port";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
-import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, type GraphMediaItem, type GraphMediaType } from "@/features/graph/contracts";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
@@ -362,6 +363,39 @@ export default function CanvasProjectPage() {
         updateProject(id, { nodes });
     }, [id, readOnly, updateProject]);
 
+    const addMediaCollectionNode = useCallback((mediaType: GraphMediaType) => {
+        if (readOnly) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        const nodeType = mediaType === "image" ? CanvasNodeType.Image : mediaType === "video" ? CanvasNodeType.Video : CanvasNodeType.Audio;
+        const title = mediaType === "image" ? "参考图片" : mediaType === "video" ? "参考视频" : "参考音频";
+        const node: CanvasNodeData = {
+            id: nanoid(),
+            type: nodeType,
+            title,
+            position: { x: 96 + current.nodes.length * 24, y: 112 + current.nodes.length * 24 },
+            width: mediaType === "video" ? 400 : 360,
+            height: mediaType === "audio" ? 220 : 300,
+            metadata: {
+                status: "idle",
+                graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "media-collection", mediaType, outputPortId: "media", items: [] },
+            },
+        };
+        updateProject(id, { nodes: [...current.nodes, node] });
+        setSelectedNodeIds(new Set([node.id]));
+    }, [id, readOnly, updateProject]);
+
+    const updateMediaCollection = useCallback((nodeId: string, items: GraphMediaItem[]) => {
+        if (readOnly) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        const nodes = current.nodes.map((node) => {
+            if (node.id !== nodeId || node.metadata?.graph?.role !== "media-collection") return node;
+            return { ...node, metadata: { ...node.metadata, graph: { ...node.metadata.graph, items: items.map((item) => ({ ...item })) } } };
+        });
+        updateProject(id, { nodes });
+    }, [id, readOnly, updateProject]);
+
     const openNodeContextMenu = useCallback((nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
         if (readOnly) return;
         contextTriggerRef.current = trigger;
@@ -393,7 +427,7 @@ export default function CanvasProjectPage() {
         {loadError ? <p role="alert" className="shrink-0 border-b border-[#70502b] bg-[#241a0c] px-4 py-2 text-sm text-[#ffbd73]">{loadError.message}</p> : null}
         {syncNotice ? <p data-testid="project-sync-notice" role="status" aria-live="polite" className="shrink-0 border-b border-[#70502b] bg-[#241a0c] px-4 py-2 text-sm text-[#ffbd73]">{syncNotice}</p> : null}
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[152px_minmax(0,1fr)_340px]">
-            <aside data-testid="studio-palette" className="shrink-0 border-b border-[#1d3d28] bg-[#08100b] p-2 lg:border-b-0 lg:border-r lg:p-3"><div className="flex items-center justify-between gap-2 lg:block"><div><p className="px-2 text-xs tracking-[0.16em] text-[#58ed87] lg:pt-2">NODE PALETTE</p><h1 className="px-2 py-1 text-sm font-semibold lg:pb-4 lg:pt-2">{project.title}</h1></div><div className="flex flex-wrap gap-2 lg:block lg:space-y-2"><button disabled={readOnly} type="button" onClick={addPromptNode} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><MessageSquareText className="size-4 text-[#58ed87]" />提示词节点</button><button disabled={readOnly} type="button" onClick={() => { setOperation("image.generate"); document.getElementById("studio-prompt")?.focus(); }} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><ImagePlus className="size-4 text-[#58ed87]" />图片生成</button><button disabled={readOnly} type="button" onClick={() => { setOperation("video.generate"); document.getElementById("studio-prompt")?.focus(); }} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5">视频生成</button></div></div><p className="mt-5 hidden px-2 text-[11px] leading-5 text-[#688371] lg:block">更多能力将按后续切片增量开放。</p></aside>
+            <aside data-testid="studio-palette" className="shrink-0 border-b border-[#1d3d28] bg-[#08100b] p-2 lg:border-b-0 lg:border-r lg:p-3"><div className="flex items-center justify-between gap-2 lg:block"><div><p className="px-2 text-xs tracking-[0.16em] text-[#58ed87] lg:pt-2">NODE PALETTE</p><h1 className="px-2 py-1 text-sm font-semibold lg:pb-4 lg:pt-2">{project.title}</h1></div><div className="flex flex-wrap gap-2 lg:block lg:space-y-2"><button disabled={readOnly} type="button" onClick={addPromptNode} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><MessageSquareText className="size-4 text-[#58ed87]" />提示词节点</button><button disabled={readOnly} type="button" onClick={() => addMediaCollectionNode("image")} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><ImagePlus className="size-4 text-[#58ed87]" />参考图节点</button><button disabled={readOnly} type="button" onClick={() => addMediaCollectionNode("video")} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><Film className="size-4 text-[#58ed87]" />参考视频节点</button><button disabled={readOnly} type="button" onClick={() => addMediaCollectionNode("audio")} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"><Music2 className="size-4 text-[#58ed87]" />参考音频节点</button><button disabled={readOnly} type="button" onClick={() => { setOperation("image.generate"); document.getElementById("studio-prompt")?.focus(); }} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5">图片生成</button><button disabled={readOnly} type="button" onClick={() => { setOperation("video.generate"); document.getElementById("studio-prompt")?.focus(); }} className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5">视频生成</button></div></div><p className="mt-5 hidden px-2 text-[11px] leading-5 text-[#688371] lg:block">集合内顺序决定 @图片N、@视频N、@音频N 的引用编号。</p></aside>
             <section data-testid="studio-canvas" className="embed-surface relative min-h-0 min-w-0 flex-1">
                 <InfiniteCanvas
                     containerRef={containerRef}
@@ -443,6 +477,7 @@ export default function CanvasProjectPage() {
                     </svg>
                     {project.nodes.map((node) => {
                         const promptNode = node.metadata?.graph?.role === "prompt";
+                        const mediaCollectionNode = node.metadata?.graph?.role === "media-collection";
                         const ports = getNodePorts(node);
                         const measuredNode = measuredNodeMap.get(node.id) ?? node;
                         return (
@@ -462,7 +497,9 @@ export default function CanvasProjectPage() {
                             >
                                 {promptNode
                                     ? <PromptNodeCard node={node} disabled={readOnly} onTextChange={(text) => updatePromptNode(node.id, text)} />
-                                    : <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} />}
+                                    : mediaCollectionNode
+                                        ? <MediaCollectionNode node={node} readOnly={readOnly} onItemsChange={(items) => updateMediaCollection(node.id, items)} />
+                                        : <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} />}
                                 {[...ports.targets, ...ports.sources].map((port) => (
                                     <NodePort
                                         key={`${port.direction}:${port.portId}`}
