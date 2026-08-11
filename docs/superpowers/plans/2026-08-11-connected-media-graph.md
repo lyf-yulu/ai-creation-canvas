@@ -22,6 +22,17 @@
 - Existing projects migrate without data loss. Legacy connections without a port remain visible only when they can be normalized unambiguously; otherwise they are omitted safely.
 - Keep `127.0.0.1:8992` and production services untouched. Use isolated test data and a separate acceptance port.
 
+## Manual acceptance gate after every task
+
+No task is considered complete from automated tests and code review alone. After its specification and code-quality reviews pass, build and start the exact reviewed commit on an isolated local port and test-data directory, then give the user:
+
+- the local URL and the administrator/normal-user test accounts needed for that slice;
+- a short list of newly available actions and known out-of-scope actions;
+- a five-to-ten-minute manual checklist with expected visible results;
+- any safe cleanup or rollback instructions.
+
+Keep that acceptance instance running until the user tests it and explicitly approves the slice. Record the user's findings, fix regressions through the same RED/GREEN and review cycle, and repeat manual acceptance. Only the user's approval closes the task and authorizes starting the next task. Never replace the user's manual acceptance with screenshots, mocked browser tests, or a claim that automated gates passed.
+
 ## Task 1: Version the graph schema and normalize legacy projects
 
 **Files:**
