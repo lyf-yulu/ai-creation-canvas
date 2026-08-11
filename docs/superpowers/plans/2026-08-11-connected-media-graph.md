@@ -22,16 +22,18 @@
 - Existing projects migrate without data loss. Legacy connections without a port remain visible only when they can be normalized unambiguously; otherwise they are omitted safely.
 - Keep `127.0.0.1:8992` and production services untouched. Use isolated test data and a separate acceptance port.
 
-## Manual acceptance gate after every task
+## Manual acceptance gate for the completed functional milestone
 
-No task is considered complete from automated tests and code review alone. After its specification and code-quality reviews pass, build and start the exact reviewed commit on an isolated local port and test-data directory, then give the user:
+Tasks in this plan are internal implementation slices, not user acceptance stops. Complete them continuously through short Review → Analyze → Enhance loops without asking the user to test each slice.
 
-- the local URL and the administrator/normal-user test accounts needed for that slice;
-- a short list of newly available actions and known out-of-scope actions;
-- a five-to-ten-minute manual checklist with expected visible results;
-- any safe cleanup or rollback instructions.
+The milestone is ready for user acceptance only after the whole connected-media workflow is runnable: editable prompt and ordered media inputs, named connections, capability-driven Seedream/Seedance nodes, real parameter forwarding, real model calls, result preview/download/reuse, and the required isolation and stability checks. Then build and start the exact reviewed commit on an isolated local port and test-data directory, and give the user:
 
-Keep that acceptance instance running until the user tests it and explicitly approves the slice. Record the user's findings, fix regressions through the same RED/GREEN and review cycle, and repeat manual acceptance. Only the user's approval closes the task and authorizes starting the next task. Never replace the user's manual acceptance with screenshots, mocked browser tests, or a claim that automated gates passed.
+- the local URL and administrator/normal-user test accounts;
+- the completed feature list and known out-of-scope items;
+- a concise end-to-end manual checklist with expected visible results;
+- safe cleanup or rollback instructions.
+
+Keep that milestone instance running until the user tests it and explicitly approves it. The user will provide the next-stage requirements only after acceptance. Automated tests, screenshots, and internal slice reviews are evidence for the agent, not substitutes for the user's final milestone acceptance.
 
 ## Task 1: Version the graph schema and normalize legacy projects
 
