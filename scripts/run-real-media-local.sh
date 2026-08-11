@@ -30,10 +30,14 @@ fi
 
 npm ci --prefix "$aicc_repo_root/web"
 npm run build --prefix "$aicc_repo_root/web"
-PYTHONPATH="$aicc_repo_root/server" exec "$aicc_python" -m ai_creation_canvas serve-local \
+set -- -m ai_creation_canvas serve-local \
     --port "$AICC_REAL_MEDIA_PORT" \
     --data-dir "$AICC_REAL_MEDIA_DATA" \
     --static-dir "$aicc_repo_root/web/dist" \
     --ark-models "$AICC_ARK_MODELS_CONFIG" \
     --bootstrap-if-empty \
     --open
+if [ -n "${AICC_PROMPT_SKILL_MODEL:-}" ]; then
+    set -- "$@" --prompt-skill-model "$AICC_PROMPT_SKILL_MODEL"
+fi
+PYTHONPATH="$aicc_repo_root/server" exec "$aicc_python" "$@"

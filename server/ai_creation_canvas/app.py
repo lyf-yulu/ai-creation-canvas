@@ -30,6 +30,7 @@ from ai_creation_canvas.api.auth import router as auth_router
 from ai_creation_canvas.api.activity import router as activity_router
 from ai_creation_canvas.api.admin import router as admin_router
 from ai_creation_canvas.api.projects import router as projects_router
+from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.catalog import AssignedModelCatalog
@@ -37,6 +38,7 @@ from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
 
 
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -106,7 +108,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if registry is None:
@@ -136,6 +138,15 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
     app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.settings = settings
+    if prompt_skill_service is None:
+        import os
+        skill_path = Path(__file__).parents[1] / "config" / "prompt-skills.example.json"
+        prompt_skill_service = PromptSkillService(
+            load_prompt_skills(skill_path, skill_path.parent),
+            model_id=settings.prompt_skill_model_id,
+            api_key=os.environ.get("ARK_API_KEY") if settings.prompt_skill_model_id else None,
+        )
+    app.state.prompt_skill_service = prompt_skill_service
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
@@ -228,6 +239,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.include_router(projects_router)
     app.include_router(session_router)
     app.include_router(models_router)
+    app.include_router(prompt_skills_router)
     app.include_router(assets_router)
     app.include_router(jobs_router)
     app.include_router(results_router)

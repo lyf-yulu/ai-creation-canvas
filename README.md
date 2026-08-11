@@ -43,7 +43,9 @@ bash scripts/run-local.sh
 bash scripts/run-real-media-local.sh
 ```
 
-首次创建的本地管理员可在管理界面把已声明的模型派发给普通用户；普通用户只能选择被派发的模型。真实调用可能产生费用，默认声明为 Seedream 文生图与 5 秒 Seedance 文生视频；管理员可通过受控、无密钥的模型声明文件增量调整模型能力。
+首次创建的本地管理员可在管理界面把已声明的模型派发给普通用户；普通用户只能选择被派发的模型。示例目录包含 4 个 Seedream 和 4 个 Seedance 官方模型，界面参数、输入上限和组图能力均由各模型声明生成；管理员可通过受控、无密钥的模型声明文件增量调整模型能力。
+
+提示词节点内置 4 种可选择的优化 Skill，并采用“预览后应用”流程。默认只展示 Skill，管理员设置 Ark 文本模型后才启用调用：`AICC_PROMPT_SKILL_MODEL=<文本模型ID> bash scripts/run-real-media-local.sh`。文本模型与媒体模型共用服务端 `ARK_API_KEY`，Key 不会发送或保存到浏览器。
 
 ## 发布状态
 

@@ -25,7 +25,7 @@ it("submits canvas image generation through jobs and writes its result node", as
         useCanvasStore.getState().updateProject(projectId, { connections: [{ id: "prompt-model", fromNodeId: prompt.id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" }] });
     });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("real-video-looking-image"));
-    await waitFor(() => expect(screen.getByLabelText("steps")).toHaveValue("4"));
+    await waitFor(() => expect(screen.getByLabelText("steps")).toHaveValue(4));
     fireEvent.change(screen.getByLabelText("steps"), { target: { value: "6" } });
     const run = screen.getByRole("button", { name: "运行模型" });
     fireEvent.click(run);

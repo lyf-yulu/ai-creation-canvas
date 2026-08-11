@@ -20,3 +20,5 @@ export type JobRequest = { operation: ModelOperation; model_id: string; prompt: 
 export type ApiError = { code: string; message: string; retryable: boolean; request_id: string; phase: string };
 export type JobResult = { url: string; asset_id: string; media_type: "image" | "video" };
 export type JobState = { id: string; operation?: ModelOperation; status: "uploading" | "submitting" | "queued" | "running" | "succeeded" | "failed"; result_url?: string; results?: JobResult[]; error?: ApiError };
+export type PromptSkill = { skill_id: string; title: string; description: string; source_url: string; source_commit: string; license: string; available: boolean };
+export type PromptOptimization = { skill_id: string; optimized_prompt: string };

@@ -90,7 +90,8 @@ try:
 except (OSError, ValueError, KeyError, TypeError):
     print("Model allowlist declaration is invalid.", file=sys.stderr); raise SystemExit(1)
 expected = {"doubao-seedream-4-0-250828", "doubao-seedance-2-0-260128"}
-if not isinstance(models, list) or {item.get("model_id") for item in models if isinstance(item, dict)} != expected or len(models) != 2:
+ids = [item.get("model_id") for item in models if isinstance(item, dict)] if isinstance(models, list) else []
+if not isinstance(models, list) or not 2 <= len(models) <= 16 or len(ids) != len(models) or len(set(ids)) != len(ids) or not expected.issubset(ids):
     print("Model declaration does not exactly match the paid acceptance allowlist.", file=sys.stderr); raise SystemExit(1)
 video = next(item for item in models if item["model_id"] == "doubao-seedance-2-0-260128")
 image = next(item for item in models if item["model_id"] == "doubao-seedream-4-0-250828")

@@ -104,6 +104,7 @@ class Settings:
     enable_ark_adapter: bool = False
     ark_models_config_path: Path | str | None = None
     ark_models_config_root: Path | str | None = None
+    prompt_skill_model_id: str | None = None
     max_image_upload_bytes: int = 10 * 1024 * 1024
     max_video_upload_bytes: int = 64 * 1024 * 1024
     max_audio_upload_bytes: int = 32 * 1024 * 1024
@@ -169,6 +170,8 @@ class Settings:
                 raise ValueError("Ark adapter requires an explicit administrator configuration")
             object.__setattr__(self, "ark_models_config_path", Path(self.ark_models_config_path))
             object.__setattr__(self, "ark_models_config_root", Path(self.ark_models_config_root).resolve(strict=False))
+        if self.prompt_skill_model_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.prompt_skill_model_id):
+            raise ValueError("prompt_skill_model_id is invalid")
         object.__setattr__(self, "allowed_origins", tuple(dict.fromkeys(self.allowed_origins)))
         if self.services_config_path is not None:
             if not self.portal_base_url or self.services_config_root is None:
