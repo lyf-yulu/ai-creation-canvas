@@ -8,6 +8,7 @@ import { fetchModels } from "@/api/models";
 import { DraggableCanvasNode } from "@/components/canvas/draggable-canvas-node";
 import { ActiveConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasNodeContextMenu } from "@/components/canvas/canvas-context-menu";
+import { RenameNodeDialog } from "@/components/canvas/rename-node-dialog";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
@@ -23,6 +24,7 @@ import { parameterControls } from "@/components/model-picker";
 import { connectGraphPorts, getNodePorts, graphConnectionInactiveMessage, graphConnectionRejectionMessage, graphConnectionTransientKey, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
 import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
+import { copyCanvasSelection, pasteCanvasSelection } from "@/features/graph/canvas-clipboard";
 import { appendResultNode } from "@/features/generation/result-node";
 import { generationErrorMessage } from "@/features/generation/error-message";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
@@ -34,6 +36,7 @@ export default function CanvasProjectPage() {
     const { id = "" } = useParams();
     const containerRef = useRef<HTMLDivElement>(null);
     const contextTriggerRef = useRef<HTMLElement | SVGElement | null>(null);
+    const renameTriggerRef = useRef<HTMLElement | null>(null);
     const [models, setModels] = useState<ModelSpec[]>([]);
     const [modelMessages, setModelMessages] = useState<Record<string, string>>({});
     const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(() => new Set());
@@ -41,6 +44,8 @@ export default function CanvasProjectPage() {
     const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
     const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
     const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
+    const [canvasCommandMessage, setCanvasCommandMessage] = useState<string | null>(null);
+    const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
     const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
     const [measuredNodeSizes, setMeasuredNodeSizes] = useState<Map<string, { width: number; height: number }>>(() => new Map());
     const pendingPortRef = useRef<GraphPortRef | null>(null);
@@ -119,6 +124,8 @@ export default function CanvasProjectPage() {
         setSelectedConnectionKey(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
+        setRenamingNodeId(null);
+        renameTriggerRef.current = null;
         setMeasuredNodeSizes(new Map());
         clearPendingConnection();
     }, [clearPendingConnection, id]);
@@ -129,6 +136,8 @@ export default function CanvasProjectPage() {
         setSelectedConnectionKey(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
+        setRenamingNodeId(null);
+        renameTriggerRef.current = null;
         clearPendingConnection();
     }, [clearPendingConnection, readOnly]);
 
@@ -284,17 +293,105 @@ export default function CanvasProjectPage() {
         [id, readOnly, updateProject],
     );
 
+    const copySelection = useCallback(() => {
+        if (readOnly || selectedNodeIds.size === 0) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return false;
+        const result = copyCanvasSelection(current, selectedNodeIds);
+        if (!result.ok) return false;
+        setCanvasCommandMessage(`已复制 ${result.nodeCount} 个节点。`);
+        setContextMenu(null);
+        return true;
+    }, [id, readOnly, selectedNodeIds]);
+
+    const cutSelection = useCallback(() => {
+        if (!copySelection()) return false;
+        const count = selectedNodeIds.size;
+        deleteNodes(selectedNodeIds);
+        setCanvasCommandMessage(`已剪切 ${count} 个节点。`);
+        return true;
+    }, [copySelection, deleteNodes, selectedNodeIds]);
+
+    const pasteSelection = useCallback(() => {
+        if (readOnly) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return false;
+        const result = pasteCanvasSelection(current, nanoid);
+        if (!result.ok) {
+            const messages = {
+                empty: "画布剪贴板为空。",
+                "prompt-conflict": "当前画布已经有提示词节点，不能再粘贴一个提示词。",
+                "node-limit": "粘贴后会超过画布节点上限。",
+                "connection-limit": "粘贴后会超过画布连接上限。",
+            } as const;
+            setCanvasCommandMessage(messages[result.reason]);
+            return true;
+        }
+        updateProject(id, { nodes: [...current.nodes, ...result.nodes], connections: [...current.connections, ...result.connections] });
+        setSelectedConnectionKey(null);
+        setSelectedNodeIds(new Set(result.pastedNodeIds));
+        setContextMenu(null);
+        setCanvasCommandMessage(`已粘贴 ${result.nodes.length} 个节点。`);
+        return true;
+    }, [id, readOnly, updateProject]);
+
+    const beginRename = useCallback((nodeId: string, trigger?: HTMLElement | null) => {
+        if (readOnly) return false;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current?.nodes.some((node) => node.id === nodeId)) return false;
+        renameTriggerRef.current = trigger ?? document.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
+        setContextMenu(null);
+        setRenamingNodeId(nodeId);
+        return true;
+    }, [id, readOnly]);
+
+    const closeRename = useCallback(() => {
+        setRenamingNodeId(null);
+        const trigger = renameTriggerRef.current;
+        renameTriggerRef.current = null;
+        window.setTimeout(() => trigger?.focus(), 0);
+    }, []);
+
+    const saveNodeTitle = useCallback((nodeId: string, title: string) => {
+        if (readOnly) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        updateProject(id, { nodes: current.nodes.map((node) => node.id === nodeId ? { ...node, title } : node) });
+        setCanvasCommandMessage(`节点已重命名为“${title}”。`);
+        closeRename();
+    }, [closeRename, id, readOnly, updateProject]);
+
     useEffect(() => {
-        const handleDeleteShortcut = (event: KeyboardEvent) => {
-            if (readOnly || (event.key !== "Delete" && event.key !== "Backspace") || isEditableEventTarget(event.target)) return;
+        const handleCanvasShortcut = (event: KeyboardEvent) => {
+            if (readOnly || isEditableEventTarget(event.target)) return;
+            const key = event.key.toLocaleLowerCase();
+            const primaryModifier = event.ctrlKey || event.metaKey;
+            if (primaryModifier && key === "a") {
+                const current = useCanvasStore.getState().openProject(id);
+                if (!current?.nodes.length) return;
+                event.preventDefault();
+                setSelectedConnectionKey(null);
+                setSelectedNodeIds(new Set(current.nodes.map((node) => node.id)));
+                setContextMenu(null);
+                return;
+            }
+            if (primaryModifier && key === "c" && copySelection()) { event.preventDefault(); return; }
+            if (primaryModifier && key === "x" && cutSelection()) { event.preventDefault(); return; }
+            if (primaryModifier && key === "v" && pasteSelection()) { event.preventDefault(); return; }
+            if (event.key === "F2" && selectedNodeIds.size === 1) {
+                const nodeId = [...selectedNodeIds][0];
+                if (beginRename(nodeId)) event.preventDefault();
+                return;
+            }
+            if (event.key !== "Delete" && event.key !== "Backspace") return;
             if (selectedNodeIds.size === 0 && !selectedConnectionKey) return;
             event.preventDefault();
             if (selectedNodeIds.size > 0) deleteNodes(selectedNodeIds);
             else if (selectedConnectionKey) deleteConnection(selectedConnectionKey);
         };
-        window.addEventListener("keydown", handleDeleteShortcut);
-        return () => window.removeEventListener("keydown", handleDeleteShortcut);
-    }, [deleteConnection, deleteNodes, readOnly, selectedConnectionKey, selectedNodeIds]);
+        window.addEventListener("keydown", handleCanvasShortcut);
+        return () => window.removeEventListener("keydown", handleCanvasShortcut);
+    }, [beginRename, copySelection, cutSelection, deleteConnection, deleteNodes, id, pasteSelection, readOnly, selectedConnectionKey, selectedNodeIds]);
 
     const finishPortConnection = useCallback(
         (first: GraphPortRef, second: GraphPortRef) => {
@@ -526,7 +623,7 @@ export default function CanvasProjectPage() {
         (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
             if (readOnly) return;
             contextTriggerRef.current = trigger;
-            setSelectedNodeIds(new Set([nodeId]));
+            setSelectedNodeIds((current) => current.has(nodeId) ? current : new Set([nodeId]));
             setSelectedConnectionKey(null);
             setContextMenu({ type: "node", nodeId, x: position.x, y: position.y });
         },
@@ -753,6 +850,11 @@ export default function CanvasProjectPage() {
                             {connectionMessage}
                         </p>
                     ) : null}
+                    {canvasCommandMessage ? (
+                        <p data-testid="canvas-command-status" role="status" aria-live="polite" className="pointer-events-none absolute bottom-24 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-[#356b48] bg-[#08100b]/95 px-3 py-2 text-xs text-[#bcebc9] shadow-xl">
+                            {canvasCommandMessage}
+                        </p>
+                    ) : null}
                     {inactiveConnectionCount > 0 ? (
                         <p
                             data-testid="inactive-connection-status"
@@ -764,10 +866,21 @@ export default function CanvasProjectPage() {
                         </p>
                     ) : null}
                     {contextMenu?.type === "node" ? (
-                        <CanvasNodeContextMenu menu={contextMenu} onClose={closeContextMenu} onDelete={() => deleteNodes(new Set([contextMenu.nodeId]))} />
+                        <CanvasNodeContextMenu
+                            menu={contextMenu}
+                            onClose={closeContextMenu}
+                            onCopy={copySelection}
+                            onCut={cutSelection}
+                            onRename={() => beginRename(contextMenu.nodeId, contextTriggerRef.current instanceof HTMLElement ? contextTriggerRef.current : null)}
+                            onDelete={() => deleteNodes(selectedNodeIds.has(contextMenu.nodeId) ? selectedNodeIds : new Set([contextMenu.nodeId]))}
+                        />
                     ) : contextMenu?.type === "connection" ? (
                         <CanvasNodeContextMenu menu={contextMenu} onClose={closeContextMenu} onDelete={() => deleteConnection(contextMenu.connectionKey)} />
                     ) : null}
+                    {renamingNodeId ? (() => {
+                        const node = project.nodes.find((candidate) => candidate.id === renamingNodeId);
+                        return node ? <RenameNodeDialog node={node} onClose={closeRename} onSave={(title) => saveNodeTitle(node.id, title)} /> : null;
+                    })() : null}
                 </section>
             </main>
         </div>

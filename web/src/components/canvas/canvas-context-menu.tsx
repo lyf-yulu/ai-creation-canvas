@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Copy, Pencil, Scissors, Trash2 } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ContextMenuState } from "@/types/canvas";
 
-export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: (restoreFocus?: boolean) => void; onDuplicate?: () => void; onDelete: () => void }) {
+export function CanvasNodeContextMenu({ menu, onClose, onCopy, onCut, onRename, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: (restoreFocus?: boolean) => void; onCopy?: () => void; onCut?: () => void; onRename?: () => void; onDuplicate?: () => void; onDelete: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const menuRef = useRef<HTMLDivElement>(null);
     const [position, setPosition] = useState({ left: menu.x, top: menu.y });
@@ -80,7 +80,10 @@ export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: 
                 }
             }}
         >
-            {menu.type === "node" && onDuplicate ? <MenuButton icon={<Plus className="size-4" />} label="复制" onClick={onDuplicate} /> : null}
+            {menu.type === "node" && onCopy ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={onCopy} /> : null}
+            {menu.type === "node" && onCut ? <MenuButton icon={<Scissors className="size-4" />} label="剪切" onClick={onCut} /> : null}
+            {menu.type === "node" && onRename ? <MenuButton icon={<Pencil className="size-4" />} label="重命名" onClick={onRename} /> : null}
+            {menu.type === "node" && onDuplicate ? <MenuButton icon={<Copy className="size-4" />} label="复制" onClick={onDuplicate} /> : null}
             <MenuButton icon={<Trash2 className="size-4" />} label="删除" onClick={onDelete} danger />
         </div>
     );

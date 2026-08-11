@@ -50,6 +50,23 @@ function node(id: string, x: number): CanvasNodeData {
     };
 }
 
+function resultNode(id: string, x: number): CanvasNodeData {
+    return {
+        id,
+        type: CanvasNodeType.Image,
+        title: `Result ${id}`,
+        position: { x, y: 120 },
+        width: 320,
+        height: 220,
+        metadata: {
+            status: "success",
+            content: `/api/v1/results/${id}`,
+            sourceJobId: `job-${id}`,
+            graph: { schemaVersion: 1, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media", assetId: `asset-${id}`, jobId: `job-${id}` },
+        },
+    };
+}
+
 async function renderProject(nodes: CanvasNodeData[] = [], connections: CanvasConnection[] = []) {
     await setStorageScope({ environment: "test", userId: "editing-user" });
     const projectId = useCanvasStore.getState().createProject("Editing Canvas");
@@ -347,9 +364,9 @@ describe("project-scoped node selection and deletion", () => {
         fireEvent.keyDown(trigger, shortcut);
 
         expect(screen.getByRole("menu", { name: "节点操作" })).toBeVisible();
-        const deleteItem = screen.getByRole("menuitem", { name: "删除" });
-        await waitFor(() => expect(deleteItem).toHaveFocus());
-        fireEvent.keyDown(deleteItem, { key: "Escape" });
+        const firstItem = screen.getByRole("menuitem", { name: "复制" });
+        await waitFor(() => expect(firstItem).toHaveFocus());
+        fireEvent.keyDown(firstItem, { key: "Escape" });
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();
         expect(trigger).toHaveFocus();
     });
@@ -368,6 +385,96 @@ describe("project-scoped node selection and deletion", () => {
         expect(screen.getByRole("menu")).toBeInTheDocument();
         fireEvent.pointerDown(document.body);
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    });
+});
+
+describe("canvas editing shortcuts", () => {
+    it("copies a multi-selection with its internal connection and pastes fresh offset nodes", async () => {
+        const projectId = await renderProject([resultNode("a", 80), resultNode("b", 420), resultNode("outside", 760)], [
+            { id: "inside", fromNodeId: "a", fromPortId: "media", toNodeId: "b", toPortId: "result" },
+            { id: "outside", fromNodeId: "a", fromPortId: "media", toNodeId: "outside", toPortId: "result" },
+        ]);
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-a"), { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-b"), { button: 0, pointerId: 2, metaKey: true });
+
+        fireEvent.keyDown(window, { key: "c", metaKey: true });
+        fireEvent.keyDown(window, { key: "v", metaKey: true });
+
+        const current = useCanvasStore.getState().openProject(projectId)!;
+        expect(current.nodes).toHaveLength(5);
+        const pasted = current.nodes.slice(-2);
+        expect(pasted.map((item) => item.position)).toEqual([{ x: 112, y: 152 }, { x: 452, y: 152 }]);
+        expect(new Set(pasted.map((item) => item.id)).size).toBe(2);
+        expect(current.connections).toHaveLength(3);
+        expect(current.connections.at(-1)).toMatchObject({ fromNodeId: pasted[0].id, toNodeId: pasted[1].id, fromPortId: "media", toPortId: "result" });
+        expect(screen.getByTestId(`draggable-node-${pasted[0].id}`)).toHaveAttribute("aria-selected", "true");
+        expect(screen.getByTestId("canvas-command-status")).toHaveTextContent("已粘贴 2 个节点");
+    });
+
+    it("cuts then restores a node and supports Ctrl+A followed by Delete", async () => {
+        const projectId = await renderProject([resultNode("a", 80), resultNode("b", 420)]);
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-a"), { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+
+        fireEvent.keyDown(window, { key: "x", ctrlKey: true });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["b"]);
+        fireEvent.keyDown(window, { key: "v", ctrlKey: true });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes).toHaveLength(2);
+
+        fireEvent.keyDown(window, { key: "a", ctrlKey: true });
+        expect(screen.getAllByTestId(/draggable-node-/).every((item) => item.getAttribute("aria-selected") === "true")).toBe(true);
+        fireEvent.keyDown(window, { key: "Delete" });
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes).toEqual([]);
+    });
+
+    it("preserves native clipboard and select-all behavior in editable controls", async () => {
+        const projectId = await renderProject([node("prompt", 80)]);
+        const editor = screen.getByRole("textbox", { name: "提示词内容" });
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-prompt"), { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+
+        for (const key of ["c", "x", "v", "a"]) {
+            expect(fireEvent.keyDown(editor, { key, metaKey: true })).toBe(true);
+        }
+
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.map((item) => item.id)).toEqual(["prompt"]);
+        expect(screen.getByTestId("draggable-node-prompt")).toHaveAttribute("aria-selected", "true");
+    });
+
+    it("renames the single selected node with F2 and rejects a blank title", async () => {
+        const projectId = await renderProject([resultNode("a", 80)]);
+        const trigger = screen.getByTestId("draggable-node-a");
+        fireEvent.pointerDown(trigger, { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+
+        fireEvent.keyDown(window, { key: "F2" });
+        const title = screen.getByRole("textbox", { name: "节点名称" });
+        expect(title).toHaveValue("Result a");
+        fireEvent.change(title, { target: { value: "   " } });
+        expect(screen.getByRole("button", { name: "保存名称" })).toBeDisabled();
+        fireEvent.change(title, { target: { value: "  首帧结果  " } });
+        fireEvent.click(screen.getByRole("button", { name: "保存名称" }));
+
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes[0].title).toBe("首帧结果");
+        expect(screen.getByText("首帧结果")).toBeVisible();
+        await waitFor(() => expect(trigger).toHaveFocus());
+    });
+
+    it("keeps a multi-selection when opening a selected node menu and exposes copy, cut and rename", async () => {
+        await renderProject([resultNode("a", 80), resultNode("b", 420)]);
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-a"), { button: 0, pointerId: 1 });
+        fireEvent.pointerUp(window, { pointerId: 1 });
+        fireEvent.pointerDown(screen.getByTestId("draggable-node-b"), { button: 0, pointerId: 2, shiftKey: true });
+
+        fireEvent.contextMenu(screen.getByTestId("draggable-node-b"), { clientX: 450, clientY: 140 });
+
+        expect(screen.getByTestId("draggable-node-a")).toHaveAttribute("aria-selected", "true");
+        expect(screen.getByTestId("draggable-node-b")).toHaveAttribute("aria-selected", "true");
+        const menu = screen.getByRole("menu", { name: "节点操作" });
+        expect(within(menu).getByRole("menuitem", { name: "复制" })).toBeVisible();
+        expect(within(menu).getByRole("menuitem", { name: "剪切" })).toBeVisible();
+        expect(within(menu).getByRole("menuitem", { name: "重命名" })).toBeVisible();
     });
 });
 
