@@ -416,7 +416,7 @@ export default function CanvasProjectPage() {
     const addPromptNode = () => {
         if (readOnly) return;
         const current = useCanvasStore.getState().openProject(id);
-        if (!current) return;
+        if (!current || current.nodes.some((node) => node.metadata?.graph?.role === "prompt")) return;
         const node: CanvasNodeData = {
             id: nanoid(),
             type: CanvasNodeType.Text,
@@ -558,7 +558,7 @@ export default function CanvasProjectPage() {
                         </div>
                         <div className="flex flex-wrap gap-2 lg:block lg:space-y-2">
                             <button
-                                disabled={readOnly}
+                                disabled={readOnly || project.nodes.some((node) => node.metadata?.graph?.role === "prompt")}
                                 type="button"
                                 onClick={addPromptNode}
                                 className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"

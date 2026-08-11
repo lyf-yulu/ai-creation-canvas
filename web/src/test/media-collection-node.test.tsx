@@ -42,9 +42,9 @@ afterEach(() => {
 });
 
 it("derives stable numbered labels from the persisted order", () => {
-    expect(mediaItemLabel("image", 0)).toBe("图片1");
-    expect(mediaItemLabel("video", 14)).toBe("视频15");
-    expect(mediaItemLabel("audio", 2)).toBe("音频3");
+    expect(mediaItemLabel("image", 0)).toBe("@图片1");
+    expect(mediaItemLabel("video", 14)).toBe("@视频15");
+    expect(mediaItemLabel("audio", 2)).toBe("@音频3");
     expect(moveMediaItem(items, "item-c", -1).map((item) => item.assetId)).toEqual(["asset-a", "asset-c", "asset-b"]);
     expect(moveMediaItem(items, "missing", -1)).toBe(items);
     expect(safeMediaDisplayName("../../private\\frame\u0000.png", "image")).toBe("frame.png");
@@ -56,9 +56,9 @@ it("previews, removes, drags, and keyboard-reorders one ordered image collection
     const change = (update: MediaItemsUpdater) => { current = update(current); changes.push(current); };
     const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={change} />);
 
-    expect(screen.getByRole("img", { name: "图片1 一.png" })).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
-    expect(screen.getByText("图片2")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "上移 图片3" }));
+    expect(screen.getByRole("img", { name: "@图片1 一.png" })).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
+    expect(screen.getByText("@图片2")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "上移 @图片3" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-a", "asset-c", "asset-b"]);
 
     rerender(<MediaCollectionNode node={collectionNode("image", current)} onItemsChange={change} />);
@@ -68,7 +68,7 @@ it("previews, removes, drags, and keyboard-reorders one ordered image collection
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-c", "asset-b", "asset-a"]);
 
     rerender(<MediaCollectionNode node={collectionNode("image", current)} onItemsChange={change} />);
-    fireEvent.click(screen.getByRole("button", { name: "移除 图片2" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除 @图片2" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-c", "asset-a"]);
 });
 
@@ -188,7 +188,7 @@ it("caps each collection at 30 active and pending items with a visible truncatio
 it("keeps previews available but removes all mutation controls in read-only mode", () => {
     render(<MediaCollectionNode node={collectionNode("audio", [{ ...items[0], mimeType: "audio/mpeg", displayName: "voice.mp3" }])} readOnly onItemsChange={() => { throw new Error("must not mutate"); }} />);
 
-    expect(screen.getByLabelText("音频1 voice.mp3")).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
+    expect(screen.getByLabelText("@音频1 voice.mp3")).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
     expect(screen.queryByLabelText("添加音频")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /移除|上移|下移/ })).not.toBeInTheDocument();
     expect(screen.getByTestId("media-item-item-a")).not.toHaveAttribute("draggable", "true");
@@ -287,8 +287,8 @@ it("serializes overlapping batches and applies upload results to the latest reor
     fireEvent.change(input, { target: { files: [new File(["a"], "batch-a.png", { type: "image/png" })] } });
     fireEvent.change(input, { target: { files: [new File(["b"], "batch-b.png", { type: "image/png" })] } });
     await waitFor(() => expect(calls).toEqual(["batch-a.png"]));
-    fireEvent.click(screen.getByRole("button", { name: "上移 图片3" }));
-    fireEvent.click(screen.getByRole("button", { name: "移除 图片1" }));
+    fireEvent.click(screen.getByRole("button", { name: "上移 @图片3" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除 @图片1" }));
     resolvers.get("batch-a.png")?.({ id: "asset-batch-a", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-batch-a/content" });
     await waitFor(() => expect(calls).toEqual(["batch-a.png", "batch-b.png"]));
     resolvers.get("batch-b.png")?.({ id: "asset-batch-b", kind: "reference", status: "active", media_type: "image", mime_type: "image/png", size_bytes: 1, content_url: "/api/v1/assets/asset-batch-b/content" });
@@ -520,13 +520,13 @@ it("deletes a late successful upload when unmounted or when project writeback de
 it("normalizes and persists inline display-name edits while read-only mode hides the editor", () => {
     let current = items;
     const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={(update) => { current = update(current); }} />);
-    const editor = screen.getByLabelText("重命名 图片1");
+    const editor = screen.getByLabelText("重命名 @图片1");
     fireEvent.change(editor, { target: { value: "../renamed\u0000.png" } });
     fireEvent.blur(editor);
     expect(current[0].displayName).toBe("renamed.png");
 
     rerender(<MediaCollectionNode node={collectionNode("image", current)} readOnly onItemsChange={() => { throw new Error("must not edit"); }} />);
-    expect(screen.queryByLabelText("重命名 图片1")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("重命名 @图片1")).not.toBeInTheDocument();
     expect(screen.getByText("renamed.png")).toBeVisible();
 });
 
@@ -576,7 +576,7 @@ it("creates all three collection nodes and persists uploaded asset order in the 
         const imageCollection = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image");
         expect(imageCollection?.metadata?.graph?.role === "media-collection" ? imageCollection.metadata.graph.items.map((item) => item.assetId) : []).toEqual(["asset-1", "asset-2"]);
     });
-    fireEvent.click(screen.getByRole("button", { name: "上移 图片2" }));
+    fireEvent.click(screen.getByRole("button", { name: "上移 @图片2" }));
     await waitFor(() => {
         const imageCollection = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image");
         expect(imageCollection?.metadata?.graph?.role === "media-collection" ? imageCollection.metadata.graph.items.map((item) => item.assetId) : []).toEqual(["asset-2", "asset-1"]);

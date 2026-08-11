@@ -6,10 +6,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ProductShell } from "@/components/layout/product-shell";
 import CanvasProjectPage from "@/pages/canvas/project";
+import { appendResultNode } from "@/features/generation/result-node";
 import { clearCanvasInMemory, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 import "@/styles/globals.css";
-
 
 type Bounds = Pick<DOMRect, "bottom" | "left" | "right" | "top">;
 
@@ -22,8 +22,12 @@ function bounds(selector: string): Bounds {
 }
 
 function overlapArea(first: Bounds, second: Bounds) {
-    return Math.max(0, Math.min(first.right, second.right) - Math.max(first.left, second.left))
-        * Math.max(0, Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top));
+    return Math.max(0, Math.min(first.right, second.right) - Math.max(first.left, second.left)) * Math.max(0, Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top));
+}
+
+function chooseFile(input: HTMLInputElement, files: File[]) {
+    Object.defineProperty(input, "files", { configurable: true, value: files });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 beforeEach(() => {
@@ -35,7 +39,10 @@ beforeEach(() => {
         loading: false,
         errorCode: null,
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } })));
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } })),
+    );
     document.body.innerHTML = '<div id="responsive-test-root"></div>';
     root = createRoot(document.getElementById("responsive-test-root")!);
 });
@@ -50,30 +57,251 @@ afterEach(() => {
 it.each([415, 240])("keeps canvas controls contained and non-overlapping at %i px", async (viewportWidth) => {
     await page.viewport(viewportWidth, 900);
     const projectId = useCanvasStore.getState().createProject("Responsive canvas");
-    flushSync(() => root.render(
-        <MemoryRouter initialEntries={[`/canvas/${projectId}`]}>
-            <ProductShell>
-                <Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes>
-            </ProductShell>
-        </MemoryRouter>,
-    ));
+    flushSync(() =>
+        root.render(
+            <MemoryRouter initialEntries={[`/canvas/${projectId}`]}>
+                <ProductShell>
+                    <Routes>
+                        <Route path="/canvas/:id" element={<CanvasProjectPage />} />
+                    </Routes>
+                </ProductShell>
+            </MemoryRouter>,
+        ),
+    );
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
     const canvas = bounds('[data-testid="studio-canvas"]');
     const controls = bounds('[data-testid="studio-canvas"] [data-canvas-no-zoom]');
-    const inspector = bounds('[data-testid="generation-inspector"]');
+    const palette = bounds('[data-testid="studio-palette"]');
     const tray = bounds('[data-testid="task-tray"]');
 
     expect(controls.left).toBeGreaterThanOrEqual(canvas.left);
     expect(controls.right).toBeLessThanOrEqual(canvas.right);
     expect(controls.top).toBeGreaterThanOrEqual(canvas.top);
     expect(controls.bottom).toBeLessThanOrEqual(canvas.bottom);
-    expect(overlapArea(controls, inspector)).toBe(0);
     expect(overlapArea(controls, tray)).toBe(0);
-    expect(overlapArea(inspector, tray)).toBe(0);
+    expect(overlapArea(palette, tray)).toBe(0);
+    expect(palette.left).toBeGreaterThanOrEqual(0);
+    expect(palette.right).toBeLessThanOrEqual(window.innerWidth);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
 
     const controlClasses = document.querySelector('[data-testid="studio-canvas"] [data-canvas-no-zoom]')!.classList;
     expect(controlClasses).toContain("left-4");
     expect(controlClasses).toContain("max-w-[calc(100%-2rem)]");
+});
+
+it("runs the connected media graph editing path in desktop Chromium", async () => {
+    await page.viewport(1280, 900);
+    const models = [
+        {
+            model_id: "seedream-fixture",
+            service_id: "ark-image",
+            display_name: "Seedream Fixture",
+            operations: ["image.generate", "image.edit"],
+            input_media: ["text", "image"],
+            input_ports: [
+                { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
+                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 14 },
+            ],
+            parameter_mappings: { size: "size", count: "n" },
+            parameter_schema: { type: "object", properties: { size: { type: "string", enum: ["1024x1024", "2048x2048"], default: "1024x1024" }, count: { type: "integer", minimum: 1, maximum: 4, default: 1 } }, additionalProperties: false },
+        },
+        {
+            model_id: "seedance-fixture",
+            service_id: "ark-video",
+            display_name: "Seedance Fixture",
+            operations: ["video.generate"],
+            input_media: ["text", "image", "audio"],
+            input_ports: [
+                { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
+                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 },
+                { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 },
+            ],
+            parameter_mappings: { ratio: "ratio", duration: "duration" },
+            parameter_schema: { type: "object", properties: { ratio: { type: "string", enum: ["16:9", "9:16"], default: "16:9" }, duration: { type: "integer", minimum: 4, maximum: 15, default: 5 } }, additionalProperties: false },
+        },
+    ];
+    vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ models }), { headers: { "content-type": "application/json" } })),
+    );
+    let assetSequence = 0;
+    class FixtureUpload extends EventTarget {
+        upload = new EventTarget();
+        status = 0;
+        responseText = "";
+        withCredentials = false;
+        open() {}
+        setRequestHeader() {}
+        send(body: FormData) {
+            const mediaType = String(body.get("media_type"));
+            const file = body.get("file") as File;
+            assetSequence += 1;
+            this.status = 201;
+            this.responseText = JSON.stringify({ asset_id: `fixture-${assetSequence}`, kind: "reference", status: "active", media_type: mediaType, mime_type: file.type, size_bytes: file.size });
+            queueMicrotask(() => this.dispatchEvent(new Event("load")));
+        }
+        abort() {
+            this.dispatchEvent(new Event("abort"));
+        }
+    }
+    vi.stubGlobal("XMLHttpRequest", FixtureUpload as unknown as typeof XMLHttpRequest);
+    const projectId = useCanvasStore.getState().createProject("Connected graph");
+    flushSync(() =>
+        root.render(
+            <MemoryRouter initialEntries={[`/canvas/${projectId}`]}>
+                <ProductShell>
+                    <Routes>
+                        <Route path="/canvas/:id" element={<CanvasProjectPage />} />
+                    </Routes>
+                </ProductShell>
+            </MemoryRouter>,
+        ),
+    );
+
+    await page.getByRole("button", { name: "提示词节点" }).click();
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .nodes.filter((node) => node.metadata?.graph?.role === "prompt"),
+    ).toHaveLength(1);
+    await expect.element(page.getByRole("button", { name: "提示词节点" })).toBeDisabled();
+    await page.getByLabelText("提示词内容").fill("手动提示词");
+    chooseFile(document.querySelector('input[aria-label="导入 TXT"]')!, [new File(["来自 TXT 的提示词"], "prompt.txt", { type: "text/plain" })]);
+    await expect.element(page.getByLabelText("提示词内容")).toHaveValue("来自 TXT 的提示词");
+
+    await page.getByRole("button", { name: "参考图节点" }).click();
+    await page.getByRole("button", { name: "参考视频节点" }).click();
+    await page.getByRole("button", { name: "参考音频节点" }).click();
+    chooseFile(document.querySelector('input[aria-label="添加图片"]')!, [new File(["one"], "one.png", { type: "image/png" }), new File(["two"], "two.png", { type: "image/png" })]);
+    chooseFile(document.querySelector('input[aria-label="添加视频"]')!, [new File(["video"], "clip.mp4", { type: "video/mp4" })]);
+    chooseFile(document.querySelector('input[aria-label="添加音频"]')!, [new File(["audio"], "voice.wav", { type: "audio/wav" })]);
+    await expect.element(page.getByText("@图片1")).toBeVisible();
+    await expect.element(page.getByText("@图片2")).toBeVisible();
+    await expect.element(page.getByText("@视频1")).toBeVisible();
+    await expect.element(page.getByText("@音频1")).toBeVisible();
+    {
+        const current = useCanvasStore.getState().openProject(projectId)!;
+        const positions = { prompt: { x: 0, y: 0 }, image: { x: 340, y: 0 }, video: { x: 0, y: 340 }, audio: { x: 430, y: 340 } } as const;
+        useCanvasStore.getState().updateProject(projectId, {
+            nodes: current.nodes.map((node) => {
+                const graph = node.metadata?.graph;
+                const key = graph?.role === "prompt" ? "prompt" : graph?.role === "media-collection" ? graph.mediaType : null;
+                return key ? { ...node, position: positions[key] } : node;
+            }),
+        });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    await page.getByRole("button", { name: "下移 @图片1" }).click();
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")!.metadata!.graph,
+    ).toMatchObject({ items: [{ displayName: "two.png" }, { displayName: "one.png" }] });
+    await page.getByRole("button", { name: "移除 @图片2" }).click();
+    expect([...document.querySelectorAll("p")].some((item) => item.textContent === "@图片2")).toBe(false);
+
+    await expect.element(page.getByRole("button", { name: "图片生成" })).not.toBeDisabled();
+    await page.getByRole("button", { name: "图片生成" }).click();
+    await page.getByRole("button", { name: "视频生成" }).click();
+    const modelNodes = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.filter((node) => node.metadata?.graph?.role === "model");
+    expect(modelNodes.map((node) => node.metadata?.graph?.role === "model" && node.metadata.graph.modelId)).toEqual(["seedream-fixture", "seedance-fixture"]);
+    const imageNode = document.querySelector(`[data-node-id="${modelNodes[0].id}"]`)!;
+    const videoNode = document.querySelector(`[data-node-id="${modelNodes[1].id}"]`)!;
+    (imageNode.querySelector('input[aria-label="count"]') as HTMLInputElement).value = "2";
+    imageNode.querySelector('input[aria-label="count"]')!.dispatchEvent(new Event("change", { bubbles: true }));
+    (videoNode.querySelector('input[aria-label="duration"]') as HTMLInputElement).value = "8";
+    videoNode.querySelector('input[aria-label="duration"]')!.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const promptNode = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.graph?.role === "prompt")!;
+    const imageCollection = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")!;
+    const videoCollection = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "video")!;
+    {
+        const current = useCanvasStore.getState().openProject(projectId)!;
+        useCanvasStore.getState().updateProject(projectId, {
+            nodes: current.nodes.map((node) => {
+                if (node.id === promptNode.id) return { ...node, position: { x: 0, y: 0 } };
+                if (node.id === imageCollection.id) return { ...node, position: { x: 320, y: 0 } };
+                if (node.id === modelNodes[0].id) return { ...node, position: { x: 680, y: 0 } };
+                if (node.id === videoCollection.id) return { ...node, position: { x: 0, y: 330 } };
+                if (node.id === modelNodes[1].id) return { ...node, position: { x: 680, y: 330 } };
+                return node;
+            }),
+        });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    await page.getByRole("button", { name: `${promptNode.title}：提示词输出端口` }).click();
+    await page.getByRole("button", { name: `${modelNodes[0].title}：提示词输入端口` }).click();
+    await page.getByRole("button", { name: `${imageCollection.title}：媒体输出端口` }).click();
+    await page.getByRole("button", { name: `${modelNodes[0].title}：参考图片输入端口` }).click();
+    await page.getByRole("button", { name: `${videoCollection.title}：媒体输出端口` }).click();
+    await page.getByRole("button", { name: `${modelNodes[0].title}：参考图片输入端口` }).click();
+    await expect.element(page.getByTestId("connection-status")).toHaveTextContent("端口类型不兼容");
+    expect(useCanvasStore.getState().openProject(projectId)!.connections).toHaveLength(2);
+
+    const connection = document.querySelector<SVGPathElement>('[data-connection-active="true"]')!;
+    connection.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 500, clientY: 220 }));
+    await expect.element(page.getByRole("menu", { name: "连接操作" })).toBeVisible();
+    (document.querySelector('[role="menu"][aria-label="连接操作"] [role="menuitem"]') as HTMLButtonElement).click();
+    expect(useCanvasStore.getState().openProject(projectId)!.connections).toHaveLength(1);
+
+    const audioNode = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "audio")!;
+    const audioElement = document.querySelector(`[data-node-id="${audioNode.id}"]`)!;
+    audioElement.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 520, clientY: 500 }));
+    await expect.element(page.getByRole("menu", { name: "节点操作" })).toBeVisible();
+    (document.querySelector('[role="menu"][aria-label="节点操作"] [role="menuitem"]:last-child') as HTMLButtonElement).click();
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .nodes.some((node) => node.id === audioNode.id),
+    ).toBe(false);
+
+    {
+        const current = useCanvasStore.getState().openProject(projectId)!;
+        const withResult = appendResultNode(
+            current.nodes,
+            { id: "fixture-result-job", operation: "image.generate", status: "succeeded", results: [{ url: "/api/v1/results/fixture-result-job/0", asset_id: "job-result.fixture-result-job.0", media_type: "image" }] },
+            modelNodes[0],
+        );
+        useCanvasStore.getState().updateProject(projectId, { nodes: withResult.map((node) => (node.metadata?.sourceJobId === "fixture-result-job" ? { ...node, position: { x: 320, y: 330 } } : node)) });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    await expect.element(page.getByRole("img", { name: "生成结果" })).toBeVisible();
+    const download = page.getByRole("link", { name: "下载" });
+    await expect.element(download).toHaveAttribute("href", "/api/v1/results/fixture-result-job/0");
+    const resultNode = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.sourceJobId === "fixture-result-job")!;
+    await page.getByRole("button", { name: `${resultNode.title}：媒体输出端口` }).click();
+    await page.getByRole("button", { name: `${modelNodes[1].title}：参考图片输入端口` }).click();
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .connections.some((edge) => edge.fromNodeId === resultNode.id && edge.toNodeId === modelNodes[1].id),
+    ).toBe(true);
+
+    const serialized = JSON.parse(JSON.stringify(useCanvasStore.getState().openProject(projectId)!));
+    useCanvasStore.getState().replaceProjects([serialized]);
+    expect(useCanvasStore.getState().openProject(projectId)).toMatchObject({ nodes: expect.any(Array), connections: expect.any(Array) });
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
 });

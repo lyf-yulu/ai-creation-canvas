@@ -7,7 +7,7 @@ const mediaLabels: Readonly<Record<GraphMediaType, string>> = {
 };
 
 export function mediaItemLabel(mediaType: GraphMediaType, index: number) {
-    return `${mediaLabels[mediaType]}${index + 1}`;
+    return `@${mediaLabels[mediaType]}${index + 1}`;
 }
 
 export function moveMediaItem(items: readonly GraphMediaItem[], itemId: string, offset: -1 | 1): GraphMediaItem[] | readonly GraphMediaItem[] {
