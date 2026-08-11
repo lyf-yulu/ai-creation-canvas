@@ -48,6 +48,9 @@ def test_example_ark_video_declaration_uses_a_supported_five_second_default() ->
     video = declarations["ark-video"]
     assert video.model_id == "doubao-seedance-2-0-260128"
     assert video.parameter_schema["properties"]["duration"]["default"] == 5
+    assert "output_format" not in video.parameter_schema["properties"]
+    assert "output_format" not in video.parameter_mappings
+    assert {port.port_id: port.max_items for port in video.input_ports}["reference_audio"] == 3
 
 
 def test_ark_declarations_are_not_limited_to_the_local_identity_mode(tmp_path) -> None:

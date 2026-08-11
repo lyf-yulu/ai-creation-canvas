@@ -30,7 +30,10 @@ _ARK_URL = "https://ark.cn-beijing.volces.com"
 _RESULT_ID = re.compile(r"ark_result_[0-9a-f]{64}\Z")
 _MAX_RESULT_BYTES = 256 * 1024 * 1024
 _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
+_AUDIO_MIME = frozenset({"audio/wav", "audio/mpeg"})
 _VIDEO_MIME = frozenset({"video/mp4", "video/webm"})
+_MAX_AUDIO_BYTES = 15 * 1024 * 1024
+_MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_CONFIG_BYTES = 64 * 1024
 _ARK_PARAMETER_TARGETS = frozenset({"size", "quality", "n", "strength", "watermark", "ratio", "duration", "resolution", "generate_audio", "camera_fixed", "output_format", "return_last_frame"})
 
@@ -135,7 +138,10 @@ class ArkGenerationAdapter:
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         if request.operation is ModelOperation.VIDEO_GENERATE:
             content = self._video_content(declaration, request)
-            response = await self._api("POST", "/api/v3/contents/generations/tasks", json={"model": request.model_id, "content": content, **provider_params})
+            payload = {"model": request.model_id, "content": content, **provider_params}
+            if len(json.dumps(payload).encode("utf-8")) > _MAX_REQUEST_BYTES:
+                raise ValueError("Ark video request is too large")
+            response = await self._api("POST", "/api/v3/contents/generations/tasks", json=payload)
             body = self._json(response)
             upstream_id = body.get("id")
             if not isinstance(upstream_id, str) or not upstream_id.startswith("cgt-"):
@@ -161,9 +167,9 @@ class ArkGenerationAdapter:
 
     def _video_content(self, declaration: ArkModelDeclaration, request: JobRequest) -> list[dict[str, object]]:
         declared = {port.port_id: port for port in declaration.input_ports}
-        supported = {"first_frame", "last_frame", "reference_images"}
+        supported = {"first_frame", "last_frame", "reference_images", "reference_audio"}
         if set(request.inputs) - supported:
-            # Video/audio references require the provider asset-upload flow; never pretend to submit them.
+            # Video references require the provider asset-upload flow; never pretend to submit them.
             raise ValueError("Ark video input requires an unsupported asset flow")
         content: list[dict[str, object]] = [{"type": "text", "text": request.prompt}]
         roles = (("first_frame", "first_frame"), ("last_frame", "last_frame"), ("reference_images", "reference_image"))
@@ -174,6 +180,13 @@ class ArkGenerationAdapter:
                 raise ValueError("Ark video image inputs are invalid")
             for asset_id in values:
                 content.append({"type": "image_url", "image_url": {"url": self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024)}, "role": role})
+        audio_values = tuple(request.inputs.get("reference_audio", ()))
+        audio_port = declared.get("reference_audio")
+        if audio_values and (audio_port is None or len(audio_values) > audio_port.max_items or len(content) == 1):
+            # Seedance 2.0 does not accept an audio-only media reference request.
+            raise ValueError("Ark video audio inputs are invalid")
+        for asset_id in audio_values:
+            content.append({"type": "audio_url", "audio_url": {"url": self._asset_data_url(asset_id, _AUDIO_MIME, _MAX_AUDIO_BYTES)}, "role": "reference_audio"})
         return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
@@ -437,7 +450,7 @@ def _local_asset_loader(data_dir: Path) -> Callable[[str], tuple[bytes, str]]:
             return candidate.read_bytes(), mime
         with sqlite3.connect(database) as connection:
             row = connection.execute("SELECT relative_path,mime_type,status,kind,size_bytes FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
-        if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
+        if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME | _AUDIO_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
             raise ValueError("Ark asset is invalid")
         relative = Path(str(row[0]))
         if len(relative.parts) != 2 or relative.parts[0] != "assets" or relative.name in {"", ".", ".."}:

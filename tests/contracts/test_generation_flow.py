@@ -157,6 +157,38 @@ def test_owned_result_output_can_be_reused_as_a_typed_input_without_exposing_pro
     assert adapter.submit_count == 1
 
 
+def test_server_cancel_is_owned_adapter_backed_and_terminal(tmp_path):
+    class Cancellable(FakeGeneration):
+        def __init__(self): super().__init__(); self.cancelled = []
+        async def cancel(self, context, upstream_job_id): self.cancelled.append((context.user.user_id, upstream_job_id))
+
+    adapter = Cancellable(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="cancel-job", service_id="images", operation="image.generate", idempotency_key="cancel", request_hash="a" * 64)
+    store.mark_submitted("cancel-job", "upstream-cancel", "running")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    assert client.post("/api/v1/jobs/cancel-job/cancel", headers=headers("u-b")).status_code == 404
+    cancelled = client.post("/api/v1/jobs/cancel-job/cancel", headers=headers()).json()
+    assert cancelled["status"] == "failed"
+    assert cancelled["error"]["code"] == "TASK_CANCELLED"
+    assert adapter.cancelled == [("u-a", "upstream-cancel")]
+    assert client.post("/api/v1/jobs/cancel-job/cancel", headers=headers()).json()["error"]["code"] == "TASK_CANCELLED"
+    assert adapter.cancelled == [("u-a", "upstream-cancel")]
+
+
+def test_server_cancel_fails_closed_when_adapter_does_not_support_it(tmp_path):
+    adapter = FakeGeneration(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    store = app.state.canvas_store
+    store.reserve_job(user_id="u-a", job_id="not-cancellable", service_id="images", operation="image.generate", idempotency_key="cancel", request_hash="a" * 64)
+    store.mark_submitted("not-cancellable", "upstream", "queued")
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs/not-cancellable/cancel", headers=headers())
+    assert response.status_code == 409
+    assert store.job_for_owner("not-cancellable", "u-a")[0]["status"] == "queued"
+
+
 def _succeeded_result_app(tmp_path, adapter):
     registry = AdapterRegistry(); registry.register_generation(adapter)
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))

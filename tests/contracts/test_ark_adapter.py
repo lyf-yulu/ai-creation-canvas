@@ -145,6 +145,34 @@ def test_seedance_maps_named_image_roles_and_top_level_parameters_exactly(tmp_pa
     ], "resolution": "720p", "generate_audio": False, "watermark": False}]
 
 
+def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_closed(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    payloads: list[dict[str, object]] = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content)); return httpx.Response(200, json={"id": "cgt-audio"})
+    declaration = ArkModelDeclaration(
+        "seedance", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {}, "additionalProperties": False},
+        (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("first_frame", "image", 0, 1), ModelInputPort("reference_audio", "audio", 0, 3)), {},
+    )
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: ((b"RIFFaudioWAVE" if asset_id == "audio" else b"image"), "audio/wav" if asset_id == "audio" else "image/png"))
+        await adapter.submit(context(), JobRequest("video.generate", "seedance", "speak", "audio", inputs={"first_frame": ("image",), "reference_audio": ("audio",)}))
+        with pytest.raises(ValueError, match="audio inputs are invalid"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "audio only", "audio-only", inputs={"reference_audio": ("audio",)}))
+        with pytest.raises(ValueError, match="unsupported asset flow"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "move", "video", inputs={"reference_video": ("video",)}))
+
+    asyncio.run(scenario())
+    assert payloads == [{"model": "seedance", "content": [
+        {"type": "text", "text": "speak"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}, "role": "first_frame"},
+        {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,UklGRmF1ZGlvV0FWRQ=="}, "role": "reference_audio"},
+    ]}]
+
+
 def test_ark_declaration_rejects_unmapped_or_unknown_provider_parameters() -> None:
     from ai_creation_canvas.adapters.ark import ArkModelDeclaration
 

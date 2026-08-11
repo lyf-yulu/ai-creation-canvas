@@ -37,9 +37,10 @@
         {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
         {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 9},
         {"port_id": "first_frame", "media_type": "image", "min_items": 0, "max_items": 1},
-        {"port_id": "last_frame", "media_type": "image", "min_items": 0, "max_items": 1}
+        {"port_id": "last_frame", "media_type": "image", "min_items": 0, "max_items": 1},
+        {"port_id": "reference_audio", "media_type": "audio", "min_items": 0, "max_items": 3}
       ],
-      "parameter_mappings": {"ratio": "ratio", "resolution": "resolution", "duration": "duration", "generate_audio": "generate_audio", "watermark": "watermark", "output_format": "output_format", "return_last_frame": "return_last_frame"},
+      "parameter_mappings": {"ratio": "ratio", "resolution": "resolution", "duration": "duration", "generate_audio": "generate_audio", "watermark": "watermark", "return_last_frame": "return_last_frame"},
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -66,11 +67,6 @@
           "watermark": {
             "type": "boolean",
             "default": false
-          },
-          "output_format": {
-            "type": "string",
-            "enum": ["mp4"],
-            "default": "mp4"
           },
           "return_last_frame": {
             "type": "boolean",

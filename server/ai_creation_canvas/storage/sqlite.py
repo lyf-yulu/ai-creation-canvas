@@ -719,6 +719,19 @@ class CanvasStore:
             raise KeyError(job_id)
         return dict(row)
 
+    def mark_cancelled(self, job_id: str) -> dict[str, object]:
+        """Transition only a non-terminal submitted job to a local cancelled failure."""
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE canvas_jobs SET status='failed',error_code='TASK_CANCELLED',updated_at=? "
+                "WHERE id=? AND status IN ('queued','running')",
+                (_now(), job_id),
+            )
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
+
     def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         with self._connection(immediate=True) as db:
