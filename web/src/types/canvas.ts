@@ -89,11 +89,9 @@ export type CanvasNodeData = {
 export type CanvasConnection = {
     id: string;
     fromNodeId: string;
-    /** Optional only while reading projects created before graph schema v1. */
-    fromPortId?: string;
+    fromPortId: string;
     toNodeId: string;
-    /** Optional only while reading projects created before graph schema v1. */
-    toPortId?: string;
+    toPortId: string;
 };
 
 export type CanvasAssistantReference = {

@@ -8,18 +8,22 @@ import {
     type GraphPromptMetadata,
     type GraphResultMetadata,
 } from "@/features/graph/contracts";
-import { normalizeCanvasProject } from "@/features/graph/normalize-project";
+import { normalizeCanvasProject, UnsupportedGraphSchemaError, type CanvasProjectInput } from "@/features/graph/normalize-project";
 import { normalizeConnection } from "@/lib/canvas/canvas-node-geometry";
-import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
-import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 const timestamp = "2026-08-11T01:02:03.000Z";
+
+// Canonical edges are never allowed to lose their port identity after deserialization.
+// @ts-expect-error legacy port-less edges belong at the normalization input boundary
+const portlessCanonicalConnection: CanvasConnection = { id: "legacy", fromNodeId: "a", toNodeId: "b" };
+void portlessCanonicalConnection;
 
 function node(id: string, type: CanvasNodeData["type"], metadata: CanvasNodeData["metadata"] = {}): CanvasNodeData {
     return { id, type, title: id, position: { x: 0, y: 0 }, width: 240, height: 160, metadata };
 }
 
-function project(nodes: CanvasNodeData[], connections: CanvasProject["connections"] = []): CanvasProject {
+function project(nodes: CanvasNodeData[], connections: CanvasProjectInput["connections"] = []): CanvasProjectInput {
     return {
         id: "project-1",
         title: "Legacy",
@@ -175,15 +179,31 @@ describe("legacy graph normalization", () => {
 
     it("preserves unknown plugin nodes and already-valid named ports", () => {
         const plugin = node("plugin", "example:processor", { content: "opaque" });
-        const model = node("model", CanvasNodeType.Config, {
-            graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model-x", operation: "video.generate", inputPortIds: ["custom_input"], outputPortId: "result", parameters: {} },
-        });
-        const source = project([plugin, model], [{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" }]);
+        const secondPlugin = node("plugin-2", "example:sink", { content: "opaque-2" });
+        const source = project([plugin, secondPlugin], [{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" }]);
 
         const normalized = normalizeCanvasProject(source);
 
         expect(normalized.nodes.find((item) => item.id === "plugin")).toEqual(plugin);
-        expect(normalized.connections).toEqual([{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "model", toPortId: "custom_input" }]);
+        expect(normalized.connections).toEqual([{ id: "custom", fromNodeId: "plugin", fromPortId: "custom_output", toNodeId: "plugin-2", toPortId: "custom_input" }]);
+    });
+
+    it("validates explicit built-in roles and ports before consuming a model prompt slot", () => {
+        const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } });
+        const image = node("image", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
+        const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.edit", inputPortIds: ["prompt", "reference_images"], outputPortId: "result", parameters: {} } });
+        const result = node("result", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
+        const source = project([prompt, image, model, result], [
+            { id: "invalid-prompt-role", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "prompt" },
+            { id: "valid-prompt", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "invalid-source-port", fromNodeId: "prompt", fromPortId: "media", toNodeId: "model", toPortId: "prompt" },
+            { id: "invalid-model-input", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "first_frame" },
+            { id: "partial-explicit-port", fromNodeId: "image", fromPortId: "media", toNodeId: "model" },
+            { id: "valid-image", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "reference_images" },
+            { id: "invalid-model-output", fromNodeId: "model", fromPortId: "media", toNodeId: "result", toPortId: "result" },
+        ]);
+
+        expect(normalizeCanvasProject(source).connections.map((edge) => edge.id)).toEqual(["valid-prompt", "valid-image"]);
     });
 
     it("rebuilds malformed current-version metadata from bounded legacy fields", () => {
@@ -200,5 +220,16 @@ describe("legacy graph normalization", () => {
             mediaType: "image",
             outputPortId: "media",
         });
+    });
+
+    it("rejects a future graph schema without overwriting its opaque metadata", () => {
+        const future = node("future", CanvasNodeType.Text, {
+            content: "legacy fallback must not replace this",
+            graph: { schemaVersion: GRAPH_SCHEMA_VERSION + 1, role: "future-role", opaque: { value: 42 } } as never,
+        });
+        const source = project([future]);
+
+        expect(() => normalizeCanvasProject(source)).toThrow(UnsupportedGraphSchemaError);
+        expect((source.nodes[0].metadata?.graph as unknown as { opaque: { value: number } }).opaque.value).toBe(42);
     });
 });

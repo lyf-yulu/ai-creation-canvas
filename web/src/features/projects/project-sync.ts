@@ -3,7 +3,7 @@ import type { StoreApi } from "zustand";
 
 import * as projectsApi from "@/api/projects";
 import { ApiRequestError } from "@/api/client";
-import { normalizeCanvasProject } from "@/features/graph/normalize-project";
+import { normalizeCanvasProject, type CanvasProjectInput } from "@/features/graph/normalize-project";
 import { isStorageLeaseActive, onStorageScopeCleared, type ScopedStoreLease } from "@/storage/scope";
 import {
     useCanvasStore,
@@ -31,7 +31,7 @@ const defaultApi: ProjectApi = {
     remove: projectsApi.deleteProject,
 };
 
-function serialized(project: CanvasProject) { return JSON.stringify(project); }
+function serialized(project: CanvasProjectInput) { return JSON.stringify(project); }
 function canonicalJson(value: unknown): string {
     const sort = (item: unknown): unknown => {
         if (Array.isArray(item)) return item.map(sort);
@@ -48,6 +48,9 @@ function canonicalJson(value: unknown): string {
 function baselineSnapshot(project: CanvasProject) {
     const { updatedAt: _clientTimestamp, ...content } = project;
     return canonicalJson(content);
+}
+function serverSnapshot(project: CanvasProjectInput, normalized: CanvasProject) {
+    return canonicalJson(project) === canonicalJson(normalized) ? serialized(normalized) : serialized(project);
 }
 function hasCode(error: unknown, code: string) { return error instanceof ApiRequestError ? error.code === code : Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === code); }
 function isConflict(error: unknown) { return hasCode(error, "PROJECT_CONFLICT"); }
@@ -97,9 +100,7 @@ export class ProjectSync {
             for (const item of serverEnvelopes) {
                 const serverProject = normalizeCanvasProject(item.project);
                 this.versions.set(serverProject.id, item.version);
-                const serverSerialized = canonicalJson(item.project) === canonicalJson(serverProject)
-                    ? serialized(serverProject)
-                    : serialized(item.project);
+                const serverSerialized = serverSnapshot(item.project, serverProject);
                 const local = localById.get(serverProject.id);
                 const metadata = previousMetadata[serverProject.id];
                 localById.delete(serverProject.id);
@@ -276,15 +277,16 @@ export class ProjectSync {
         try {
             const server = await this.api.get(project.id, controller.signal);
             if (!this.active(generation, lease)) return;
+            const serverProject = normalizeCanvasProject(server.project);
             const latestLocal = this.store.getState().projects.find((item) => item.id === project.id) || project;
             const copy = localCopy(latestLocal, "冲突副本");
             const state = this.store.getState();
             const remaining = state.projects.filter((item) => item.id !== project.id);
-            const metadata = { ...state.projectSyncMetadata, [copy.id]: { source: "draft" } as const, [server.project.id]: serverMetadata(server.project, server.version) };
-            this.versions.set(server.project.id, server.version);
-            this.snapshots.set(server.project.id, serialized(server.project));
+            const metadata = { ...state.projectSyncMetadata, [copy.id]: { source: "draft" } as const, [serverProject.id]: serverMetadata(serverProject, server.version) };
+            this.versions.set(serverProject.id, server.version);
+            this.snapshots.set(serverProject.id, serverSnapshot(server.project, serverProject));
             this.syncFailed = false;
-            this.store.getState().replaceProjects([copy, server.project, ...remaining], metadata);
+            this.store.getState().replaceProjects([copy, serverProject, ...remaining], metadata);
             this.store.getState().setSyncNotice("检测到其他位置的更新，已保留一个冲突副本。");
         } catch (error) {
             if (!this.active(generation, lease)) return;

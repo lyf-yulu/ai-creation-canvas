@@ -1,8 +1,9 @@
 import { apiFetch } from "./client";
+import type { CanvasProjectInput } from "@/features/graph/normalize-project";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 
 
-export type ProjectEnvelope = { project: CanvasProject; version: number };
+export type ProjectEnvelope = { project: CanvasProjectInput; version: number };
 const jsonHeaders = { "Content-Type": "application/json" };
 
 export const listProjects = async (signal?: AbortSignal) => (await apiFetch<{ projects: ProjectEnvelope[] }>("/api/v1/projects", { signal })).projects;

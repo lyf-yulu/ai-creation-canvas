@@ -4,7 +4,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 import { nanoid } from "nanoid";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { normalizeCanvasProject } from "@/features/graph/normalize-project";
+import { normalizeCanvasProject, normalizeCanvasProjectBaselineSnapshot, type CanvasProjectInput } from "@/features/graph/normalize-project";
 import { captureAppStorageLease, localForageStorage, setItemForLease } from "@/lib/localforage-storage";
 import type { ScopedStoreLease } from "@/storage/scope";
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
@@ -22,7 +22,7 @@ export type CanvasProject = {
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     viewport: ViewportTransform;
-    graphSchemaVersion?: number;
+    graphSchemaVersion: number;
 };
 
 export type ProjectSyncMetadata =
@@ -39,11 +39,11 @@ export type CanvasStore = {
     projectSyncMetadata: ProjectSyncMetadataMap;
     syncNotice: string | null;
     createProject: (title?: string) => string;
-    importProject: (project: Partial<CanvasProject>) => string;
+    importProject: (project: Partial<CanvasProjectInput>) => string;
     openProject: (id: string) => CanvasProject | null;
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
-    replaceProjects: (projects: CanvasProject[], projectSyncMetadata?: ProjectSyncMetadataMap) => void;
+    replaceProjects: (projects: CanvasProjectInput[], projectSyncMetadata?: ProjectSyncMetadataMap) => void;
     setProjectSyncMetadata: (id: string, metadata: ProjectSyncMetadata | null) => void;
     setProjectsLoaded: (loaded: boolean) => void;
     setSyncNotice: (notice: string | null) => void;
@@ -66,10 +66,21 @@ export function clearCanvasInMemory() {
 }
 
 export function migrateCanvasPersistedState(persistedState: unknown, persistedVersion: number) {
-    const state = persistedState && typeof persistedState === "object" ? persistedState as Partial<PersistedCanvasState> : {};
-    const projects = Array.isArray(state.projects) ? state.projects.map((project) => normalizeCanvasProject(project)) : [];
+    const state = persistedState && typeof persistedState === "object" ? persistedState as { projects?: CanvasProjectInput[]; projectSyncMetadata?: ProjectSyncMetadataMap } : {};
+    const sourceProjects = Array.isArray(state.projects) ? state.projects : [];
+    const projects = sourceProjects.map((project) => normalizeCanvasProject(project));
     if (persistedVersion >= 1 && state.projectSyncMetadata && typeof state.projectSyncMetadata === "object") {
-        return { ...state, projects, projectSyncMetadata: state.projectSyncMetadata };
+        const projectSyncMetadata = { ...state.projectSyncMetadata };
+        for (const source of sourceProjects) {
+            const metadata = projectSyncMetadata[source.id];
+            if (metadata?.source !== "server") continue;
+            try {
+                projectSyncMetadata[source.id] = { ...metadata, snapshot: normalizeCanvasProjectBaselineSnapshot(metadata.snapshot, source) };
+            } catch {
+                // Preserve an unreadable baseline so sync recovery remains conservative.
+            }
+        }
+        return { ...state, projects, projectSyncMetadata };
     }
     const projectSyncMetadata: ProjectSyncMetadataMap = {};
     for (const project of projects) projectSyncMetadata[project.id] = { source: "legacy" };

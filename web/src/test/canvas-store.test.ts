@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { clearCanvasInMemory, migrateCanvasPersistedState, type CanvasProject, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import type { CanvasProjectInput } from "@/features/graph/normalize-project";
+import { clearCanvasInMemory, migrateCanvasPersistedState, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType } from "@/types/canvas";
 
 const timestamp = "2026-08-11T01:02:03.000Z";
 
-function legacyProject(id = "legacy"): CanvasProject {
+function legacyProject(id = "legacy"): CanvasProjectInput {
     return {
         id,
         title: "Legacy",

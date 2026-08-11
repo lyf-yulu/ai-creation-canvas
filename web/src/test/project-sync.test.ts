@@ -2,8 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { ProjectSync, type ProjectApi, type ProjectEnvelope } from "@/features/projects/project-sync";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
+import type { CanvasProjectInput } from "@/features/graph/normalize-project";
 import { captureAppStorageLease } from "@/lib/localforage-storage";
-import { clearCanvasInMemory, type CanvasProject, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { clearCanvasInMemory, migrateCanvasPersistedState, type CanvasProject, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 
 
@@ -14,10 +15,10 @@ function deferred<T>() {
 }
 
 function projectFor(id: string, title = id, updatedAt = "2026-08-10T00:00:00.000Z"): CanvasProject {
-    return { id, title, createdAt: updatedAt, updatedAt, nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 } };
+    return { id, title, createdAt: updatedAt, updatedAt, nodes: [], connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 }, graphSchemaVersion: GRAPH_SCHEMA_VERSION };
 }
 
-function envelope(project: CanvasProject, version = 1): ProjectEnvelope { return { project, version }; }
+function envelope(project: CanvasProjectInput, version = 1): ProjectEnvelope { return { project, version }; }
 function canonicalJson(value: unknown): string {
     const sort = (item: unknown): unknown => {
         if (Array.isArray(item)) return item.map(sort);
@@ -26,7 +27,7 @@ function canonicalJson(value: unknown): string {
     };
     return JSON.stringify(sort(value));
 }
-function serverBaseline(project: CanvasProject, version = 1) {
+function serverBaseline(project: CanvasProjectInput, version = 1) {
     const { updatedAt: _clientTimestamp, ...content } = project;
     return { source: "server" as const, version, snapshot: canonicalJson(content) };
 }
@@ -120,7 +121,7 @@ it("uses the authoritative remote refresh when a clean cached project has an unt
 
 it("saves a legacy server project once in canonical graph form without changing its timestamps", async () => {
     vi.useFakeTimers();
-    const remote = projectFor("legacy-server", "旧服务端画布", "2026-08-10T00:00:10.000Z");
+    const { graphSchemaVersion: _version, ...remote } = projectFor("legacy-server", "旧服务端画布", "2026-08-10T00:00:10.000Z");
     const api = mockApi({ list: vi.fn(async () => [envelope(remote, 7)]) });
     const sync = new ProjectSync(api, useCanvasStore);
     await setStorageScope({ environment: "test", userId: "user-a" });
@@ -139,6 +140,33 @@ it("saves a legacy server project once in canonical graph form without changing 
         7,
         expect.any(AbortSignal),
     );
+    sync.stop();
+});
+
+it("canonicalizes a persisted server baseline so identical legacy local and remote projects do not create a conflict copy", async () => {
+    vi.useFakeTimers();
+    const { graphSchemaVersion: _version, ...legacyBase } = projectFor("legacy-baseline", "旧服务端画布", "2026-08-10T00:00:10.000Z");
+    const remote = {
+        ...legacyBase,
+        nodes: [{ id: "prompt", type: "text" as const, title: "Prompt", position: { x: 0, y: 0 }, width: 100, height: 100, metadata: { content: "same" } }],
+    };
+    const migrated = migrateCanvasPersistedState({
+        projects: [remote],
+        projectSyncMetadata: { "legacy-baseline": serverBaseline(remote, 4) },
+    }, 1);
+    useCanvasStore.setState({ projects: migrated.projects, projectSyncMetadata: migrated.projectSyncMetadata } as never);
+    const api = mockApi({ list: vi.fn(async () => [envelope(remote, 4)]) });
+    const sync = new ProjectSync(api, useCanvasStore);
+    await setStorageScope({ environment: "test", userId: "user-a" });
+
+    await sync.activate(captureAppStorageLease()!);
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(useCanvasStore.getState().projects).toHaveLength(1);
+    expect(useCanvasStore.getState().projects[0]).toMatchObject({ id: "legacy-baseline", title: "旧服务端画布", graphSchemaVersion: GRAPH_SCHEMA_VERSION });
+    expect(useCanvasStore.getState().syncNotice).toBeNull();
+    expect(api.update).toHaveBeenCalledTimes(1);
+    expect(api.update).toHaveBeenCalledWith(expect.objectContaining({ id: "legacy-baseline", graphSchemaVersion: GRAPH_SCHEMA_VERSION }), 4, expect.any(AbortSignal));
     sync.stop();
 });
 

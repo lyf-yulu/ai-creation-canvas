@@ -2,7 +2,30 @@ import { GRAPH_SCHEMA_VERSION, type CanvasGraphNodeMetadata, type GraphMediaType
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
-export function normalizeCanvasProject(project: CanvasProject): CanvasProject {
+export class UnsupportedGraphSchemaError extends Error {
+    constructor(version: number) {
+        super(`Unsupported canvas graph schema version: ${version}`);
+        this.name = "UnsupportedGraphSchemaError";
+    }
+}
+
+export type CanvasConnectionInput = Omit<CanvasConnection, "fromPortId" | "toPortId"> & {
+    fromPortId?: string;
+    toPortId?: string;
+};
+
+export type CanvasNodeInput = Omit<CanvasNodeData, "metadata"> & {
+    metadata?: Omit<CanvasNodeMetadata, "graph"> & { graph?: unknown };
+};
+
+export type CanvasProjectInput = Omit<CanvasProject, "graphSchemaVersion" | "nodes" | "connections"> & {
+    graphSchemaVersion?: number;
+    nodes: CanvasNodeInput[];
+    connections: CanvasConnectionInput[];
+};
+
+export function normalizeCanvasProject(project: CanvasProjectInput): CanvasProject {
+    assertSupportedSchema(project);
     const nodes = project.nodes.map(normalizeNode);
     return {
         ...project,
@@ -14,9 +37,40 @@ export function normalizeCanvasProject(project: CanvasProject): CanvasProject {
     };
 }
 
-function normalizeNode(node: CanvasNodeData): CanvasNodeData {
+export function normalizeCanvasProjectBaselineSnapshot(snapshot: string, fallbackProject: CanvasProjectInput): string {
+    const parsed = JSON.parse(snapshot) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new TypeError("Invalid canvas project baseline snapshot");
+    const normalized = normalizeCanvasProject({ ...fallbackProject, ...(parsed as Partial<CanvasProjectInput>), updatedAt: fallbackProject.updatedAt });
+    const { updatedAt: _timestamp, ...content } = normalized;
+    return canonicalJson(content);
+}
+
+function assertSupportedSchema(project: CanvasProjectInput) {
+    if (typeof project.graphSchemaVersion === "number" && project.graphSchemaVersion > GRAPH_SCHEMA_VERSION) {
+        throw new UnsupportedGraphSchemaError(project.graphSchemaVersion);
+    }
+    for (const node of project.nodes) {
+        const graph = node.metadata?.graph;
+        if (!graph || typeof graph !== "object") continue;
+        const version = (graph as { schemaVersion?: unknown }).schemaVersion;
+        if (typeof version === "number" && version > GRAPH_SCHEMA_VERSION) throw new UnsupportedGraphSchemaError(version);
+    }
+}
+
+function canonicalJson(value: unknown): string {
+    const sort = (item: unknown): unknown => {
+        if (Array.isArray(item)) return item.map(sort);
+        if (!item || typeof item !== "object") return item;
+        return Object.fromEntries(Object.entries(item)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, child]) => [key, sort(child)]));
+    };
+    return JSON.stringify(sort(value));
+}
+
+function normalizeNode(node: CanvasNodeInput): CanvasNodeData {
     const metadata = node.metadata ? { ...node.metadata } : undefined;
-    if (!isBuiltInGraphNode(node.type)) return { ...node, position: { ...node.position }, metadata };
+    if (!isBuiltInGraphNode(node.type)) return { ...node, position: { ...node.position }, metadata: metadata as CanvasNodeMetadata | undefined };
     return {
         ...node,
         position: { ...node.position },
@@ -28,7 +82,7 @@ function isBuiltInGraphNode(type: CanvasNodeData["type"]) {
     return type === CanvasNodeType.Text || type === CanvasNodeType.Config || type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
 }
 
-function normalizeGraphMetadata(node: CanvasNodeData, metadata?: CanvasNodeMetadata): CanvasGraphNodeMetadata {
+function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInput["metadata"]): CanvasGraphNodeMetadata {
     if (isCurrentGraphMetadata(metadata?.graph)) return cloneGraphMetadata(metadata.graph);
     if (node.type === CanvasNodeType.Text) {
         return {
@@ -119,7 +173,7 @@ function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeM
     return { ...metadata };
 }
 
-function inferLegacyOperation(metadata?: CanvasNodeMetadata) {
+function inferLegacyOperation(metadata?: CanvasNodeInput["metadata"]) {
     if (metadata?.generationMode === "video") return "video.generate";
     if (metadata?.generationMode === "audio") return "audio.generate";
     if (metadata?.generationType === "edit") return "image.edit";
@@ -141,7 +195,7 @@ function mediaTypeForNode(type: CanvasNodeData["type"]): GraphMediaType | null {
     return null;
 }
 
-function normalizeConnections(connections: CanvasConnection[], nodes: CanvasNodeData[]): CanvasConnection[] {
+function normalizeConnections(connections: CanvasConnectionInput[], nodes: CanvasNodeData[]): CanvasConnection[] {
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const seen = new Set<string>();
     const promptTargets = new Set<string>();
@@ -150,10 +204,16 @@ function normalizeConnections(connections: CanvasConnection[], nodes: CanvasNode
         const from = byId.get(connection.fromNodeId);
         const to = byId.get(connection.toNodeId);
         if (!from || !to || from.id === to.id) continue;
-        const ports = connection.fromPortId && connection.toPortId
-            ? { fromPortId: connection.fromPortId, toPortId: connection.toPortId }
+        const hasFromPort = Object.prototype.hasOwnProperty.call(connection, "fromPortId");
+        const hasToPort = Object.prototype.hasOwnProperty.call(connection, "toPortId");
+        if (hasFromPort !== hasToPort) continue;
+        const explicit = hasFromPort && hasToPort;
+        if (explicit && (!connection.fromPortId || !connection.toPortId)) continue;
+        const ports = explicit
+            ? { fromPortId: connection.fromPortId!, toPortId: connection.toPortId! }
             : inferLegacyPorts(from, to);
         if (!ports) continue;
+        if (explicit && !isValidExplicitConnection(from, ports.fromPortId, to, ports.toPortId)) continue;
         const key = `${from.id}\u0000${ports.fromPortId}\u0000${to.id}\u0000${ports.toPortId}`;
         if (seen.has(key)) continue;
         if (ports.toPortId === "prompt" && promptTargets.has(to.id)) continue;
@@ -162,6 +222,28 @@ function normalizeConnections(connections: CanvasConnection[], nodes: CanvasNode
         normalized.push({ id: connection.id, fromNodeId: from.id, fromPortId: ports.fromPortId, toNodeId: to.id, toPortId: ports.toPortId });
     }
     return normalized;
+}
+
+function isValidExplicitConnection(from: CanvasNodeData, fromPortId: string, to: CanvasNodeData, toPortId: string) {
+    const source = from.metadata?.graph;
+    const target = to.metadata?.graph;
+    if (!source && !target) return !isBuiltInGraphNode(from.type) && !isBuiltInGraphNode(to.type);
+    if (!source) return false;
+    if (fromPortId !== source.outputPortId) return false;
+    if (!target) return !isBuiltInGraphNode(to.type);
+    if (target.role === "model") {
+        if (!target.inputPortIds.includes(toPortId)) return false;
+        if (toPortId === "prompt") return source.role === "prompt";
+        if (toPortId === "reference_images" || toPortId === "first_frame" || toPortId === "last_frame") return isMediaSource(source, "image");
+        if (toPortId === "reference_video") return isMediaSource(source, "video");
+        if (toPortId === "reference_audio") return isMediaSource(source, "audio");
+        return false;
+    }
+    return target.role === "result" && toPortId === "result" && source.role === "model";
+}
+
+function isMediaSource(metadata: CanvasGraphNodeMetadata, mediaType: GraphMediaType) {
+    return (metadata.role === "media-collection" || metadata.role === "result") && metadata.mediaType === mediaType;
 }
 
 function inferLegacyPorts(from: CanvasNodeData, to: CanvasNodeData) {
