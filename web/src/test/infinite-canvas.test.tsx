@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
@@ -16,6 +16,19 @@ function CanvasHarness({ children }: { children?: React.ReactNode }) {
             <output data-testid="viewport">{`${viewport.x},${viewport.y},${viewport.k}`}</output>
             <InfiniteCanvas containerRef={containerRef} viewport={viewport} onViewportChange={setViewport}>
                 {children}
+            </InfiniteCanvas>
+        </>
+    );
+}
+
+function RerenderingPanHarness() {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
+    return (
+        <>
+            <output data-testid="viewport">{`${viewport.x},${viewport.y},${viewport.k}`}</output>
+            <InfiniteCanvas containerRef={containerRef} viewport={viewport} onViewportChange={(next) => setViewport(next)} onCanvasDeselect={() => undefined}>
+                <div />
             </InfiniteCanvas>
         </>
     );
@@ -82,6 +95,21 @@ it("does not replay an already applied pan on pointer up", async () => {
     fireEvent.pointerUp(window, { pointerId: 1 });
 
     expect(onViewportChange).toHaveBeenCalledTimes(1);
+});
+
+it("continues panning after viewport updates rerender the parent with new callback identities", async () => {
+    render(<RerenderingPanHarness />);
+    const canvas = screen.getByTestId("infinite-canvas");
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 20, clientY: 30, pointerId: 7 });
+    fireEvent.pointerMove(window, { clientX: 60, clientY: 60, pointerId: 7 });
+    await waitFor(() => expect(screen.getByTestId("viewport")).toHaveTextContent("40,30,1"));
+
+    fireEvent.pointerMove(window, { clientX: 160, clientY: 180, pointerId: 7 });
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    fireEvent.pointerUp(window, { pointerId: 7 });
+
+    await waitFor(() => expect(screen.getByTestId("viewport")).toHaveTextContent("140,150,1"));
 });
 
 it("does not zoom from excluded controls and delegates ordinary wheel zoom", () => {

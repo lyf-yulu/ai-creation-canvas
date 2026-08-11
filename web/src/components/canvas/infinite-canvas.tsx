@@ -33,7 +33,11 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
     const scaleRef = useRef(viewport.k);
     const frameRef = useRef<number | null>(null);
     const nextViewportRef = useRef<ViewportTransform | null>(null);
+    const onViewportChangeRef = useRef(onViewportChange);
+    const onCanvasDeselectRef = useRef(onCanvasDeselect);
     const [isSpacePressed, setIsSpacePressed] = useState(false);
+    onViewportChangeRef.current = onViewportChange;
+    onCanvasDeselectRef.current = onCanvasDeselect;
 
     useEffect(() => {
         scaleRef.current = viewport.k;
@@ -139,7 +143,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 frameRef.current = null;
                 const nextViewport = nextViewportRef.current;
                 nextViewportRef.current = null;
-                if (nextViewport) onViewportChange(nextViewport);
+                if (nextViewport) onViewportChangeRef.current(nextViewport);
             });
         };
 
@@ -151,11 +155,11 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
                 frameRef.current = null;
             }
             if (flushPending && nextViewportRef.current) {
-                onViewportChange(nextViewportRef.current);
+                onViewportChangeRef.current(nextViewportRef.current);
             }
             nextViewportRef.current = null;
             if (deselect && !panState.current.hasMoved) {
-                onCanvasDeselect?.();
+                onCanvasDeselectRef.current?.();
             }
             panState.current.isPanning = false;
             panState.current.pointerId = null;
@@ -177,7 +181,7 @@ export function InfiniteCanvas({ containerRef, viewport, backgroundMode = "lines
             window.removeEventListener("pointercancel", handlePointerCancel);
             window.removeEventListener("blur", handleWindowBlur);
         };
-    }, [onCanvasDeselect, onViewportChange]);
+    }, []);
 
     useEffect(() => {
         const container = containerRef.current;
