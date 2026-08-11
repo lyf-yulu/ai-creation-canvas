@@ -5,6 +5,9 @@ import baseConfig from "./vite.config";
 
 
 const browserConfig = mergeConfig(baseConfig, defineConfig({
+    optimizeDeps: {
+        include: ["@tanstack/react-query", "antd", "antd/locale/zh_CN", "fflate", "file-saver"],
+    },
     test: {
         include: ["src/test/**/*.browser.test.tsx"],
         browser: {
