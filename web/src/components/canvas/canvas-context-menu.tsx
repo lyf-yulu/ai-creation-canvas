@@ -6,8 +6,10 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { ContextMenuState } from "@/types/canvas";
 
-export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: () => void; onDuplicate: () => void; onDelete: () => void }) {
+export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: { menu: ContextMenuState; onClose: () => void; onDuplicate?: () => void; onDelete: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const left = Math.max(8, Math.min(menu.x, window.innerWidth - 184));
+    const top = Math.max(8, Math.min(menu.y, window.innerHeight - 96));
 
     useEffect(() => {
         const close = (event: PointerEvent) => {
@@ -22,10 +24,10 @@ export function CanvasNodeContextMenu({ menu, onClose, onDuplicate, onDelete }: 
     return (
         <div
             className="fixed z-[80] min-w-44 overflow-hidden rounded-xl border py-1 shadow-2xl"
-            style={{ left: menu.x, top: menu.y, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
+            style={{ left, top, background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.text }}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            {menu.type === "node" ? <MenuButton icon={<Plus className="size-4" />} label="复制" onClick={onDuplicate} /> : null}
+            {menu.type === "node" && onDuplicate ? <MenuButton icon={<Plus className="size-4" />} label="复制" onClick={onDuplicate} /> : null}
             <MenuButton icon={<Trash2 className="size-4" />} label="删除" onClick={onDelete} danger />
         </div>
     );

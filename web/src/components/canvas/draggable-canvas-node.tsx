@@ -1,4 +1,4 @@
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import type { CanvasNodeData, Position } from "@/types/canvas";
 
@@ -6,6 +6,10 @@ type DraggableCanvasNodeProps = {
     node: CanvasNodeData;
     scale: number;
     onPositionChange: (nodeId: string, position: Position) => void;
+    selected?: boolean;
+    disabled?: boolean;
+    onSelect?: (nodeId: string, additive: boolean) => void;
+    onContextMenu?: (nodeId: string, event: ReactMouseEvent<HTMLDivElement>) => void;
     children: ReactNode;
 };
 
@@ -19,13 +23,13 @@ type DragState = {
     previousCursor: string;
 };
 
-const interactiveSelector = "button,input,textarea,select,a,video,audio";
+const interactiveSelector = "button,input,textarea,select,a,video,audio,[contenteditable]:not([contenteditable='false'])";
 
 function normalizedScale(scale: number) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-export function DraggableCanvasNode({ node, scale, onPositionChange, children }: DraggableCanvasNodeProps) {
+export function DraggableCanvasNode({ node, scale, onPositionChange, selected = false, disabled = false, onSelect, onContextMenu, children }: DraggableCanvasNodeProps) {
     const dragRef = useRef<DragState>({
         active: false,
         pointerId: null,
@@ -48,9 +52,11 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
     }, []);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || event.ctrlKey || event.metaKey || dragRef.current.active) return;
+        if (event.button !== 0 || dragRef.current.active) return;
         const target = event.target instanceof Element ? event.target : null;
         if (target?.closest(interactiveSelector)) return;
+        onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
+        if (disabled || event.ctrlKey || event.metaKey || event.shiftKey) return;
 
         event.preventDefault();
         event.stopPropagation();
@@ -127,13 +133,31 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, children }:
         finishDragRef.current = finishDrag;
     };
 
+    const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+        if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        onSelect?.(node.id, event.ctrlKey || event.metaKey || event.shiftKey);
+    };
+
     return (
         <div
             data-node-id={node.id}
             data-testid={`draggable-node-${node.id}`}
-            className="absolute"
+            role="option"
+            aria-label={node.title}
+            aria-selected={selected}
+            aria-disabled={disabled || undefined}
+            tabIndex={0}
+            className={`absolute rounded-xl outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7bff9f] ${selected ? "outline outline-2 outline-[#58ed87] shadow-[0_0_0_4px_rgba(88,237,135,0.18)]" : ""}`}
             style={{ left: node.position.x, top: node.position.y, width: node.width, minHeight: node.height }}
             onPointerDown={handlePointerDown}
+            onKeyDown={handleKeyDown}
+            onContextMenu={(event) => {
+                if (!onContextMenu) return;
+                event.preventDefault();
+                event.stopPropagation();
+                onContextMenu(node.id, event);
+            }}
         >
             {children}
         </div>
