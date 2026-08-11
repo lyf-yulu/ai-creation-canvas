@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from ai_creation_canvas.domain.models import JobRequest, PortalRole, PortalUser, RequestContext
 
@@ -37,7 +38,7 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
         adapter = ArkGenerationAdapter(
             api_key="test-only-secret",
             data_dir=tmp_path,
-            models=(ArkModelDeclaration("image-endpoint", "ark-image", "Seedream", ("image.generate",), {"type": "object", "properties": {"size": {"type": "string", "default": "1024x1024"}}, "additionalProperties": False}),),
+            models=(ArkModelDeclaration("image-endpoint", "ark-image", "Seedream", ("image.generate",), {"type": "object", "properties": {"size": {"type": "string", "default": "1024x1024"}}, "additionalProperties": False}, parameter_mappings={"size": "size"}),),
             transport=httpx.MockTransport(handler),
         )
         models = await adapter.list_models(context())
@@ -79,7 +80,7 @@ def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(t
         adapter = ArkGenerationAdapter(
             api_key="test-only-secret",
             data_dir=tmp_path,
-            models=(ArkModelDeclaration("video-endpoint", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {"ratio": {"type": "string", "default": "16:9"}, "duration": {"type": "integer", "default": 3}}, "additionalProperties": False}),),
+            models=(ArkModelDeclaration("video-endpoint", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {"ratio": {"type": "string", "default": "16:9"}, "duration": {"type": "integer", "default": 3}}, "additionalProperties": False}, parameter_mappings={"ratio": "ratio", "duration": "duration"}),),
             transport=httpx.MockTransport(handler),
         )
         submitted = await adapter.submit(context(), JobRequest("video.generate", "video-endpoint", "clouds drift", "idempotent-2", {"ratio": "16:9", "duration": 3}))
@@ -90,3 +91,50 @@ def test_ark_adapter_maps_seedance_create_and_poll_without_exposing_result_url(t
         assert "download.volces.com" not in state.result.asset_id
 
     asyncio.run(scenario())
+
+
+def test_ark_declaration_rejects_unmapped_or_unknown_provider_parameters() -> None:
+    from ai_creation_canvas.adapters.ark import ArkModelDeclaration
+
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}, "additionalProperties": False}
+    with pytest.raises(ValueError):
+        ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), schema)
+    with pytest.raises(ValueError):
+        ArkModelDeclaration("image", "ark-image", "Image", ("image.generate",), schema, parameter_mappings={"count": "shell_command"})
+
+
+def test_ark_adapter_forwards_every_declared_image_parameter_exactly(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    seen: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string"},
+            "count": {"type": "integer", "minimum": 0},
+            "strength": {"type": "number", "minimum": 0},
+            "watermark": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    }
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "image-endpoint", "ark-image", "Seedream", ("image.generate",), schema,
+            parameter_mappings={"label": "quality", "count": "n", "strength": "strength", "watermark": "watermark"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler))
+        await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "prompt", "exact-values", {
+            "label": "", "count": 0, "strength": 0.0, "watermark": False,
+        }))
+
+    asyncio.run(scenario())
+    assert seen == [{
+        "model": "image-endpoint", "prompt": "prompt", "quality": "", "n": 0,
+        "strength": 0.0, "watermark": False, "response_format": "url",
+    }]

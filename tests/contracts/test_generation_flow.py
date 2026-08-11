@@ -10,7 +10,7 @@ from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsA
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import AssetRef, JobState, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.models import AssetRef, JobState, ModelInputPort, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.api.results import parse_range_header, validate_partial_response
@@ -59,6 +59,38 @@ def test_idempotency_and_job_ownership(tmp_path):
     data["prompt"] = "different"
     assert client.post("/api/v1/jobs", json=data, headers=headers()).status_code == 409
     assert "secret prompt" not in (tmp_path / "data" / "canvas.sqlite3").read_bytes().decode(errors="ignore")
+
+
+def test_typed_inputs_are_owner_checked_ordered_and_frozen_before_submit(tmp_path):
+    class TypedGeneration(FakeGeneration):
+        def __init__(self): super().__init__(); self.requests = []
+        async def list_models(self, context):
+            return (ModelSpec(
+                "model-1", self.service_id, "Model", ("image.generate",),
+                parameter_schema={"type": "object", "properties": {"count": {"type": "integer", "minimum": 0}}, "additionalProperties": False},
+                input_ports=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 2)),
+                parameter_mappings={"count": "n"},
+            ),)
+        async def submit(self, context, request):
+            self.requests.append(request)
+            return await super().submit(context, request)
+
+    adapter = TypedGeneration(); registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    for asset_id in ("image-b", "image-a"):
+        app.state.canvas_store.create_asset(asset_id=asset_id, user_id="u-a", kind="reference", media_type="image", mime_type="image/png", relative_path=f"{asset_id}.png", size_bytes=4)
+    payload = {"operation":"image.generate", "model_id":"model-1", "prompt":"p", "params":{"count":0}, "inputs":{"reference_images":["image-b", "image-a"]}, "idempotency_key":"typed"}
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers=headers())
+    assert response.status_code == 201
+    assert dict(adapter.requests[0].inputs) == {"reference_images": ("image-b", "image-a")}
+    assert dict(adapter.requests[0].params) == {"count": 0}
+
+    payload["idempotency_key"] = "too-many"
+    payload["inputs"]["reference_images"].append("image-a")
+    assert TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers=headers()).status_code == 422
+
+    payload = {"operation":"image.generate", "model_id":"model-1", "prompt":"p", "params":{"unknown":1}, "inputs":{}, "idempotency_key":"unknown-param"}
+    assert TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers=headers()).status_code == 422
 
 
 def test_protected_result_supports_one_valid_range(tmp_path):

@@ -122,8 +122,7 @@ describe("project-scoped node selection and deletion", () => {
         contentEditor.setAttribute("contenteditable", "true");
         document.body.append(contentEditor);
         const controls = [
-            screen.getByLabelText("提示词"),
-            screen.getByLabelText("模型"),
+            screen.getByLabelText("提示词内容"),
             screen.getByLabelText("导入 TXT"),
             contentEditor,
         ];

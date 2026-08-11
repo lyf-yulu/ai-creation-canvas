@@ -205,6 +205,8 @@ def test_domain_parameter_values_are_deeply_immutable_and_json_encodable():
         "input_media": [],
         "parameter_schema": {"limits": {"sizes": [512, 1024]}},
         "requires_asset_kind": None,
+        "input_ports": [],
+        "parameter_mappings": {},
     }
     assert jsonable_encoder(request)["params"] == {"style": {"palette": ["warm"]}}
     assert asdict(model)["parameter_schema"] == {"limits": {"sizes": [512, 1024]}}

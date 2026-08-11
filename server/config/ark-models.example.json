@@ -5,6 +5,11 @@
       "service_id": "ark-image",
       "display_name": "图片生成（Ark）",
       "operations": ["image.generate"],
+      "input_ports": [
+        {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
+        {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 14}
+      ],
+      "parameter_mappings": {"size": "size"},
       "parameter_schema": {
         "type": "object",
         "properties": {
@@ -22,6 +27,13 @@
       "service_id": "ark-video",
       "display_name": "视频生成（Ark）",
       "operations": ["video.generate"],
+      "input_ports": [
+        {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
+        {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 9},
+        {"port_id": "reference_video", "media_type": "video", "min_items": 0, "max_items": 3},
+        {"port_id": "reference_audio", "media_type": "audio", "min_items": 0, "max_items": 3}
+      ],
+      "parameter_mappings": {"ratio": "ratio", "duration": "duration"},
       "parameter_schema": {
         "type": "object",
         "properties": {

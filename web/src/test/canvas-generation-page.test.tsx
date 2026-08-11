@@ -13,13 +13,21 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScope
 it("submits canvas image generation through jobs and writes its result node", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("Canvas");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "real-video-looking-image", service_id: "s", display_name: "Video Model", operations: ["image.generate"], input_media: ["text"], parameter_schema: { steps: { type: "integer", default: 4 } } }] }), { headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "succeeded", result_url: "/api/v1/results/r-1" }), { headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "real-video-looking-image", service_id: "s", display_name: "Video Model", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: { steps: "steps" }, parameter_schema: { steps: { type: "integer", default: 4 } } }] }), { headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } })).mockResolvedValueOnce(new Response(JSON.stringify({ id: "job-1", status: "succeeded", result_url: "/api/v1/results/r-1" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cat" } });
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "a cat" } });
+    fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
+    act(() => {
+        const project = useCanvasStore.getState().openProject(projectId)!;
+        const prompt = project.nodes.find((node) => node.metadata?.graph?.role === "prompt")!;
+        const model = project.nodes.find((node) => node.metadata?.graph?.role === "model")!;
+        useCanvasStore.getState().updateProject(projectId, { connections: [{ id: "prompt-model", fromNodeId: prompt.id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" }] });
+    });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("real-video-looking-image"));
     await waitFor(() => expect(screen.getByLabelText("steps")).toHaveValue("4"));
     fireEvent.change(screen.getByLabelText("steps"), { target: { value: "6" } });
-    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "job-1")).toBe(true));
     expect(await screen.findByTestId("result-node-job-1")).toBeVisible();
     expect(screen.getAllByTestId("result-node-job-1")).toHaveLength(1);
@@ -49,18 +57,23 @@ it("submits canvas video generation through jobs and writes a video result node"
     const projectId = useCanvasStore.getState().createProject("Canvas");
     vi.stubGlobal("fetch", vi.fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({ models: [
-            { model_id: "image-model", service_id: "images", display_name: "图片模型", operations: ["image.generate"], input_media: ["text"], parameter_schema: {} },
-            { model_id: "video-model", service_id: "videos", display_name: "视频模型", operations: ["video.generate"], input_media: ["text"], parameter_schema: { duration: { type: "integer", default: 5, minimum: 3, maximum: 8 } } },
+            { model_id: "image-model", service_id: "images", display_name: "图片模型", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} },
+            { model_id: "video-model", service_id: "videos", display_name: "视频模型", operations: ["video.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: { duration: "duration" }, parameter_schema: { duration: { type: "integer", default: 5, minimum: 3, maximum: 8 } } },
         ] }), { headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", status: "queued" }), { status: 201, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "video-job-1", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video-job-1" }), { headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "a cloud moving slowly" } });
     fireEvent.click(await screen.findByRole("button", { name: "视频生成" }));
-    expect(screen.getByText("VIDEO GENERATION")).toBeVisible();
-    expect(screen.getByRole("heading", { name: "视频生成" })).toBeVisible();
-    fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "a cloud moving slowly" } });
+    act(() => {
+        const project = useCanvasStore.getState().openProject(projectId)!;
+        const prompt = project.nodes.find((node) => node.metadata?.graph?.role === "prompt")!;
+        const model = project.nodes.find((node) => node.metadata?.graph?.role === "model")!;
+        useCanvasStore.getState().updateProject(projectId, { connections: [{ id: "prompt-model", fromNodeId: prompt.id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" }] });
+    });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("video-model"));
-    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.sourceJobId === "video-job-1")).toBe(true));
     const result = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.sourceJobId === "video-job-1");
     expect(result?.type).toBe(CanvasNodeType.Video);
@@ -73,11 +86,19 @@ it("submits canvas video generation through jobs and writes a video result node"
 it("writes a safe failure node for a rate-limited generation", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("Canvas");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "image", service_id: "s", display_name: "Image", operations: ["image.generate"], input_media: ["text"], parameter_schema: {} }] }), { headers: { "content-type": "application/json" } })).mockResolvedValue(new Response(JSON.stringify({ code: "rate_limited", message: "raw", retryable: true, request_id: "req-1", phase: "submit" }), { status: 429, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ model_id: "image", service_id: "s", display_name: "Image", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: {}, parameter_schema: {} }] }), { headers: { "content-type": "application/json" } })).mockResolvedValue(new Response(JSON.stringify({ code: "rate_limited", message: "raw", retryable: true, request_id: "req-1", phase: "submit" }), { status: 429, headers: { "content-type": "application/json" } })));
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
-    fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "private prompt" } });
+    fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
+    fireEvent.change(screen.getByLabelText("提示词内容"), { target: { value: "private prompt" } });
+    fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
+    act(() => {
+        const project = useCanvasStore.getState().openProject(projectId)!;
+        const prompt = project.nodes.find((node) => node.metadata?.graph?.role === "prompt")!;
+        const model = project.nodes.find((node) => node.metadata?.graph?.role === "model")!;
+        useCanvasStore.getState().updateProject(projectId, { connections: [{ id: "prompt-model", fromNodeId: prompt.id, fromPortId: "prompt", toNodeId: model.id, toPortId: "prompt" }] });
+    });
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("image"));
-    fireEvent.click(screen.getByRole("button", { name: "加入任务队列" }));
+    fireEvent.click(screen.getByRole("button", { name: "运行模型" }));
     await waitFor(() => expect(useCanvasStore.getState().openProject(projectId)?.nodes.some((node) => node.metadata?.status === "error")).toBe(true));
     expect(screen.getAllByText("请求过于频繁，请稍后重试。")).not.toHaveLength(0);
 });

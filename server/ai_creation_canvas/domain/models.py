@@ -118,6 +118,23 @@ class JobStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ModelInputPort:
+    port_id: str
+    media_type: str
+    min_items: int = 0
+    max_items: int = 1
+
+    def __post_init__(self) -> None:
+        _stable_id(self.port_id, "port_id")
+        if self.media_type not in {"text", "image", "video", "audio"}:
+            raise ValueError("media_type must be supported")
+        if isinstance(self.min_items, bool) or isinstance(self.max_items, bool) or not isinstance(self.min_items, int) or not isinstance(self.max_items, int):
+            raise ValueError("port item limits must be integers")
+        if self.min_items < 0 or self.max_items < 1 or self.min_items > self.max_items or self.max_items > 64:
+            raise ValueError("port item limits are invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class PortalUser:
     user_id: str
     username: str
@@ -156,6 +173,8 @@ class ModelSpec:
     input_media: tuple[str, ...] = ()
     parameter_schema: Mapping[str, object] = field(default_factory=dict)
     requires_asset_kind: AssetKind | str | None = None
+    input_ports: tuple[ModelInputPort, ...] = ()
+    parameter_mappings: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _stable_id(self.model_id, "model_id")
@@ -176,6 +195,14 @@ class ModelSpec:
             except ValueError as error:
                 raise ValueError("requires_asset_kind must be a supported AssetKind") from error
         object.__setattr__(self, "parameter_schema", FrozenDict(self.parameter_schema))
+        ports = tuple(self.input_ports)
+        if any(not isinstance(port, ModelInputPort) for port in ports) or len({port.port_id for port in ports}) != len(ports):
+            raise ValueError("input_ports must contain unique ModelInputPort values")
+        object.__setattr__(self, "input_ports", ports)
+        mappings = dict(self.parameter_mappings)
+        if any(not isinstance(key, str) or not key or not isinstance(value, str) or not value for key, value in mappings.items()):
+            raise ValueError("parameter_mappings must contain stable names")
+        object.__setattr__(self, "parameter_mappings", FrozenDict(mappings))
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +240,7 @@ class JobRequest:
     idempotency_key: str
     params: Mapping[str, object] = field(default_factory=dict)
     asset_ids: tuple[str, ...] = ()
+    inputs: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         try:
@@ -226,6 +254,14 @@ class JobRequest:
         if any(not isinstance(asset_id, str) or not asset_id.strip() for asset_id in self.asset_ids):
             raise ValueError("asset_ids must contain non-empty stable identifiers")
         object.__setattr__(self, "params", FrozenDict(self.params))
+        normalized_inputs: dict[str, tuple[str, ...]] = {}
+        for port_id, asset_ids in self.inputs.items():
+            _stable_id(port_id, "input port ID")
+            values = tuple(asset_ids)
+            if len(values) > 64 or any(not isinstance(asset_id, str) or not asset_id.strip() for asset_id in values):
+                raise ValueError("inputs must contain stable asset identifiers")
+            normalized_inputs[port_id] = values
+        object.__setattr__(self, "inputs", FrozenDict(normalized_inputs))
 
 
 @dataclass(frozen=True, slots=True)

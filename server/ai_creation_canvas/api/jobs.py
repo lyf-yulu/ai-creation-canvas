@@ -6,13 +6,13 @@ import hashlib
 import json
 import secrets
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
-from ai_creation_canvas.domain.models import JobRequest, JobStatus
+from ai_creation_canvas.domain.models import JobRequest, JobStatus, ModelSpec
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 
 router = APIRouter(prefix="/api/v1")
@@ -40,6 +40,7 @@ class Submission(BaseModel):
     prompt: str = Field(min_length=1, max_length=16000)
     params: dict[str, Any] = Field(default_factory=dict)
     asset_ids: list[str] = Field(default_factory=list, max_length=32)
+    inputs: dict[str, list[str]] = Field(default_factory=dict)
     idempotency_key: str = Field(min_length=1, max_length=256)
 
     @field_validator("params")
@@ -56,10 +57,45 @@ class Submission(BaseModel):
             raise ValueError("asset IDs are invalid")
         return value
 
+    @field_validator("inputs")
+    @classmethod
+    def valid_inputs(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        if len(value) > 16:
+            raise ValueError("too many input ports")
+        for port_id, asset_ids in value.items():
+            if not port_id or len(port_id) > 64 or len(asset_ids) > 64 or any(not item or len(item) > 128 for item in asset_ids):
+                raise ValueError("typed inputs are invalid")
+        return value
+
 
 def _hash(payload: Submission) -> str:
-    canonical = {"operation": payload.operation, "model_id": payload.model_id, "prompt": payload.prompt, "params": payload.params, "asset_ids": payload.asset_ids}
+    canonical = {"operation": payload.operation, "model_id": payload.model_id, "prompt": payload.prompt, "params": payload.params, "asset_ids": payload.asset_ids, "inputs": payload.inputs}
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _validate_parameters(model: ModelSpec, values: dict[str, Any]) -> None:
+    schema = model.parameter_schema
+    properties = schema.get("properties") if isinstance(schema, dict) else schema.get("properties", {})
+    if not isinstance(properties, Mapping) or set(values) - set(properties):
+        raise ValueError("parameters are not declared")
+    if model.parameter_mappings and set(values) - set(model.parameter_mappings):
+        raise ValueError("parameters are not mapped")
+    for key, value in values.items():
+        rule = properties[key]
+        if not isinstance(rule, Mapping):
+            raise ValueError("parameter rule is invalid")
+        kind = rule.get("type")
+        valid = (
+            kind == "string" and isinstance(value, str)
+            or kind == "boolean" and isinstance(value, bool)
+            or kind == "integer" and isinstance(value, int) and not isinstance(value, bool)
+            or kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool)
+        )
+        if not valid or "enum" in rule and value not in rule["enum"]:
+            raise ValueError("parameter value is invalid")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if "minimum" in rule and value < rule["minimum"] or "maximum" in rule and value > rule["maximum"]:
+                raise ValueError("parameter value is outside limits")
 
 
 def _response(item: dict[str, object], request: Request) -> dict[str, object]:
@@ -102,7 +138,7 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
     try:
-        domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids))
+        domain_request = JobRequest(payload.operation, payload.model_id, payload.prompt, payload.idempotency_key, payload.params, tuple(payload.asset_ids), payload.inputs)
     except ValueError:
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.") from None
     try:
@@ -111,12 +147,26 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400) from None
     if domain_request.operation not in model.operations:
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
+    try:
+        _validate_parameters(model, payload.params)
+    except (TypeError, ValueError):
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
     selected_adapter = request.app.state.adapter_registry.generation(model.service_id)
     if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
     upstream_asset_ids: list[str] = []
-    for asset_id in domain_request.asset_ids:
+    upstream_inputs: dict[str, tuple[str, ...]] = {}
+    declared_ports = {port.port_id: port for port in model.input_ports if port.media_type != "text"}
+    if payload.inputs and (payload.asset_ids or set(payload.inputs) - set(declared_ports)):
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422)
+    for port_id, asset_ids in payload.inputs.items():
+        port = declared_ports[port_id]
+        if not port.min_items <= len(asset_ids) <= port.max_items:
+            raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422)
+    typed_asset_ids = [(port_id, asset_id) for port_id, asset_ids in payload.inputs.items() for asset_id in asset_ids]
+    legacy_asset_ids = [("legacy", asset_id) for asset_id in domain_request.asset_ids]
+    for port_id, asset_id in (*typed_asset_ids, *legacy_asset_ids):
         asset, forbidden = store.asset_for_owner(asset_id, context.user.user_id)
         if forbidden:
             raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
@@ -130,6 +180,14 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
         else:
             upstream_asset_ids.append(asset_id)
+        if port_id != "legacy":
+            port = declared_ports[port_id]
+            if asset.get("media_type") != port.media_type:
+                raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+    cursor = 0
+    for port_id, asset_ids in payload.inputs.items():
+        upstream_inputs[port_id] = tuple(upstream_asset_ids[cursor:cursor + len(asset_ids)])
+        cursor += len(asset_ids)
     if model.requires_asset_kind is not None and not upstream_asset_ids:
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
     reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
@@ -141,10 +199,10 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         adapter = selected_adapter
         submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
         if callable(submit_with_cookie):
-            upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids))
+            upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs)
             upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
         else:
-            upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids)))
+            upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
         item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
     except PortalUpstreamError as error:

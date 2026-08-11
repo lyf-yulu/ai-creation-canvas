@@ -64,9 +64,7 @@ it("shows a read-only banner and blocks project-page generation and node edits",
     expect(screen.getByRole("button", { name: "提示词节点" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "视频生成" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "加入任务队列" })).toBeDisabled();
-    expect(screen.getByLabelText("提示词")).toBeDisabled();
-    expect(screen.getByLabelText("模型")).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "运行模型" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "提示词节点" }));
     expect(useCanvasStore.getState().openProject(id)?.nodes).toEqual([]);
 });

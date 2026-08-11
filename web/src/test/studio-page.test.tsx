@@ -33,21 +33,21 @@ it("waits for the server project list before redirecting a missing project", asy
 it("assembles the released image and video generation studio around the infinite canvas", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("黑绿工作室");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: [{ model_id: "demo-image-v1", service_id: "demo-image", display_name: "本地演示图片", operations: ["image.generate"], input_media: ["text"], parameter_schema: { type: "object", properties: { aspect_ratio: { type: "string", enum: ["square", "portrait", "landscape"], default: "landscape" } }, required: ["aspect_ratio"] } }] }), { headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ models: [{ model_id: "demo-image-v1", service_id: "demo-image", display_name: "本地演示图片", operations: ["image.generate"], input_media: ["text"], input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], parameter_mappings: { aspect_ratio: "size" }, parameter_schema: { type: "object", properties: { aspect_ratio: { type: "string", enum: ["square", "portrait", "landscape"], default: "landscape" } }, required: ["aspect_ratio"] } }] }), { headers: { "content-type": "application/json" } })));
 
     render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
 
     expect(screen.getByTestId("studio-palette")).toBeVisible();
     expect(screen.getByTestId("studio-canvas")).toBeVisible();
     expect(screen.getByTestId("studio-canvas")).toHaveClass("flex-1", "min-h-0");
-    expect(screen.getByTestId("generation-inspector")).toBeVisible();
-    expect(screen.getByTestId("generation-inspector")).toHaveClass("max-h-[45%]", "lg:max-h-none");
+    expect(screen.queryByTestId("generation-inspector")).not.toBeInTheDocument();
     expect(screen.getByText("提示词节点")).toBeVisible();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeVisible();
     expect(screen.getByRole("button", { name: "视频生成" })).toBeVisible();
     expect(screen.queryByText(/Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("demo-image-v1"));
-    expect(screen.getByRole("button", { name: "加入任务队列" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "运行模型" })).toBeVisible();
 });
 
 it("uses the stored project viewport and exposes scale and reset controls", () => {

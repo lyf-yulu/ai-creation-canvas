@@ -8,7 +8,7 @@ result URLs stay in the server's protected data directory.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelOperation, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
 
 
@@ -30,6 +30,7 @@ _MAX_RESULT_BYTES = 256 * 1024 * 1024
 _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
 _VIDEO_MIME = frozenset({"video/mp4", "video/webm"})
 _MAX_CONFIG_BYTES = 64 * 1024
+_ARK_PARAMETER_TARGETS = frozenset({"size", "quality", "n", "strength", "watermark", "ratio", "duration", "resolution", "generate_audio", "camera_fixed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,9 +40,16 @@ class ArkModelDeclaration:
     display_name: str
     operations: tuple[ModelOperation | str, ...]
     parameter_schema: Mapping[str, object]
+    input_ports: tuple[ModelInputPort, ...] = (ModelInputPort("prompt", "text", 1, 1),)
+    parameter_mappings: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        ModelSpec(self.model_id, self.service_id, self.display_name, self.operations, ("text",), self.parameter_schema)
+        schema_properties = self.parameter_schema.get("properties") if isinstance(self.parameter_schema, Mapping) else None
+        if not isinstance(schema_properties, Mapping) or set(self.parameter_mappings) != set(schema_properties):
+            raise ValueError("every Ark parameter requires an explicit provider mapping")
+        if any(target not in _ARK_PARAMETER_TARGETS for target in self.parameter_mappings.values()):
+            raise ValueError("Ark parameter mapping is unsupported")
+        ModelSpec(self.model_id, self.service_id, self.display_name, self.operations, ("text",), self.parameter_schema, None, self.input_ports, self.parameter_mappings)
 
 
 class _FileStream:
@@ -98,18 +106,19 @@ class ArkGenerationAdapter:
     async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]:
         del context
         return tuple(
-            ModelSpec(model.model_id, model.service_id, model.display_name, model.operations, ("text",), model.parameter_schema)
+            ModelSpec(model.model_id, model.service_id, model.display_name, model.operations, ("text",), model.parameter_schema, None, model.input_ports, model.parameter_mappings)
             for model in sorted(self._models.values(), key=lambda item: item.model_id)
         )
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
         del context
         declaration = self._models.get(request.model_id)
-        if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids:
+        if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids or request.inputs:
             raise ValueError("Ark request is invalid")
         params = self._validated_params(declaration, request.params)
+        provider_params = {declaration.parameter_mappings[key]: value for key, value in params.items()}
         if request.operation is ModelOperation.IMAGE_GENERATE:
-            payload = {"model": request.model_id, "prompt": request.prompt, **params, "response_format": "url"}
+            payload = {"model": request.model_id, "prompt": request.prompt, **provider_params, "response_format": "url"}
             response = await self._api("POST", "/api/v3/images/generations", json=payload)
             data = self._json(response)
             items = data.get("data")
@@ -119,7 +128,7 @@ class ArkGenerationAdapter:
             await self._record_pending(upstream_id, str(items[0]["url"]), "image")
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         if request.operation is ModelOperation.VIDEO_GENERATE:
-            prompt = self._video_prompt(request.prompt, params)
+            prompt = self._video_prompt(request.prompt, provider_params)
             response = await self._api("POST", "/api/v3/contents/generations/tasks", json={"model": request.model_id, "content": [{"type": "text", "text": prompt}]})
             body = self._json(response)
             upstream_id = body.get("id")
@@ -326,7 +335,7 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
             raise ValueError
         declarations = []
         for item in body["models"]:
-            if not isinstance(item, Mapping) or set(item) != {"model_id", "service_id", "display_name", "operations", "parameter_schema"}:
+            if not isinstance(item, Mapping) or set(item) != {"model_id", "service_id", "display_name", "operations", "parameter_schema", "input_ports", "parameter_mappings"}:
                 raise ValueError
             model_id, service_id, display_name, operations, parameter_schema = (item["model_id"], item["service_id"], item["display_name"], item["operations"], item["parameter_schema"])
             if not all(isinstance(value, str) and 1 <= len(value) <= 128 for value in (model_id, service_id, display_name)):
@@ -337,9 +346,20 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
                 raise ValueError
             if not isinstance(parameter_schema, Mapping) or parameter_schema.get("type") != "object" or parameter_schema.get("additionalProperties") is not False or not isinstance(parameter_schema.get("properties"), Mapping):
                 raise ValueError
-            if len(parameter_schema["properties"]) > 16 or any(not isinstance(key, str) or not isinstance(rule, Mapping) or rule.get("type") not in {"string", "integer"} for key, rule in parameter_schema["properties"].items()):
+            if len(parameter_schema["properties"]) > 16 or any(not isinstance(key, str) or not isinstance(rule, Mapping) or rule.get("type") not in {"string", "integer", "number", "boolean"} for key, rule in parameter_schema["properties"].items()):
                 raise ValueError
-            declarations.append(ArkModelDeclaration(model_id, service_id, display_name, tuple(operations), parameter_schema))
+            raw_ports = item["input_ports"]
+            raw_mappings = item["parameter_mappings"]
+            if not isinstance(raw_ports, list) or not 1 <= len(raw_ports) <= 16 or not isinstance(raw_mappings, Mapping):
+                raise ValueError
+            ports = []
+            for port in raw_ports:
+                if not isinstance(port, Mapping) or set(port) != {"port_id", "media_type", "min_items", "max_items"}:
+                    raise ValueError
+                ports.append(ModelInputPort(port["port_id"], port["media_type"], port["min_items"], port["max_items"]))
+            if any(not isinstance(key, str) or not isinstance(value, str) for key, value in raw_mappings.items()):
+                raise ValueError
+            declarations.append(ArkModelDeclaration(model_id, service_id, display_name, tuple(operations), parameter_schema, tuple(ports), raw_mappings))
         if len({item.model_id for item in declarations}) != len(declarations):
             raise ValueError
         return tuple(declarations)
