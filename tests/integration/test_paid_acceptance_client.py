@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+import signal
 import struct
+import subprocess
+import sys
+import time
 
 from tests.server.test_model_assignments import local_clients
 
@@ -99,3 +104,79 @@ def test_two_paid_poll_flows_keep_the_result_reference_chain_and_stream_checks(m
     assert video[1] == "job-result.video-job.0"
     assert len(user.posts) == 2
     assert user.posts[1]["inputs"]["reference_images"] == [image[1]]
+
+
+def test_real_runner_checks_project_owner_before_first_paid_post(monkeypatch) -> None:
+    events: list[str] = []
+
+    class User:
+        def upload_reference_png(self): events.append("upload"); return "owned-asset"
+        def json(self, method, path, payload=None, expected=(200,)):
+            assert method == "POST" and path == "/api/v1/projects"
+            events.append("project-post")
+            return {"project": payload}
+
+    class Admin:
+        def request(self, method, path):
+            events.append(f"admin-get:{path}")
+            return (403 if path.startswith("/api/v1/assets/") else 404), {}, b""
+
+    def paid(_user, _admin, payload, kind):
+        events.append(f"paid:{kind}")
+        token = "job-result.image-job.0" if kind == "image" else "job-result.video-job.0"
+        return module.sanitized_result_record(kind=kind, job_id=f"{kind}-job", model_id=str(payload["model_id"]), status="succeeded", mime=f"{kind}/fixture", byte_count=3, duration_seconds=1), token, f"/api/v1/results/{kind}-job/0"
+
+    monkeypatch.setattr(module, "_poll_and_download", paid)
+    emitted: list[str] = []
+    module.run_paid_graph(User(), Admin(), ["image-model", "video-model"], emitted.append)
+
+    assert events == [
+        "upload",
+        "admin-get:/api/v1/assets/owned-asset",
+        "project-post",
+        "admin-get:/api/v1/projects/paid-acceptance-canvas",
+        "paid:image",
+        "paid:video",
+    ]
+
+
+def test_runner_signal_before_key_read_removes_credential_file(tmp_path: Path) -> None:
+    key_file = tmp_path / "paid-key"
+    key_file.write_text("sentinel-paid-key", encoding="utf-8"); key_file.chmod(0o600)
+    ready = tmp_path / "ready"
+    environment = {**os.environ, "AICC_ACCEPTANCE_KEY_FILE": str(key_file), "AICC_ACCEPTANCE_SIGNAL_PROBE_FILE": str(ready)}
+    environment.pop("ARK_API_KEY", None)
+    process = subprocess.Popen([sys.executable, str(ROOT / "scripts/acceptance_real_media.py"), "--probe-signal-before-key"], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if ready.exists(): break
+        time.sleep(0.01)
+    assert ready.exists()
+    process.send_signal(signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode != 0
+    assert not key_file.exists()
+    assert "sentinel-paid-key" not in stdout + stderr
+
+
+def test_runner_signal_with_server_child_removes_key_and_child(tmp_path: Path) -> None:
+    key_file = tmp_path / "paid-key"
+    key_file.write_text("sentinel-paid-key", encoding="utf-8"); key_file.chmod(0o600)
+    child_pid_file = tmp_path / "child-pid"
+    environment = {**os.environ, "AICC_ACCEPTANCE_KEY_FILE": str(key_file), "AICC_ACCEPTANCE_SIGNAL_PROBE_FILE": str(child_pid_file)}
+    environment.pop("ARK_API_KEY", None)
+    process = subprocess.Popen([sys.executable, str(ROOT / "scripts/acceptance_real_media.py"), "--probe-signal-server"], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for _ in range(100):
+        if child_pid_file.exists(): break
+        time.sleep(0.01)
+    assert child_pid_file.exists()
+    child_pid = int(child_pid_file.read_text(encoding="ascii"))
+    process.send_signal(signal.SIGHUP)
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode != 0
+    assert not key_file.exists()
+    for _ in range(100):
+        try: os.kill(child_pid, 0)
+        except ProcessLookupError: break
+        time.sleep(0.01)
+    else: raise AssertionError("server child survived acceptance runner signal")
+    assert "sentinel-paid-key" not in stdout + stderr

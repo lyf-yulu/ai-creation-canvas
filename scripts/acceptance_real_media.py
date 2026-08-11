@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import struct
 import subprocess
 import sys
@@ -17,6 +18,56 @@ import stat
 import zlib
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
+from typing import Callable
+
+
+_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+_credential_path: str | None = None
+_child_process: subprocess.Popen[bytes] | None = None
+
+
+def _stop_child() -> None:
+    global _child_process
+    process, _child_process = _child_process, None
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill(); process.wait(timeout=2)
+
+
+def _remove_credential_file() -> None:
+    global _credential_path
+    path_text = _credential_path or os.environ.get("AICC_ACCEPTANCE_KEY_FILE", "")
+    _credential_path = None
+    os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", None)
+    if path_text:
+        Path(path_text).unlink(missing_ok=True)
+
+
+def _signal_cleanup(signum: int, _frame: object) -> None:
+    _remove_credential_file()
+    _stop_child()
+    raise SystemExit(128 + signum)
+
+
+def _install_signal_cleanup() -> None:
+    global _credential_path
+    _credential_path = os.environ.get("AICC_ACCEPTANCE_KEY_FILE")
+    for item in _SIGNALS:
+        signal.signal(item, _signal_cleanup)
+
+
+def _spawn_child(arguments: list[str], *, cwd: Path, environment: dict[str, str], stdout: object, stderr: object) -> subprocess.Popen[bytes]:
+    global _child_process
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, _SIGNALS)
+    try:
+        _child_process = subprocess.Popen(arguments, cwd=cwd, env=environment, stdout=stdout, stderr=stderr, preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous))
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+    return _child_process
 
 
 def paid_image_request(image_model: str, owned_asset_id: str) -> dict[str, object]:
@@ -49,9 +100,10 @@ def reference_png() -> bytes:
 
 
 def consume_server_key() -> str:
+    global _credential_path
     if "ARK_API_KEY" in os.environ:
         raise RuntimeError("paid credential leaked into acceptance environment")
-    path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "")
+    path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "") or _credential_path or ""
     path = Path(path_text)
     try:
         details = path.lstat()
@@ -61,6 +113,7 @@ def consume_server_key() -> str:
     finally:
         if path_text:
             path.unlink(missing_ok=True)
+        _credential_path = None
     if len(value) < 8 or len(value) > 4096 or any(char in value for char in "\r\n\0"):
         raise RuntimeError("invalid acceptance credential")
     return value
@@ -208,6 +261,47 @@ def _credentials(log_path: Path, process: subprocess.Popen[bytes]) -> tuple[str,
     raise RuntimeError("isolated accounts were not created")
 
 
+def run_paid_graph(user: ApiSession, admin: ApiSession, model_ids: list[str], emit: Callable[[str], None]) -> None:
+    owned_asset_id = user.upload_reference_png()
+    if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
+        raise RuntimeError("asset owner isolation failed")
+    project = _project_document(owned_asset_id, *model_ids, len(reference_png()))
+    persisted = user.json("POST", "/api/v1/projects", project, expected=(201,))
+    saved = persisted.get("project")
+    if not isinstance(saved, dict) or saved.get("nodes") != project["nodes"] or saved.get("connections") != project["connections"]:
+        raise RuntimeError("canvas graph persistence failed")
+    if admin.request("GET", "/api/v1/projects/paid-acceptance-canvas")[0] != 404:
+        raise RuntimeError("project owner isolation failed")
+    image_request = paid_image_request(model_ids[0], owned_asset_id)
+    image_record, image_result_asset_id, _image_result_url = _poll_and_download(user, admin, image_request, "image")
+    emit(render_record(image_record))
+    video_request = paid_video_request(model_ids[1], image_result_asset_id)
+    video_record, _video_result_asset_id, _video_result_url = _poll_and_download(user, admin, video_request, "video")
+    emit(render_record(video_record))
+
+
+def _probe_file(value: str) -> None:
+    path = Path(os.environ["AICC_ACCEPTANCE_SIGNAL_PROBE_FILE"])
+    path.write_text(value, encoding="ascii")
+    path.chmod(0o600)
+
+
+def _probe_signal_before_key() -> None:
+    _probe_file("ready")
+    while True:
+        signal.pause()
+
+
+def _probe_signal_server() -> None:
+    key = consume_server_key()
+    environment = server_environment(key)
+    process = _spawn_child([sys.executable, "-c", "import time; time.sleep(300)"], cwd=Path.cwd(), environment=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    del key, environment
+    _probe_file(str(process.pid))
+    while True:
+        signal.pause()
+
+
 def main() -> int:
     api_key = consume_server_key()
     root = Path(__file__).resolve().parents[1]
@@ -218,9 +312,9 @@ def main() -> int:
     server_log.touch(mode=0o600)
     environment = server_environment(api_key)
     with server_log.open("ab", buffering=0) as output:
-        process = subprocess.Popen(
+        process = _spawn_child(
             [sys.executable, "-m", "ai_creation_canvas", "serve-local", "--port", str(port), "--data-dir", str(data_dir), "--static-dir", str(root / "web/dist"), "--ark-models", os.environ["AICC_ACCEPTANCE_MODELS_CONFIG"], "--bootstrap-if-empty"],
-            cwd=root, env=environment, stdout=output, stderr=output,
+            cwd=root, environment=environment, stdout=output, stderr=output,
         )
         del api_key, environment
         try:
@@ -236,20 +330,7 @@ def main() -> int:
             visible = user.json("GET", "/api/v1/models").get("models", [])
             if {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
                 raise RuntimeError("model assignment isolation failed")
-            owned_asset_id = user.upload_reference_png()
-            if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
-                raise RuntimeError("asset owner isolation failed")
-            project = _project_document(owned_asset_id, *model_ids, len(reference_png()))
-            persisted = user.json("POST", "/api/v1/projects", project, expected=(201,))
-            saved = persisted.get("project")
-            if not isinstance(saved, dict) or saved.get("nodes") != project["nodes"] or saved.get("connections") != project["connections"]:
-                raise RuntimeError("canvas graph persistence failed")
-            image_request = paid_image_request(model_ids[0], owned_asset_id)
-            image_record, image_result_asset_id, _image_result_url = _poll_and_download(user, admin, image_request, "image")
-            print(render_record(image_record), flush=True)
-            video_request = paid_video_request(model_ids[1], image_result_asset_id)
-            video_record, _video_result_asset_id, _video_result_url = _poll_and_download(user, admin, video_request, "video")
-            print(render_record(video_record), flush=True)
+            run_paid_graph(user, admin, model_ids, lambda line: print(line, flush=True))
             del user_info
             return 0
         except (KeyError, StopIteration, ValueError, RuntimeError, URLError, json.JSONDecodeError):
@@ -257,14 +338,11 @@ def main() -> int:
             return 1
         finally:
             server_log.unlink(missing_ok=True)
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill(); process.wait(timeout=5)
+            _stop_child()
 
 
 if __name__ == "__main__":
+    _install_signal_cleanup()
     try:
         if sys.argv[1:] == ["--probe-key-boundary"]:
             probe_key = consume_server_key()
@@ -274,6 +352,12 @@ if __name__ == "__main__":
             del probe_key, probe_environment
             print("Paid acceptance key boundary ready. No provider request was made.")
             result = 0
+        elif sys.argv[1:] == ["--probe-signal-before-key"]:
+            _probe_signal_before_key()
+            result = 1
+        elif sys.argv[1:] == ["--probe-signal-server"]:
+            _probe_signal_server()
+            result = 1
         elif sys.argv[1:]:
             raise RuntimeError("unsupported acceptance argument")
         else:
