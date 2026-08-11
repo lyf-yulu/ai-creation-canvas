@@ -245,7 +245,7 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
             nodes: current.nodes.map((node) => {
                 const graph = node.metadata?.graph;
                 if (graph?.role === "prompt") return { ...node, position: { x: 0, y: promptIndex++ * 680 } };
-                const key = graph?.role === "prompt" ? "prompt" : graph?.role === "media-collection" ? graph.mediaType : null;
+                const key = graph?.role === "media-collection" ? graph.mediaType : null;
                 return key ? { ...node, position: positions[key] } : node;
             }),
         });
