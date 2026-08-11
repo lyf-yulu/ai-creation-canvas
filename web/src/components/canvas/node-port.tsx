@@ -32,7 +32,8 @@ export function portDisplayName(portId: string) {
 export function NodePort({ node, port, active, disabled = false, onClick, onPointerDown, onPointerUp }: NodePortProps) {
     const anchor = getNodePortAnchor(node, port.portId, port.direction);
     const directionName = port.direction === "source" ? "输出" : "输入";
-    const label = `${node.title}：${portDisplayName(port.portId)}${directionName}端口`;
+    const displayName = port.label ?? portDisplayName(port.portId);
+    const label = `${node.title}：${displayName}${directionName}端口`;
     return (
         <button
             type="button"
@@ -52,6 +53,10 @@ export function NodePort({ node, port, active, disabled = false, onClick, onPoin
             onClick={(event) => onClick(port, event)}
             onPointerDown={(event) => onPointerDown(port, event)}
             onPointerUp={(event) => onPointerUp(port, event)}
-        />
+        >
+            <span aria-hidden="true" className={`pointer-events-none absolute top-1/2 -translate-y-1/2 whitespace-nowrap rounded bg-[#08100b]/95 px-1.5 py-0.5 text-[10px] font-medium text-[#dceee1] shadow-sm ${port.direction === "source" ? "left-6" : "right-6"}`}>
+                {displayName}
+            </span>
+        </button>
     );
 }

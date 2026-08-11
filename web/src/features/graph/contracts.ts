@@ -8,11 +8,13 @@ export type GraphPortValueType = "prompt" | GraphMediaType | "any";
 export type GraphInputPortDescriptor = {
     id: string;
     accepts: GraphPortValueType;
+    label?: string;
 };
 
 export type GraphOutputPortDescriptor = {
     id: string;
     provides: GraphPortValueType;
+    label?: string;
 };
 
 const standardModelInputPorts = {
@@ -73,10 +75,43 @@ export type GraphResultMetadata = {
     schemaVersion: typeof GRAPH_SCHEMA_VERSION;
     role: "result";
     mediaType: GraphMediaType;
+    inputPortId: string;
     outputPortId: string;
     assetId?: string;
     jobId?: string;
 };
+
+export const MAX_GRAPH_PORTS = 32;
+export const SAFE_GRAPH_PORT_ID = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
+
+export class InvalidGraphPortDeclarationError extends TypeError {
+    constructor() {
+        super("Invalid graph port declaration");
+        this.name = "InvalidGraphPortDeclarationError";
+    }
+}
+
+export function assertSafeGraphPortId(id: unknown): asserts id is string {
+    if (typeof id !== "string" || !SAFE_GRAPH_PORT_ID.test(id)) throw new InvalidGraphPortDeclarationError();
+}
+
+export function assertSafeGraphInputPorts(ports: unknown): asserts ports is GraphInputPortDescriptor[] {
+    if (!Array.isArray(ports) || ports.length > MAX_GRAPH_PORTS) throw new InvalidGraphPortDeclarationError();
+    const ids = new Set<string>();
+    for (const port of ports) {
+        if (!port || typeof port !== "object") throw new InvalidGraphPortDeclarationError();
+        const descriptor = port as Record<string, unknown>;
+        assertSafeGraphPortId(descriptor.id);
+        const label = descriptor.label;
+        const invalidLabel = label !== undefined && (typeof label !== "string" || label.length === 0 || label.length > 64 || /[\u0000-\u001f\u007f]/.test(label));
+        if (ids.has(descriptor.id) || !isGraphPortValueType(descriptor.accepts) || invalidLabel) throw new InvalidGraphPortDeclarationError();
+        ids.add(descriptor.id);
+    }
+}
+
+export function isGraphPortValueType(value: unknown): value is GraphPortValueType {
+    return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "any";
+}
 
 export type CanvasGraphNodeMetadata = GraphPromptMetadata | GraphMediaCollectionMetadata | GraphModelMetadata | GraphResultMetadata;
 

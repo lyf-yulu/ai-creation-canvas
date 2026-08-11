@@ -1,10 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { connectGraphPorts, getNodePorts, type GraphPortRef } from "@/features/graph/connect";
-import { createNodeRegistry } from "@/features/nodes/registry";
+import { connectGraphPorts, getNodePorts, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
+import { createNodeRegistry, nodeRegistry } from "@/features/nodes/registry";
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
@@ -50,7 +50,7 @@ function mediaNode(id: string, mediaType: "image" | "video" | "audio", x = 40, y
     return baseNode(id, type, x, y, {
         status: "success",
         content: mediaType === "image" ? "/api/v1/results/image" : undefined,
-        graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType, outputPortId: "media", assetId: `${id}-asset` },
+        graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType, inputPortId: "result", outputPortId: "media", assetId: `${id}-asset` },
     });
 }
 
@@ -95,13 +95,25 @@ describe("named-port graph rules", () => {
         const model = modelNode("model", ["prompt", "first_frame", "reference_audio"]);
 
         expect(getNodePorts(model)).toEqual({
-            sources: [{ nodeId: "model", portId: "result", direction: "source", valueType: "any" }],
+            sources: [{ nodeId: "model", portId: "result", direction: "source", valueType: "any", label: "结果" }],
             targets: [
-                { nodeId: "model", portId: "prompt", direction: "target", valueType: "prompt" },
-                { nodeId: "model", portId: "first_frame", direction: "target", valueType: "image" },
-                { nodeId: "model", portId: "reference_audio", direction: "target", valueType: "audio" },
+                { nodeId: "model", portId: "prompt", direction: "target", valueType: "prompt", label: "提示词" },
+                { nodeId: "model", portId: "first_frame", direction: "target", valueType: "image", label: "首帧" },
+                { nodeId: "model", portId: "reference_audio", direction: "target", valueType: "audio", label: "参考音频" },
             ],
         });
+    });
+
+    it("exposes result nodes as a model result target and a reusable media source", () => {
+        const result = mediaNode("result", "video");
+        const model = modelNode("model", []);
+        const ports = getNodePorts(result);
+
+        expect(ports).toEqual({
+            sources: [{ nodeId: "result", portId: "media", direction: "source", valueType: "video", label: "媒体" }],
+            targets: [{ nodeId: "result", portId: "result", direction: "target", valueType: "any", label: "结果" }],
+        });
+        expect(connectGraphPorts(port("model", "result", "source"), port("result", "result", "target"), [model, result], [], "output")).toMatchObject({ ok: true });
     });
 
     it("resolves custom plugin ports from an isolated typed registry without title-based rules", () => {
@@ -117,7 +129,7 @@ describe("named-port graph rules", () => {
         modelGraph.inputPorts = [{ id: "custom_input", accepts: "image" }];
         const nodes = [pluginSource, pluginPipe, image, model];
 
-        expect(getNodePorts(pluginSource, registry).sources).toEqual([{ nodeId: "plugin-source", portId: "custom_image", direction: "source", valueType: "image" }]);
+        expect(getNodePorts(pluginSource, registry).sources).toEqual([{ nodeId: "plugin-source", portId: "custom_image", direction: "source", valueType: "image", label: "custom_image" }]);
         expect(connectGraphPorts(port("plugin-source", "custom_image", "source"), port("model", "custom_input", "target"), nodes, [], "plugin-model", registry)).toMatchObject({ ok: true });
         expect(connectGraphPorts(port("image", "media", "source"), port("plugin-pipe", "anything", "target"), nodes, [], "builtin-plugin", registry)).toMatchObject({ ok: true });
         expect(connectGraphPorts(port("plugin-source", "custom_image", "source"), port("plugin-pipe", "anything", "target"), nodes, [], "plugin-plugin", registry)).toMatchObject({ ok: true });
@@ -234,6 +246,30 @@ describe("named-port graph rules", () => {
         expect(attempt(anyRegistry)).toMatchObject({ ok: true });
         expect(attempt(typedRegistry)).toEqual({ ok: false, reason: "prompt-occupied" });
     });
+
+    it("preserves raw prompt edges while resolving at most the first currently valid prompt as active", () => {
+        const registry = createNodeRegistry();
+        const plugin = baseNode("plugin", "plugin.dynamic", 0, 0, {});
+        const builtin = promptNode("builtin");
+        const model = modelNode("model", ["prompt"]);
+        const nodes = [plugin, builtin, model];
+        const connections: CanvasConnection[] = [
+            { id: "plugin-edge", fromNodeId: "plugin", fromPortId: "out", toNodeId: "model", toPortId: "prompt" },
+            { id: "builtin-edge", fromNodeId: "builtin", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+        ];
+        const before = JSON.stringify(connections);
+
+        expect(resolveActiveConnections(connections, nodes, registry).map(({ connection, active, reason }) => [connection.id, active, reason])).toEqual([
+            ["plugin-edge", false, "unavailable"],
+            ["builtin-edge", true, undefined],
+        ]);
+        registry.registerNode({ id: "plugin.dynamic", version: 1, title: "Dynamic", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        expect(resolveActiveConnections(connections, nodes, registry).map(({ connection, active, reason }) => [connection.id, active, reason])).toEqual([
+            ["plugin-edge", true, undefined],
+            ["builtin-edge", false, "prompt-conflict"],
+        ]);
+        expect(JSON.stringify(connections)).toBe(before);
+    });
 });
 
 describe("canvas named-port interactions", () => {
@@ -245,6 +281,8 @@ describe("canvas named-port interactions", () => {
         const { projectId, unmount } = await renderProject([prompt, model]);
         const source = screen.getByRole("button", { name: "故事文本：提示词输出端口" });
         const target = screen.getByRole("button", { name: "视频模型：提示词输入端口" });
+        expect(within(source).getByText("提示词")).toBeVisible();
+        expect(within(target).getByText("提示词")).toBeVisible();
 
         source.focus();
         fireEvent.click(source);
@@ -302,6 +340,30 @@ describe("canvas named-port interactions", () => {
         expect(screen.getByTestId("canvas-world")).toHaveStyle({ transform: "translate(120px, -30px) scale(2)" });
         const path = document.querySelector<SVGPathElement>("[data-connection-id='edge']");
         expect(path).toHaveAttribute("d", "M 280 130 C 350 130, 350 160, 420 160");
+    });
+
+    it("updates port anchors from transient measured node height without persisting layout size", async () => {
+        const callbacks = new Map<Element, ResizeObserverCallback>();
+        const disconnect = vi.fn();
+        class TestResizeObserver {
+            constructor(private readonly callback: ResizeObserverCallback) {}
+            observe(element: Element) { callbacks.set(element, this.callback); }
+            unobserve(element: Element) { callbacks.delete(element); }
+            disconnect() { disconnect(); }
+        }
+        vi.stubGlobal("ResizeObserver", TestResizeObserver);
+        const edge: CanvasConnection = { id: "measured-edge", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" };
+        const { projectId, unmount } = await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])], [edge]);
+        const modelElement = screen.getByTestId("draggable-node-model");
+        const callback = callbacks.get(modelElement);
+        expect(callback).toBeDefined();
+
+        act(() => callback?.([{ target: modelElement, contentRect: { width: 240, height: 320 } } as unknown as ResizeObserverEntry], {} as ResizeObserver));
+
+        await waitFor(() => expect(document.querySelector("[data-connection-id='measured-edge']")).toHaveAttribute("d", "M 280 130 C 350 130, 350 240, 420 240"));
+        expect(useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.id === "model")?.height).toBe(160);
+        unmount();
+        expect(disconnect).toHaveBeenCalled();
     });
 
     it("selects and deletes an edge with the keyboard, and deletes another from its context menu", async () => {
@@ -413,7 +475,7 @@ describe("canvas named-port interactions", () => {
     ])("opens an edge menu with %s and restores focus on Escape", async (_name, shortcut) => {
         const edge: CanvasConnection = { id: "edge", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" };
         await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])], [edge]);
-        const trigger = screen.getByRole("button", { name: "连接：prompt 到 model" });
+        const trigger = screen.getByRole("button", { name: "连接：prompt 提示词(prompt) 到 model 提示词(prompt)" });
         trigger.focus();
 
         fireEvent.keyDown(trigger, shortcut);
@@ -448,7 +510,33 @@ describe("canvas named-port interactions", () => {
         await renderProject([promptNode("prompt"), modelNode("model", ["prompt"])], [edge]);
         useCanvasStore.setState({ loadError: { code: "CANVAS_LOAD_FAILED", message: "只读保护", readOnly: true } });
 
-        await waitFor(() => expect(screen.queryByRole("button", { name: "连接：prompt 到 model" })).not.toBeInTheDocument());
+        await waitFor(() => expect(screen.queryByRole("button", { name: "连接：prompt 提示词(prompt) 到 model 提示词(prompt)" })).not.toBeInTheDocument());
         expect(document.querySelector("[data-connection-id='edge']")).toBeInTheDocument();
+    });
+
+    it("subscribes to registry changes, re-resolves active prompts and clears a revoked pending port", async () => {
+        const pluginType = "test.dynamic-round4";
+        nodeRegistry.unregisterNode(pluginType);
+        const plugin = baseNode("plugin", pluginType, 20, 20, {});
+        const builtin = promptNode("builtin", 20, 240);
+        const model = modelNode("model", ["prompt"], 420, 80);
+        const edges: CanvasConnection[] = [
+            { id: "plugin-edge", fromNodeId: "plugin", fromPortId: "out", toNodeId: "model", toPortId: "prompt" },
+            { id: "builtin-edge", fromNodeId: "builtin", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+        ];
+        const { projectId } = await renderProject([plugin, builtin, model], edges);
+        expect(document.querySelector("[data-connection-id='plugin-edge']")).toHaveAttribute("data-connection-active", "false");
+        expect(document.querySelector("[data-connection-id='builtin-edge']")).toHaveAttribute("data-connection-active", "true");
+
+        act(() => nodeRegistry.registerNode({ id: pluginType, version: 1, title: "动态提示词", inputs: [], outputs: [{ id: "out", provides: "prompt", label: "动态文本" }], createMetadata: () => ({}), render: () => null }));
+        const portButton = await screen.findByRole("button", { name: "plugin：动态文本输出端口" });
+        expect(screen.getByRole("button", { name: "连接：plugin 动态文本(out) 到 model 提示词(prompt)" })).toBeInTheDocument();
+        expect(document.querySelector("[data-connection-id='plugin-edge']")).toHaveAttribute("data-connection-active", "true");
+        expect(document.querySelector("[data-connection-id='builtin-edge']")).toHaveAttribute("data-connection-active", "false");
+        fireEvent.click(portButton);
+
+        act(() => nodeRegistry.unregisterNode(pluginType));
+        await waitFor(() => expect(screen.getByTestId("connection-status")).toHaveTextContent("连接起点已失效。"));
+        expect(useCanvasStore.getState().openProject(projectId)?.connections).toEqual(edges);
     });
 });

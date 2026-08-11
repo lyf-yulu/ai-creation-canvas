@@ -66,6 +66,7 @@ describe("graph contracts", () => {
             schemaVersion: GRAPH_SCHEMA_VERSION,
             role: "result",
             mediaType: "image",
+            inputPortId: "result",
             outputPortId: "media",
             assetId: "result-asset",
             jobId: "job-1",
@@ -163,13 +164,14 @@ describe("legacy graph normalization", () => {
         });
         expect(normalized.connections).toEqual([
             { id: "prompt-edge", fromNodeId: "prompt-a", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
+            { id: "second-prompt", fromNodeId: "prompt-b", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
             { id: "image-edge", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "reference_images" },
             { id: "video-edge", fromNodeId: "video", fromPortId: "media", toNodeId: "model", toPortId: "reference_video" },
             { id: "output-edge", fromNodeId: "model", fromPortId: "result", toNodeId: "output", toPortId: "result" },
         ]);
     });
 
-    it("rejects dangling, self, duplicate, ambiguous, and second-prompt edges deterministically", () => {
+    it("rejects dangling, self, duplicate and ambiguous edges while preserving prompt conflicts", () => {
         const legacy = project(
             [node("prompt-a", CanvasNodeType.Text), node("prompt-b", CanvasNodeType.Text), node("model", CanvasNodeType.Config), node("image-a", CanvasNodeType.Image), node("image-b", CanvasNodeType.Image)],
             [
@@ -186,7 +188,7 @@ describe("legacy graph normalization", () => {
         const once = normalizeCanvasProject(legacy);
         const twice = normalizeCanvasProject(once);
 
-        expect(once.connections.map((edge) => edge.id)).toEqual(["keep-prompt", "keep-image"]);
+        expect(once.connections.map((edge) => edge.id)).toEqual(["keep-prompt", "drop-second-prompt", "keep-image"]);
         expect(twice).toEqual(once);
     });
 
@@ -215,9 +217,9 @@ describe("legacy graph normalization", () => {
 
     it("validates explicit built-in roles and ports before consuming a model prompt slot", () => {
         const prompt = node("prompt", CanvasNodeType.Text, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "hello", outputPortId: "prompt" } });
-        const image = node("image", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
+        const image = node("image", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" } });
         const model = node("model", CanvasNodeType.Config, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model", operation: "image.edit", inputPorts: [{ id: "prompt", accepts: "prompt" }, { id: "reference_images", accepts: "image" }], outputPortId: "result", parameters: {} } });
-        const result = node("result", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", outputPortId: "media" } });
+        const result = node("result", CanvasNodeType.Image, { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" } });
         const source = project([prompt, image, model, result], [
             { id: "invalid-prompt-role", fromNodeId: "image", fromPortId: "media", toNodeId: "model", toPortId: "prompt" },
             { id: "valid-prompt", fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "model", toPortId: "prompt" },
@@ -256,6 +258,27 @@ describe("legacy graph normalization", () => {
         expect(normalized.nodes[0].metadata?.graph).not.toHaveProperty("inputPortIds");
     });
 
+    it("migrates pre-target result metadata without losing persisted result ownership", () => {
+        const legacyResult = node("result", CanvasNodeType.Video, { graph: {
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "result",
+            mediaType: "video",
+            outputPortId: "media",
+            assetId: "asset-owned",
+            jobId: "job-owned",
+        } as never });
+
+        expect(normalizeCanvasProject(project([legacyResult])).nodes[0].metadata?.graph).toEqual({
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "result",
+            mediaType: "video",
+            inputPortId: "result",
+            outputPortId: "media",
+            assetId: "asset-owned",
+            jobId: "job-owned",
+        });
+    });
+
     it("validates and preserves typed plugin edges to every standard model port across reload", () => {
         const registry = createNodeRegistry();
         registry.registerNode({ id: "plugin.prompt", version: 1, title: "Prompt", inputs: [], outputs: [{ id: "out", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
@@ -287,7 +310,7 @@ describe("legacy graph normalization", () => {
         expect(twice).toEqual(once);
     });
 
-    it("drops a registered untyped standard edge but preserves unknown opaque edges without consuming prompt quota", () => {
+    it("preserves plugin-boundary edges independently from registry timing", () => {
         const registry = createNodeRegistry();
         registry.registerNode({ id: "plugin.any", version: 1, title: "Any", inputs: [], outputs: ["out"], createMetadata: () => ({}), render: () => null });
         const unknown = node("unknown", "plugin.unknown");
@@ -302,8 +325,32 @@ describe("legacy graph normalization", () => {
 
         const normalized = normalizeCanvasProject(source, registry);
 
-        expect(normalized.connections.map((edge) => edge.id)).toEqual(["opaque-prompt", "valid-prompt"]);
-        expect(normalizeCanvasProject(normalized).connections.map((edge) => edge.id)).toEqual(["opaque-prompt", "valid-prompt"]);
+        expect(normalized.connections.map((edge) => edge.id)).toEqual(["opaque-prompt", "drop-untyped", "valid-prompt"]);
+        expect(normalizeCanvasProject(normalized).connections).toEqual(normalized.connections);
+
+        const typedRegistry = createNodeRegistry();
+        typedRegistry.registerNode({ id: "plugin.unknown", version: 1, title: "Unknown", inputs: [], outputs: [{ id: "mystery", provides: "prompt" }], createMetadata: () => ({}), render: () => null });
+        typedRegistry.registerNode({ id: "plugin.any", version: 2, title: "Changed", inputs: [], outputs: [{ id: "out", provides: "image" }], createMetadata: () => ({}), render: () => null });
+        expect(normalizeCanvasProject(source, typedRegistry).connections).toEqual(normalized.connections);
+    });
+
+    it.each([
+        ["duplicate", [{ id: "same", accepts: "image" }, { id: "same", accepts: "video" }], "result"],
+        ["too many", Array.from({ length: 33 }, (_, index) => ({ id: `input_${index}`, accepts: "image" })), "result"],
+        ["long", [{ id: "a".repeat(65), accepts: "image" }], "result"],
+        ["unsafe", [{ id: "unsafe port", accepts: "image" }], "result"],
+        ["unsafe output", [{ id: "prompt", accepts: "prompt" }], "unsafe output"],
+    ] as const)("rejects unsafe canonical graph port declarations: %s", (_name, inputPorts, outputPortId) => {
+        const malformed = node("model", CanvasNodeType.Config, { graph: {
+            schemaVersion: GRAPH_SCHEMA_VERSION,
+            role: "model",
+            modelId: "model",
+            operation: "image.generate",
+            inputPorts,
+            outputPortId,
+            parameters: {},
+        } as never });
+        expect(() => normalizeCanvasProject(project([malformed]))).toThrow("Invalid graph port declaration");
     });
 
     it("rebuilds malformed current-version metadata from bounded legacy fields", () => {
@@ -318,6 +365,7 @@ describe("legacy graph normalization", () => {
             schemaVersion: GRAPH_SCHEMA_VERSION,
             role: "result",
             mediaType: "image",
+            inputPortId: "result",
             outputPortId: "media",
         });
     });
@@ -340,6 +388,7 @@ describe("legacy graph normalization", () => {
             schemaVersion: GRAPH_SCHEMA_VERSION,
             role: "result",
             mediaType,
+            inputPortId: "result",
             outputPortId: "media",
             jobId: "job-failed",
         });

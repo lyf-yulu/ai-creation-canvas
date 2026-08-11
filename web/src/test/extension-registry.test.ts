@@ -31,6 +31,40 @@ it("rejects duplicate node and workflow IDs without replacing the original", () 
     expect(nodes.listNodes()[0]?.title).toBe("原始");
 });
 
+it("publishes stable revisions for register and unregister lifecycle changes", () => {
+    const nodes = createNodeRegistry();
+    const listener = vi.fn();
+    const unsubscribe = nodes.subscribe(listener);
+    const initial = nodes.getSnapshot();
+    nodes.registerNode({ id: "test.dynamic", version: 1, title: "Dynamic", inputs: [], outputs: [{ id: "out", provides: "image" }], createMetadata: () => ({}), render: () => null });
+    const registered = nodes.getSnapshot();
+
+    expect(registered).toBeGreaterThan(initial);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(nodes.unregisterNode("missing")).toBe(false);
+    expect(nodes.getSnapshot()).toBe(registered);
+    expect(nodes.unregisterNode("test.dynamic")).toBe(true);
+    expect(nodes.getSnapshot()).toBeGreaterThan(registered);
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
+});
+
+it.each([
+    ["duplicate inputs", [{ id: "same", accepts: "image" }, { id: "same", accepts: "video" }], []],
+    ["duplicate outputs", [], [{ id: "same", provides: "image" }, { id: "same", provides: "video" }]],
+    ["too many inputs", Array.from({ length: 33 }, (_, index) => `input_${index}`), []],
+    ["long id", ["a".repeat(65)], []],
+    ["invalid characters", ["unsafe port"], []],
+    ["invalid accepts", [{ id: "input", accepts: "binary" }], []],
+    ["invalid provides", [], [{ id: "output", provides: "binary" }]],
+    ["unsafe label", [{ id: "input", accepts: "image", label: "bad\nlabel" }], []],
+    ["long label", [], [{ id: "output", provides: "image", label: "图".repeat(65) }]],
+] as const)("rejects unsafe node port declarations: %s", (_name, inputs, outputs) => {
+    const nodes = createNodeRegistry();
+    expect(() => nodes.registerNode({ id: "test.invalid", version: 1, title: "Invalid", inputs: inputs as never, outputs: outputs as never, createMetadata: () => ({}), render: () => null })).toThrow("invalid node port declaration");
+    expect(nodes.listNodes()).toEqual([]);
+});
+
 it("does not expose mutable registry collections and returns undefined for unknown workflows", () => {
     const nodes = createNodeRegistry();
     nodes.registerNode({ id: "test.note", version: 1, title: "测试", inputs: [], outputs: [], createMetadata: () => ({}), render: () => null });

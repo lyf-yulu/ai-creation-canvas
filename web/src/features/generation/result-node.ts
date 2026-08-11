@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import { safeApiPath } from "@/api/client";
 import type { JobState } from "@/api/contracts";
+import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 export function createResultNode(job: JobState, source?: CanvasNodeData): CanvasNodeData {
@@ -11,7 +12,17 @@ export function createResultNode(job: JobState, source?: CanvasNodeData): Canvas
         title: isVideo ? "生成视频" : "生成图片",
         position: source ? { x: source.position.x + 48, y: source.position.y + 48 } : { x: 80, y: 80 },
         width: isVideo ? 420 : 340, height: isVideo ? 236 : 240,
-        metadata: { content: safeApiPath(job.result_url), status: "success", sourceJobId: job.id },
+        metadata: {
+            content: safeApiPath(job.result_url), status: "success", sourceJobId: job.id,
+            graph: {
+                schemaVersion: GRAPH_SCHEMA_VERSION,
+                role: "result",
+                mediaType: isVideo ? "video" : "image",
+                inputPortId: "result",
+                outputPortId: "media",
+                jobId: job.id,
+            },
+        },
     };
 }
 

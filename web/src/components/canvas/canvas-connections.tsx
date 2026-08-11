@@ -1,6 +1,7 @@
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { connectionPathData, getNodePortAnchor } from "@/lib/canvas/canvas-node-geometry";
+import { graphPortDisplayLabel } from "@/features/graph/connect";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
@@ -10,6 +11,9 @@ export function ConnectionPath({
     from,
     to,
     active,
+    enabled = true,
+    fromPortLabel,
+    toPortLabel,
     interactive = true,
     onSelect,
     onOpenContextMenu,
@@ -18,6 +22,9 @@ export function ConnectionPath({
     from: CanvasNodeData;
     to: CanvasNodeData;
     active: boolean;
+    enabled?: boolean;
+    fromPortLabel?: string;
+    toPortLabel?: string;
     interactive?: boolean;
     onSelect: () => void;
     onOpenContextMenu?: (position: { x: number; y: number }, trigger: SVGPathElement) => void;
@@ -43,8 +50,9 @@ export function ConnectionPath({
             {interactive ? <path
                 data-connection-id={connection.id}
                 role="button"
-                aria-label={`连接：${from.title} 到 ${to.title}`}
+                aria-label={`连接：${from.title} ${graphPortDisplayLabel(connection.fromPortId, fromPortLabel)}(${connection.fromPortId}) 到 ${to.title} ${graphPortDisplayLabel(connection.toPortId, toPortLabel)}(${connection.toPortId})`}
                 aria-selected={active}
+                data-connection-active={enabled}
                 tabIndex={0}
                 d={pathD}
                 stroke="transparent"
@@ -68,7 +76,8 @@ export function ConnectionPath({
                 d={pathD}
                 stroke={active ? theme.node.activeStroke : theme.node.muted}
                 strokeWidth={active ? 3 : 2}
-                strokeOpacity={active ? 1 : 0.82}
+                strokeOpacity={enabled ? (active ? 1 : 0.82) : 0.36}
+                strokeDasharray={enabled ? undefined : "6 5"}
                 fill="none"
                 style={{ filter: active ? `drop-shadow(0 0 8px ${theme.node.activeStroke}66)` : undefined, pointerEvents: "none" }}
             />

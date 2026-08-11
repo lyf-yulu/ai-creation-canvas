@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { ImagePlus, MessageSquareText } from "lucide-react";
 import { nanoid } from "nanoid";
@@ -16,7 +16,8 @@ import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
 import { normalizeViewport } from "@/features/canvas/viewport";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
-import { connectGraphPorts, getNodePorts, graphConnectionRejectionMessage, type GraphPortRef } from "@/features/graph/connect";
+import { connectGraphPorts, getNodePorts, graphConnectionRejectionMessage, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
+import { nodeRegistry } from "@/features/nodes/registry";
 import { deleteGraphNodes, isEditableEventTarget, selectNode } from "@/features/graph/selection";
 import { appendResultNode } from "@/features/generation/result-node";
 import { useGenerationJob, type PendingRef } from "@/features/generation/use-generation-job";
@@ -65,16 +66,36 @@ export default function CanvasProjectPage() {
     const [pendingPort, setPendingPortState] = useState<GraphPortRef | null>(null);
     const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
     const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
+    const [measuredNodeSizes, setMeasuredNodeSizes] = useState<Map<string, { width: number; height: number }>>(() => new Map());
     const pendingPortRef = useRef<GraphPortRef | null>(null);
     const pointerConnectionRef = useRef<number | null>(null);
     const suppressPortClickRef = useRef<string | null>(null);
     const project = useCanvasStore((state) => state.openProject(id));
+    const registryRevision = useSyncExternalStore(nodeRegistry.subscribe, nodeRegistry.getSnapshot, nodeRegistry.getSnapshot);
     const projectsLoaded = useCanvasStore((state) => state.projectsLoaded);
     const syncNotice = useCanvasStore((state) => state.syncNotice);
     const loadError = useCanvasStore((state) => state.loadError);
     const readOnly = Boolean(loadError?.readOnly);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const viewport = normalizeViewport(project?.viewport);
+    const measuredNodeMap = useMemo(() => new Map((project?.nodes ?? []).map((node) => {
+        const measured = measuredNodeSizes.get(node.id);
+        return [node.id, measured ? { ...node, width: measured.width, height: measured.height } : node] as const;
+    })), [measuredNodeSizes, project?.nodes]);
+    const resolvedConnections = useMemo(
+        () => resolveActiveConnections(project?.connections ?? [], project?.nodes ?? [], nodeRegistry),
+        [project?.connections, project?.nodes, registryRevision],
+    );
+    const inactiveConnectionCount = resolvedConnections.filter((state) => !state.active).length;
+    const recordMeasuredNodeSize = useCallback((nodeId: string, size: { width: number; height: number }) => {
+        setMeasuredNodeSizes((current) => {
+            const previous = current.get(nodeId);
+            if (previous?.width === size.width && previous.height === size.height) return current;
+            const next = new Map(current);
+            next.set(nodeId, size);
+            return next;
+        });
+    }, []);
     const setPendingPort = useCallback((port: GraphPortRef | null) => {
         pendingPortRef.current = port;
         setPendingPortState(port);
@@ -110,6 +131,7 @@ export default function CanvasProjectPage() {
         setSelectedConnectionId(null);
         setContextMenu(null);
         contextTriggerRef.current = null;
+        setMeasuredNodeSizes(new Map());
         clearPendingConnection();
     }, [clearPendingConnection, id]);
 
@@ -144,7 +166,7 @@ export default function CanvasProjectPage() {
         suppressPortClickRef.current = null;
         setPendingPort(null);
         setConnectionMessage("连接起点已失效。");
-    }, [pendingPort, project?.nodes, setPendingPort]);
+    }, [pendingPort, project?.nodes, registryRevision, setPendingPort]);
 
     useEffect(() => {
         const handlePointerMove = (event: PointerEvent) => {
@@ -380,9 +402,9 @@ export default function CanvasProjectPage() {
                     }}
                 >
                     <svg className="pointer-events-none absolute left-0 top-0 z-0 overflow-visible" width="1" height="1" aria-label="画布连接">
-                        {project.connections.map((connection) => {
-                            const from = project.nodes.find((node) => node.id === connection.fromNodeId);
-                            const to = project.nodes.find((node) => node.id === connection.toNodeId);
+                        {resolvedConnections.map(({ connection, active: connectionActive }) => {
+                            const from = measuredNodeMap.get(connection.fromNodeId);
+                            const to = measuredNodeMap.get(connection.toNodeId);
                             if (!from || !to) return null;
                             return <ConnectionPath
                                 key={connection.id}
@@ -390,6 +412,9 @@ export default function CanvasProjectPage() {
                                 from={from}
                                 to={to}
                                 active={selectedConnectionId === connection.id}
+                                enabled={connectionActive}
+                                fromPortLabel={getNodePorts(from).sources.find((port) => port.portId === connection.fromPortId)?.label}
+                                toPortLabel={getNodePorts(to).targets.find((port) => port.portId === connection.toPortId)?.label}
                                 onSelect={() => {
                                     if (readOnly) return;
                                     setSelectedNodeIds(new Set());
@@ -402,7 +427,7 @@ export default function CanvasProjectPage() {
                         })}
                         {pendingPort?.direction === "source" ? (
                             <ActiveConnectionPath
-                                node={project.nodes.find((node) => node.id === pendingPort.nodeId)}
+                                node={measuredNodeMap.get(pendingPort.nodeId)}
                                 handle={{ nodeId: pendingPort.nodeId, handleType: "source", portId: pendingPort.portId }}
                                 mouseWorld={connectionPointerWorld}
                             />
@@ -411,6 +436,7 @@ export default function CanvasProjectPage() {
                     {project.nodes.map((node) => {
                         const promptNode = node.metadata?.graph?.role === "prompt";
                         const ports = getNodePorts(node);
+                        const measuredNode = measuredNodeMap.get(node.id) ?? node;
                         return (
                             <DraggableCanvasNode
                                 key={node.id}
@@ -424,6 +450,7 @@ export default function CanvasProjectPage() {
                                 }}
                                 onContextMenu={readOnly ? undefined : openNodeContextMenu}
                                 onPositionChange={moveNode}
+                                onMeasuredSize={recordMeasuredNodeSize}
                             >
                                 {promptNode
                                     ? <PromptNodeCard node={node} disabled={readOnly} onTextChange={(text) => updatePromptNode(node.id, text)} />
@@ -431,7 +458,7 @@ export default function CanvasProjectPage() {
                                 {[...ports.targets, ...ports.sources].map((port) => (
                                     <NodePort
                                         key={`${port.direction}:${port.portId}`}
-                                        node={node}
+                                        node={measuredNode}
                                         port={port}
                                         active={pendingPort?.nodeId === port.nodeId && pendingPort.portId === port.portId && pendingPort.direction === port.direction}
                                         disabled={readOnly}
@@ -446,6 +473,7 @@ export default function CanvasProjectPage() {
                 </InfiniteCanvas>
                 <CanvasNavigationControls viewport={viewport} onViewportChange={changeViewport} />
                 {connectionMessage ? <p data-testid="connection-status" role="status" aria-live="polite" className="pointer-events-none absolute bottom-14 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-[#356b48] bg-[#08100b]/95 px-3 py-2 text-xs text-[#bcebc9] shadow-xl">{connectionMessage}</p> : null}
+                {inactiveConnectionCount > 0 ? <p data-testid="inactive-connection-status" role="status" aria-live="polite" className="pointer-events-none absolute bottom-3 left-1/2 z-40 -translate-x-1/2 rounded border border-[#526354] bg-[#08100b]/95 px-2 py-1 text-[11px] text-[#b8cdbd]">{inactiveConnectionCount} 条连接暂不可用，已保留在画布中。</p> : null}
                 {contextMenu?.type === "node" ? (
                     <CanvasNodeContextMenu
                         menu={contextMenu}

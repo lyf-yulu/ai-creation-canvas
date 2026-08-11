@@ -7,6 +7,13 @@ export type GraphPortRef = Readonly<{
     portId: string;
     direction: "source" | "target";
     valueType?: GraphPortValueType;
+    label?: string;
+}>;
+
+export type ResolvedConnectionState = Readonly<{
+    connection: CanvasConnection;
+    active: boolean;
+    reason?: "unavailable" | "incompatible" | "prompt-conflict";
 }>;
 
 export type GraphConnectionResult =
@@ -36,16 +43,20 @@ export function getNodePorts(node: CanvasNodeData, registry: Pick<NodeRegistry, 
     if (graph?.role === "prompt") {
         return { sources: [sourcePort(node.id, graph.outputPortId, "prompt")], targets: [] };
     }
-    if (graph?.role === "media-collection" || graph?.role === "result") {
+    if (graph?.role === "media-collection") {
         return { sources: [sourcePort(node.id, graph.outputPortId, graph.mediaType)], targets: [] };
     }
+    if (graph?.role === "result") return {
+        sources: [sourcePort(node.id, graph.outputPortId, graph.mediaType)],
+        targets: [targetPort(node.id, graph.inputPortId, "any")],
+    };
     if (graph?.role === "model") {
         const inputPorts = Array.isArray(graph.inputPorts)
             ? graph.inputPorts
             : ((graph as unknown as { inputPortIds?: unknown }).inputPortIds as unknown[] | undefined)?.filter((portId): portId is string => typeof portId === "string").map(graphInputPortDescriptor) ?? [];
         return {
             sources: [sourcePort(node.id, graph.outputPortId, "any")],
-            targets: inputPorts.map((descriptor) => targetPort(node.id, descriptor.id, descriptor.accepts)),
+            targets: inputPorts.map((descriptor) => targetPort(node.id, descriptor.id, descriptor.accepts, descriptor.label)),
         };
     }
     const definition = registry.getNode(String(node.type));
@@ -53,10 +64,10 @@ export function getNodePorts(node: CanvasNodeData, registry: Pick<NodeRegistry, 
     return {
         sources: definition.outputs.map((declaration) => typeof declaration === "string"
             ? sourcePort(node.id, declaration, "any")
-            : sourcePort(node.id, declaration.id, declaration.provides)),
+            : sourcePort(node.id, declaration.id, declaration.provides, declaration.label)),
         targets: definition.inputs.map((declaration) => typeof declaration === "string"
             ? targetPort(node.id, declaration, "any")
-            : targetPort(node.id, declaration.id, declaration.accepts)),
+            : targetPort(node.id, declaration.id, declaration.accepts, declaration.label)),
     };
 }
 
@@ -85,9 +96,8 @@ export function connectGraphPorts(
         && connection.toNodeId === target.nodeId
         && connection.toPortId === target.portId);
     if (duplicate) return { ok: false, reason: "duplicate" };
-    if (target.portId === GRAPH_PORT_IDS.prompt && connections.some((connection) => connection.toNodeId === target.nodeId
-        && connection.toPortId === GRAPH_PORT_IDS.prompt
-        && isResolvedGraphConnectionValid(connection, nodes, registry))) {
+    if (target.portId === GRAPH_PORT_IDS.prompt && resolveActiveConnections(connections, nodes, registry).some(({ connection, active }) => active
+        && connection.toNodeId === target.nodeId && connection.toPortId === GRAPH_PORT_IDS.prompt)) {
         return { ok: false, reason: "prompt-occupied" };
     }
     return {
@@ -100,6 +110,29 @@ export function connectGraphPorts(
             toPortId: target.portId,
         },
     };
+}
+
+export function resolveActiveConnections(
+    connections: readonly CanvasConnection[],
+    nodes: readonly CanvasNodeData[],
+    registry: Pick<NodeRegistry, "getNode"> = nodeRegistry,
+): ResolvedConnectionState[] {
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const claimedPromptTargets = new Set<string>();
+    return connections.map((connection) => {
+        const sourceNode = byId.get(connection.fromNodeId);
+        const targetNode = byId.get(connection.toNodeId);
+        if (!sourceNode || !targetNode || sourceNode.id === targetNode.id) return { connection, active: false, reason: "unavailable" };
+        const source = getNodePorts(sourceNode, registry).sources.find((port) => port.portId === connection.fromPortId);
+        const target = getNodePorts(targetNode, registry).targets.find((port) => port.portId === connection.toPortId);
+        if (!source || !target) return { connection, active: false, reason: "unavailable" };
+        if (!portsAreCompatible(source, target, targetNode)) return { connection, active: false, reason: "incompatible" };
+        if (target.portId === GRAPH_PORT_IDS.prompt) {
+            if (claimedPromptTargets.has(target.nodeId)) return { connection, active: false, reason: "prompt-conflict" };
+            claimedPromptTargets.add(target.nodeId);
+        }
+        return { connection, active: true };
+    });
 }
 
 export function isResolvedGraphConnectionValid(
@@ -115,12 +148,21 @@ export function isResolvedGraphConnectionValid(
     return Boolean(source && target && portsAreCompatible(source, target, targetNode));
 }
 
-function sourcePort(nodeId: string, portId: string, valueType: GraphPortValueType): GraphPortRef {
-    return { nodeId, portId, direction: "source", valueType };
+export function graphPortDisplayLabel(portId: string, declaredLabel?: string) {
+    if (declaredLabel?.trim()) return declaredLabel.trim();
+    const labels: Readonly<Record<string, string>> = {
+        prompt: "提示词", reference_images: "参考图", first_frame: "首帧", last_frame: "尾帧",
+        reference_video: "参考视频", reference_audio: "参考音频", result: "结果", media: "媒体",
+    };
+    return labels[portId] ?? portId;
 }
 
-function targetPort(nodeId: string, portId: string, valueType: GraphPortValueType): GraphPortRef {
-    return { nodeId, portId, direction: "target", valueType };
+function sourcePort(nodeId: string, portId: string, valueType: GraphPortValueType, declaredLabel?: string): GraphPortRef {
+    return { nodeId, portId, direction: "source", valueType, label: graphPortDisplayLabel(portId, declaredLabel) };
+}
+
+function targetPort(nodeId: string, portId: string, valueType: GraphPortValueType, declaredLabel?: string): GraphPortRef {
+    return { nodeId, portId, direction: "target", valueType, label: graphPortDisplayLabel(portId, declaredLabel) };
 }
 
 function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, targetNode: CanvasNodeData) {

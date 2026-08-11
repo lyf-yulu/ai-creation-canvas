@@ -103,7 +103,8 @@ it("creates typed same-origin result nodes once with a safe source offset", () =
     const source = { id: "source", type: "text", title: "source", position: { x: 10, y: 20 }, width: 100, height: 100 };
     const image = createResultNode({ id: "image-job", operation: "image.generate", status: "succeeded", result_url: "/api/v1/results/image" }, source);
     const video = createResultNode({ id: "video-job", operation: "video.generate", status: "succeeded", result_url: "/api/v1/results/video" });
-    expect(image).toMatchObject({ type: "image", position: { x: 58, y: 68 }, metadata: { content: "/api/v1/results/image", sourceJobId: "image-job" } });
+    expect(image).toMatchObject({ type: "image", position: { x: 58, y: 68 }, metadata: { content: "/api/v1/results/image", sourceJobId: "image-job", graph: { role: "result", inputPortId: "result", outputPortId: "media", mediaType: "image", jobId: "image-job" } } });
+    expect(video).toMatchObject({ metadata: { graph: { role: "result", inputPortId: "result", outputPortId: "media", mediaType: "video", jobId: "video-job" } } });
     expect(video).toMatchObject({ type: "video", position: { x: 80, y: 80 } });
     expect(appendResultNode([image], { id: "image-job", operation: "image.generate", status: "succeeded", result_url: "/api/v1/results/image" }, source)).toHaveLength(1);
 });

@@ -6,6 +6,7 @@ type DraggableCanvasNodeProps = {
     node: CanvasNodeData;
     scale: number;
     onPositionChange: (nodeId: string, position: Position) => void;
+    onMeasuredSize?: (nodeId: string, size: { width: number; height: number }) => void;
     selected?: boolean;
     disabled?: boolean;
     onSelect?: (nodeId: string, additive: boolean) => void;
@@ -34,7 +35,8 @@ function normalizedScale(scale: number) {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
-export function DraggableCanvasNode({ node, scale, onPositionChange, selected = false, disabled = false, onSelect, onContextMenu, children }: DraggableCanvasNodeProps) {
+export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredSize, selected = false, disabled = false, onSelect, onContextMenu, children }: DraggableCanvasNodeProps) {
+    const elementRef = useRef<HTMLDivElement>(null);
     const dragRef = useRef<DragState>({
         active: false,
         pointerId: null,
@@ -60,6 +62,20 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
             clearInteractivePointerRef.current();
         };
     }, []);
+
+    useEffect(() => {
+        const element = elementRef.current;
+        if (!element || !onMeasuredSize || typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (!entry) return;
+            const width = entry.contentRect.width;
+            const height = entry.contentRect.height;
+            if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) onMeasuredSize(node.id, { width, height });
+        });
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [node.id, onMeasuredSize]);
 
     const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
         if (disabled || event.button !== 0 || dragRef.current.active) return;
@@ -198,6 +214,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, selected = 
 
     return (
         <div
+            ref={elementRef}
             data-node-id={node.id}
             data-testid={`draggable-node-${node.id}`}
             role="option"
