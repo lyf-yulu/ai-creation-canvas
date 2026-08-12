@@ -59,7 +59,7 @@
 - Produces: `CredentialPoolLoader(path: Path).load() -> CredentialPoolSnapshot` and `reload() -> CredentialPoolSnapshot` with last-known-good atomic replacement.
 - Consumes later: `Settings.credential_pools_path: Path | None` and `Settings.credential_pools_root: Path | None`.
 
-- [ ] **Step 1: Write RED parser and filesystem-boundary tests**
+- [x] **Step 1: Write RED parser and filesystem-boundary tests**
 
 Add fixtures for one official pool, T8Star `gemini` and T8Star `cc`. Assert unique pool/key IDs, non-empty provider/group/family, 1–64 keys, per-key concurrency 1–32, duplicate/unknown YAML fields rejected, symlink rejected, file mode broader than `0600` rejected in production, and `safe_summaries()` contains counts but neither `api_key` nor key IDs.
 
@@ -73,13 +73,13 @@ def test_t8_groups_are_distinct_and_safe(tmp_path: Path) -> None:
     assert "secret-gemini" not in encoded and "gemini-key-1" not in encoded
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_credential_pools.py tests/server/test_config.py`
 
 Expected: collection fails because `credential_pools` and credential-pool settings do not exist.
 
-- [ ] **Step 3: Implement strict immutable loading**
+- [x] **Step 3: Implement strict immutable loading**
 
 Use `yaml.safe_load`, Pydantic `extra="forbid"`, `Path.lstat`, `stat.S_ISREG`, symlink rejection, a bounded 1 MiB file, canonical SHA-256 revision digest and immutable dataclasses. Accept only this schema:
 
@@ -98,11 +98,11 @@ pools:
 
 Keep the secret only on `CredentialKey.secret`; define `__repr__` to omit it. `reload()` must parse a complete candidate before acquiring the snapshot lock and must retain the previous snapshot on failure.
 
-- [ ] **Step 4: Wire explicit CLI/settings validation**
+- [x] **Step 4: Wire explicit CLI/settings validation**
 
 Add `--credential-pools PATH`. Resolve it under an explicit root, reject traversal, and require it when production contains enabled managed routes. Development may omit it and receives an empty snapshot.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_credential_pools.py tests/server/test_config.py tests/server/test_cli.py`
 
