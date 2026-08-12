@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
+import stat
 from urllib.parse import urlsplit
 
 from ai_creation_canvas.adapters.portal.catalog import ServiceDeclaration
@@ -93,6 +94,8 @@ class Settings:
     portal_base_url: str | None = None
     services_config_path: Path | str | None = None
     services_config_root: Path | str | None = None
+    credential_pools_path: Path | str | None = None
+    credential_pools_root: Path | str | None = None
     portal_allow_loopback_http: bool = False
     portal_ca_file: Path | str | None = None
     portal_max_concurrency: int = 8
@@ -192,3 +195,21 @@ class Settings:
                 raise ValueError("services configuration requires a Portal base URL and trusted root")
             object.__setattr__(self, "services_config_path", Path(self.services_config_path))
             object.__setattr__(self, "services_config_root", Path(self.services_config_root).resolve(strict=False))
+        if self.credential_pools_path is not None:
+            if self.credential_pools_root is None:
+                raise ValueError("credential pools path requires a trusted root")
+            credential_pools_root = Path(self.credential_pools_root).expanduser().resolve(strict=False)
+            credential_pools_path = Path(self.credential_pools_path).expanduser()
+            try:
+                path_metadata = credential_pools_path.lstat()
+            except OSError:
+                path_metadata = None
+            if path_metadata is not None and (stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode)):
+                raise ValueError("credential pools path must be a regular non-symlink file")
+            resolved_credential_pools_path = credential_pools_path.resolve(strict=False)
+            if not _is_within(resolved_credential_pools_path, credential_pools_root):
+                raise ValueError("credential pools path must resolve under trusted root")
+            object.__setattr__(self, "credential_pools_path", credential_pools_path)
+            object.__setattr__(self, "credential_pools_root", credential_pools_root)
+        elif self.credential_pools_root is not None:
+            raise ValueError("credential pools root requires a credential pools path")

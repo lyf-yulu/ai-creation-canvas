@@ -44,6 +44,8 @@ pytest==9.0.2
     # via ai-creation-canvas (pyproject.toml)
 python-multipart==0.0.22
     # via ai-creation-canvas (pyproject.toml)
+pyyaml==6.0.3
+    # via ai-creation-canvas (pyproject.toml)
 redis==8.0.1
     # via ai-creation-canvas (pyproject.toml)
 starlette==1.4.1
