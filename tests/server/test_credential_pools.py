@@ -114,6 +114,14 @@ def test_loader_rejects_symlink_and_overly_broad_production_file(tmp_path: Path)
         CredentialPoolLoader(path, production=True).load()
 
 
+@pytest.mark.parametrize("mode", [0o700, 0o4600])
+def test_loader_rejects_production_file_mode_bits_outside_0600(tmp_path: Path, mode: int) -> None:
+    path = write_pool_file(tmp_path, mode=mode)
+
+    with pytest.raises(ValueError, match="credential pools configuration is invalid"):
+        CredentialPoolLoader(path, production=True).load()
+
+
 def test_reload_keeps_last_known_good_snapshot_when_candidate_is_invalid(tmp_path: Path) -> None:
     path = write_pool_file(tmp_path, mode=0o600)
     loader = CredentialPoolLoader(path, production=True)

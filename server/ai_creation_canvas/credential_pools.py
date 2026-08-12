@@ -217,7 +217,7 @@ class CredentialPoolLoader:
             initial = self._path.lstat()
             if not stat.S_ISREG(initial.st_mode) or stat.S_ISLNK(initial.st_mode) or initial.st_size > _MAX_POOL_FILE_BYTES:
                 raise _invalid_configuration()
-            if self._production and initial.st_mode & 0o077:
+            if self._production and stat.S_IMODE(initial.st_mode) & ~0o600:
                 raise _invalid_configuration()
             flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self._path, flags)
@@ -230,7 +230,7 @@ class CredentialPoolLoader:
                     or (initial.st_dev, initial.st_ino) != (opened.st_dev, opened.st_ino)
                     or (initial.st_dev, initial.st_ino) != (current.st_dev, current.st_ino)
                     or opened.st_size > _MAX_POOL_FILE_BYTES
-                    or (self._production and opened.st_mode & 0o077)
+                    or (self._production and stat.S_IMODE(opened.st_mode) & ~0o600)
                 ):
                     raise _invalid_configuration()
                 raw = stream.read(_MAX_POOL_FILE_BYTES + 1)
