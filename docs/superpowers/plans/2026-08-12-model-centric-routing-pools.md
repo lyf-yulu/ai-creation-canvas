@@ -194,11 +194,11 @@ git commit -m "feat: persist logical models and routes"
 - Produces: `CredentialLease(route_id: str, pool_id: str, key_id: str, secret: str, key_fingerprint: str, owner_token: str)` as an async context manager result.
 - Produces: `ExecutionCoordinator.acquire_credential(job_id, user_id, candidate) -> AsyncContextManager[CredentialLease]` for local and Redis implementations.
 
-- [ ] **Step 1: Write RED compatibility and ordering tests**
+- [x] **Step 1: Write RED compatibility and ordering tests**
 
 Create one Nano Banana official route, one T8Star `gemini` route and a T8Star `cc` route. Assert only the first two are candidates, parameters unsupported by one route remove only that route, disabled/archived/unhealthy routes are excluded, and stable priority ordering is deterministic.
 
-- [ ] **Step 2: Write RED local and Redis key-lease tests**
+- [x] **Step 2: Write RED local and Redis key-lease tests**
 
 Assert least-in-use selection within one pool, stable key-ID tie breaking, per-key/pool/route/provider/user/global limits, compare-and-delete release, TTL expiry and no secret/group/prompt in Redis keys or values. Add 20 concurrent acquisitions and prove `cc` is never observed for a Banana candidate.
 
@@ -207,21 +207,21 @@ assert all(lease.pool_id in {"official", "t8-gemini"} for lease in leases)
 assert "api-key" not in json.dumps(redis.recorded_commands)
 ```
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_route_selection.py tests/server/test_route_key_coordination.py`
 
 Expected: selector and credential lease APIs are absent.
 
-- [ ] **Step 4: Implement pure route filtering**
+- [x] **Step 4: Implement pure route filtering**
 
 Revalidate route contracts against the logical model on every selection. Compare actual operation, named input counts/media and submitted parameter names/types/ranges. Return no candidate instead of weakening the model contract.
 
-- [ ] **Step 5: Implement atomic key leasing**
+- [x] **Step 5: Implement atomic key leasing**
 
 Extend local coordination with bounded counters under one async lock. Extend Redis coordination with one Lua acquire script that checks global/provider/route/user/pool/key counters and selects the least-used compatible key; values use only HMAC-SHA256 opaque IDs and owner tokens. Return the secret by looking up the chosen key ID in the in-memory snapshot after Redis selection.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_route_selection.py tests/server/test_route_key_coordination.py tests/server/test_coordination.py`
 
