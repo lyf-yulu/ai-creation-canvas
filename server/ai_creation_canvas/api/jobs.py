@@ -122,6 +122,7 @@ def _response(item: dict[str, object], request: Request) -> dict[str, object]:
 
 def _route_snapshot(route: ModelRouteDefinition, pool_revision_digest: str) -> str:
     body = {
+        "schema_version": 2,
         "route_id": route.route_id,
         "model_id": route.model_id,
         "provider_id": route.provider_id,
@@ -147,8 +148,14 @@ def _route_from_snapshot(value: object) -> ModelRouteDefinition:
         body = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("managed route snapshot is invalid") from None
-    expected = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision", "pool_revision_digest"}
-    if not isinstance(body, dict) or set(body) != expected or not isinstance(body["operation_contracts"], list):
+    core = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision"}
+    accepted_shapes = {frozenset(core), frozenset(core | {"pool_revision_digest"}), frozenset(core | {"pool_revision_digest", "schema_version"})}
+    if (
+        not isinstance(body, dict)
+        or frozenset(body) not in accepted_shapes
+        or ("schema_version" in body and body["schema_version"] != 2)
+        or not isinstance(body["operation_contracts"], list)
+    ):
         raise ValueError("managed route snapshot is invalid")
     try:
         contracts = tuple(OperationContract.from_dict(item) for item in body["operation_contracts"] if isinstance(item, dict))
@@ -173,9 +180,13 @@ def _validated_job_route(item: Mapping[str, object]) -> ModelRouteDefinition:
         raise ValueError("managed job snapshot is inconsistent") from None
     if (
         item.get("logical_model_id") != route.model_id
+        or item.get("service_id") != route.model_id
         or item.get("route_id") != route.route_id
         or item.get("route_revision") != route.revision
-        or item.get("pool_revision_digest") != body.get("pool_revision_digest")
+        or item.get("operation") not in {contract.operation.value for contract in route.operation_contracts}
+        or not isinstance(item.get("pool_revision_digest"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(item.get("pool_revision_digest"))) is None
+        or ("pool_revision_digest" in body and item.get("pool_revision_digest") != body.get("pool_revision_digest"))
     ):
         raise ValueError("managed job snapshot is inconsistent")
     return route
@@ -272,6 +283,8 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
             except asyncio.CancelledError:
                 store.mark_submission_unknown(str(reservation.job["id"]), token)
                 raise
+            except DomainError:
+                raise
             except Exception as error:
                 had_capacity = True
                 disposition = classify_submission_error(error, _adapter_template(candidate.route, domain_request.operation.value))
@@ -309,6 +322,8 @@ async def _managed_adapter(request: Request, context, item: Mapping[str, object]
 
 
 async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
+    if item["status"] == "submitting" and item.get("submission_state") == "in_flight":
+        item = request.app.state.canvas_store.expire_in_flight(str(item["id"]))
     if item["status"] in {"succeeded", "failed", "submitting", "submission_unknown"} or not item.get("upstream_job_id"):
         return item
     try:

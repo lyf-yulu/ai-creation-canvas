@@ -1575,6 +1575,19 @@ class CanvasStore:
             )
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
+    def expire_in_flight(self, job_id: str) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                "error_code='SUBMISSION_UNKNOWN',submission_token=NULL,lease_until=NULL,updated_at=? "
+                "WHERE id=? AND status='submitting' AND submission_state='in_flight' AND lease_until<=?",
+                (_now(), job_id, self._clock()),
+            )
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return dict(row)
+
     def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:
         # Retain a short-lived reservation that can be reclaimed, without losing the key.
         with self._connection(immediate=True) as db:

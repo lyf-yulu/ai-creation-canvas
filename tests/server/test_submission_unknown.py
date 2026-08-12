@@ -111,6 +111,37 @@ def test_in_flight_submission_crossing_reservation_lease_is_never_reclaimed(tmp_
     assert item["submission_state"] == "submission_unknown"
 
 
+def test_get_expires_stale_in_flight_to_submission_unknown(tmp_path: Path) -> None:
+    now = [100.0]
+    store = CanvasStore(tmp_path / "get-clock-data", clock=lambda: now[0])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        assert release.wait(timeout=5)
+        return httpx.Response(200, json={"data": [{"b64_json": "iVBORw0KGgptYW5hZ2VkLXJlc3VsdA=="}]})
+
+    app, _, _ = build_app(tmp_path, handler, ScriptedCoordinator(), store=store)
+    created: list[dict[str, object]] = []
+
+    def submit() -> None:
+        response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", headers=headers(), json=payload())
+        created.append(response.json())
+
+    thread = threading.Thread(target=submit)
+    thread.start()
+    assert entered.wait(timeout=5)
+    with store._connection() as db:
+        job_id = str(db.execute("SELECT id FROM canvas_jobs").fetchone()[0])
+    now[0] += 31
+    response = TestClient(app, raise_server_exceptions=False).get(f"/api/v1/jobs/{job_id}", headers=headers())
+    release.set()
+    thread.join(timeout=5)
+    assert response.status_code == 200 and response.json()["status"] == "submission_unknown"
+    assert created and created[0]["status"] == "submission_unknown"
+
+
 def test_lost_snapshot_cas_never_calls_provider(tmp_path: Path, monkeypatch) -> None:
     attempts = 0
 

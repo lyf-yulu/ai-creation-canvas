@@ -154,12 +154,93 @@ def test_managed_route_retries_explicit_429_on_next_compatible_key_and_persists_
     store.update_model_route(route("gemini-route", "t8star", "gemini", 99), expected_revision=1)
     changed, _ = store.job_for_owner(response.json()["id"], "user-a")
     assert changed is not None and changed["route_snapshot_json"] == original_snapshot
+    legacy_snapshot = json.loads(str(original_snapshot))
+    legacy_snapshot.pop("pool_revision_digest", None)
+    legacy_snapshot.pop("schema_version", None)
+    legacy_encoded = json.dumps(legacy_snapshot, sort_keys=True, separators=(",", ":"))
+    with store._connection(immediate=True) as db:
+        db.execute("UPDATE canvas_jobs SET route_snapshot_json=? WHERE id=?", (legacy_encoded, response.json()["id"]))
     completed = client.get(f"/api/v1/jobs/{response.json()['id']}", headers=headers())
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     pools.clear()
     downloaded = client.get(f"/api/v1/results/{response.json()['id']}", headers=headers())
     assert downloaded.status_code == 200
     assert downloaded.content == PNG
+    headed = client.head(f"/api/v1/results/{response.json()['id']}", headers=headers())
+    ranged = client.get(f"/api/v1/results/{response.json()['id']}", headers={**headers(), "Range": "bytes=0-7"})
+    assert headed.status_code == 200 and ranged.status_code == 206 and ranged.content == PNG[:8]
+
+
+def test_unknown_future_snapshot_version_fails_closed(tmp_path: Path) -> None:
+    app, store, _ = build_app(
+        tmp_path,
+        lambda request: httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]}),
+        ScriptedCoordinator(),
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    created = client.post("/api/v1/jobs", headers=headers(), json=payload())
+    assert created.status_code == 201
+    item, _ = store.job_for_owner(created.json()["id"], "user-a")
+    snapshot = json.loads(str(item["route_snapshot_json"]))
+    snapshot["schema_version"] = 999
+    with store._connection(immediate=True) as db:
+        db.execute("UPDATE canvas_jobs SET route_snapshot_json=? WHERE id=?", (json.dumps(snapshot, sort_keys=True, separators=(",", ":")), created.json()["id"]))
+    polled = client.get(f"/api/v1/jobs/{created.json()['id']}", headers=headers())
+    assert polled.status_code == 200 and polled.json()["status"] == "failed"
+
+
+def test_provider_business_rejection_returns_422_once(tmp_path: Path) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(400, json={"error": "invalid request"})
+
+    app, _, _ = build_app(tmp_path, handler, ScriptedCoordinator())
+    client = TestClient(app, raise_server_exceptions=False)
+    first = client.post("/api/v1/jobs", headers=headers(), json=payload())
+    repeated = client.post("/api/v1/jobs", headers=headers(), json=payload())
+    assert first.status_code == 422
+    assert repeated.status_code == 201 and repeated.json()["status"] == "failed"
+    assert attempts == 1
+
+
+def test_legacy_v1_ark_snapshot_keeps_local_get_head_and_range_without_key(tmp_path: Path) -> None:
+    app, store, pools = build_app(tmp_path, lambda request: (_ for _ in ()).throw(AssertionError("network called")), ScriptedCoordinator())
+    result_id = "ark_result_" + "a" * 64
+    root = store.data_dir / "ark-results"
+    root.mkdir(mode=0o700, exist_ok=True)
+    (root / result_id).write_bytes(PNG)
+    (root / f"{result_id}.json").write_text(json.dumps({"mime": "image/png"}), encoding="utf-8")
+    ark_contract = OperationContract(
+        "image.generate", (ModelInputPort("prompt", "text", 1, 1),), "image",
+        {"type": "object", "properties": {}, "additionalProperties": False}, {},
+    )
+    ark_route = ModelRouteDefinition("historical-ark", "nano-banana", "google", "ark-model", "ark", "official", "nano-banana", (ark_contract,), 1, 1, revision=1)
+    snapshot = {
+        "route_id": ark_route.route_id, "model_id": ark_route.model_id, "provider_id": ark_route.provider_id,
+        "provider_model_name": ark_route.provider_model_name, "adapter_type": ark_route.adapter_type,
+        "credential_pool_ref": ark_route.credential_pool_ref, "family": ark_route.family,
+        "operation_contracts": [ark_contract.to_dict()], "priority": 1, "max_concurrency": 1,
+        "enabled": True, "archived_at": None, "revision": 1,
+    }
+    reserved = store.reserve_job(user_id="user-a", job_id="legacy-ark-job", service_id="nano-banana", operation="image.generate", idempotency_key="legacy-ark", request_hash="f" * 64, logical_model_id="nano-banana", logical_model_revision=1)
+    token = str(reserved.job["submission_token"])
+    store.record_routing_snapshot(
+        "legacy-ark-job", token, logical_model_id="nano-banana", logical_model_revision=1,
+        route_id="historical-ark", route_revision=1, pool_revision_digest=pools["official"].revision_digest,
+        key_fingerprint="b" * 64, route_snapshot_json=json.dumps(snapshot, sort_keys=True, separators=(",", ":")),
+    )
+    store.mark_submitted("legacy-ark-job", "legacy-upstream", "succeeded", token, result_ids=(result_id,))
+    pools.clear()
+    client = TestClient(app, raise_server_exceptions=False)
+    downloaded = client.get("/api/v1/results/legacy-ark-job", headers=headers())
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == PNG
+    assert client.head("/api/v1/results/legacy-ark-job", headers=headers()).status_code == 200
+    ranged = client.get("/api/v1/results/legacy-ark-job", headers={**headers(), "Range": "bytes=0-7"})
+    assert ranged.status_code == 206 and ranged.content == PNG[:8]
 
 
 def test_managed_rejection_before_credentials_and_never_falls_back(tmp_path: Path) -> None:
