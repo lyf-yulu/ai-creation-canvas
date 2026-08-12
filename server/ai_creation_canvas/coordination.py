@@ -5,9 +5,8 @@ from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import secrets
-import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Protocol
+from typing import AsyncIterator, Protocol
 
 from ai_creation_canvas.routing import RouteCandidate
 
@@ -154,23 +153,25 @@ return 1
 _CREDENTIAL_ACQUIRE = """-- credential-acquire-v1
 local owner = KEYS[1]
 local token = ARGV[1]
-local now = tonumber(ARGV[2])
-local ttl = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[2])
+local redis_time = redis.call('TIME')
+local now = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
 local expires = now + ttl
+local scope_ttl = ttl + 60000
 local fixed_limit_count = 5
-local candidate_count = tonumber(ARGV[9])
+local candidate_count = tonumber(ARGV[8])
 
 if redis.call('EXISTS', owner) == 1 then return 0 end
 for i=2,#KEYS do redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', now) end
 for i=1,fixed_limit_count do
-  if redis.call('ZCARD', KEYS[i + 1]) >= tonumber(ARGV[i + 3]) then return 0 end
+  if redis.call('ZCARD', KEYS[i + 1]) >= tonumber(ARGV[i + 2]) then return 0 end
 end
 
 local selected = 0
 local selected_count = nil
 for i=1,candidate_count do
   local count = redis.call('ZCARD', KEYS[6 + i])
-  local limit = tonumber(ARGV[9 + i])
+  local limit = tonumber(ARGV[8 + i])
   if count < limit and (selected_count == nil or count < selected_count) then
     selected = i
     selected_count = count
@@ -178,8 +179,12 @@ for i=1,candidate_count do
 end
 if selected == 0 then return 0 end
 if redis.call('SET', owner, token, 'NX', 'PX', ttl) == false then return 0 end
-for i=2,6 do redis.call('ZADD', KEYS[i], expires, token) end
+for i=2,6 do
+  redis.call('ZADD', KEYS[i], expires, token)
+  redis.call('PEXPIRE', KEYS[i], scope_ttl)
+end
 redis.call('ZADD', KEYS[6 + selected], expires, token)
+redis.call('PEXPIRE', KEYS[6 + selected], scope_ttl)
 return selected
 """
 
@@ -203,19 +208,15 @@ class RedisExecutionCoordinator:
         user_limit: int,
         lease_seconds: int = 300,
         credential_hmac_key: bytes | None = None,
-        clock_ms: Callable[[], int] | None = None,
     ) -> None:
         _limits(global_limit, provider_limit, user_limit)
         if not isinstance(namespace, str) or not namespace or len(namespace) > 64 or type(lease_seconds) is not int or not 5 <= lease_seconds <= 3600:
             raise ValueError("Redis coordinator settings are invalid")
         if credential_hmac_key is not None and (not isinstance(credential_hmac_key, bytes) or not credential_hmac_key):
             raise ValueError("credential HMAC key must be non-empty bytes")
-        if clock_ms is not None and not callable(clock_ms):
-            raise ValueError("clock_ms must be callable")
         self._client, self._namespace = client, namespace
         self._limits, self._lease_ms = (global_limit, provider_limit, user_limit), lease_seconds * 1000
         self._credential_hmac_key = credential_hmac_key
-        self._clock_ms = clock_ms or (lambda: time.time_ns() // 1_000_000)
 
     async def healthcheck(self) -> bool:
         try:
@@ -276,7 +277,6 @@ class RedisExecutionCoordinator:
                 len(keys),
                 *keys,
                 owner_token,
-                self._clock_ms(),
                 self._lease_ms,
                 *limits,
                 len(ordered_keys),

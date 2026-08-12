@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from dataclasses import replace
 import json
+import time
 
 import pytest
 
@@ -70,15 +72,14 @@ def test_local_credential_leases_use_least_loaded_key_and_stable_key_id_tie_brea
     assert asyncio.run(scenario()) == ("key-a", "key-b", "key-a")
 
 
-@pytest.mark.parametrize("limited_scope", ["global", "provider", "user", "route", "pool", "key"])
+@pytest.mark.parametrize("limited_scope", ["global", "provider", "user", "route"])
 def test_local_credential_leases_enforce_every_capacity_scope(limited_scope: str) -> None:
     async def scenario() -> None:
         global_limit = 1 if limited_scope == "global" else 8
         provider_limit = 1 if limited_scope == "provider" else 8
         user_limit = 1 if limited_scope == "user" else 8
         route_limit = 1 if limited_scope == "route" else 8
-        key_limits = (("only-key", 1),) if limited_scope in {"pool", "key"} else (("key-a", 4), ("key-b", 4))
-        candidate = _candidate(route=_route(route_limit=route_limit), pool=_pool(key_limits=key_limits))
+        candidate = _candidate(route=_route(route_limit=route_limit), pool=_pool(key_limits=(("key-a", 4), ("key-b", 4))))
         coordinator = LocalExecutionCoordinator(global_limit=global_limit, provider_limit=provider_limit, user_limit=user_limit)
         async with coordinator.acquire_credential("job-held", "same-user", candidate):
             user = "same-user" if limited_scope == "user" else "other-user"
@@ -87,6 +88,33 @@ def test_local_credential_leases_enforce_every_capacity_scope(limited_scope: str
                     raise AssertionError("unreachable")
 
     asyncio.run(scenario())
+
+
+def test_local_per_key_limit_moves_work_to_another_key_in_the_same_pool() -> None:
+    async def scenario() -> tuple[str, str, str]:
+        coordinator = LocalExecutionCoordinator(global_limit=8, provider_limit=8, user_limit=8)
+        candidate = _candidate(pool=_pool(key_limits=(("key-a", 1), ("key-b", 3))))
+        async with coordinator.acquire_credential("job-1", "user-1", candidate) as first:
+            async with coordinator.acquire_credential("job-2", "user-2", candidate) as second:
+                async with coordinator.acquire_credential("job-3", "user-3", candidate) as third:
+                    return first.key_id, second.key_id, third.key_id
+
+    assert asyncio.run(scenario()) == ("key-a", "key-b", "key-b")
+
+
+def test_local_multi_key_pool_exhausts_at_the_sum_of_key_limits() -> None:
+    async def scenario() -> tuple[str, ...]:
+        coordinator = LocalExecutionCoordinator(global_limit=8, provider_limit=8, user_limit=8)
+        candidate = _candidate(pool=_pool(key_limits=(("key-a", 2), ("key-b", 2))))
+        async with AsyncExitStack() as stack:
+            leases = [
+                await stack.enter_async_context(coordinator.acquire_credential(f"job-{index}", f"user-{index}", candidate))
+                for index in range(4)
+            ]
+            await _assert_next_exhausted(coordinator, candidate)
+            return tuple(lease.key_id for lease in leases)
+
+    assert asyncio.run(scenario()) == ("key-a", "key-b", "key-a", "key-b")
 
 
 def test_local_credential_lease_releases_after_exception_and_cancellation() -> None:
@@ -152,35 +180,37 @@ class ScriptRedis:
 
     def __init__(self) -> None:
         self.recorded_commands: list[tuple[object, ...]] = []
-        self.now_ms = 1_000_000
+        self.server_now_ms = 1_000_000
         self.owners: dict[str, tuple[str, int]] = {}
         self.sets: dict[str, dict[str, int]] = {}
+        self.scope_expiries: dict[str, int] = {}
         self.fail = False
 
     async def eval(self, script: str, key_count: int, *parts: object) -> int:
         self.recorded_commands.append((script, key_count, *parts))
         if self.fail:
             raise ConnectionError("fixture outage")
+        self._expire_redis_keys()
         keys = [str(item) for item in parts[:key_count]]
         args = parts[key_count:]
         if "credential-acquire-v1" in script:
-            return self._acquire(keys, args)
+            return self._acquire(script, keys, args)
         if "credential-release-v1" in script:
             return self._release(keys, args)
         raise AssertionError("unexpected script")
 
-    def _acquire(self, keys: list[str], args: tuple[object, ...]) -> int:
-        token, now, ttl = str(args[0]), int(args[1]), int(args[2])
-        limits = [int(item) for item in args[3:8]]
-        candidate_count = int(args[8])
-        key_limits = [int(item) for item in args[9:]]
+    def _acquire(self, script: str, keys: list[str], args: tuple[object, ...]) -> int:
+        assert "redis.call('TIME')" in script
+        assert script.count("redis.call('PEXPIRE'") >= 2
+        token, ttl = str(args[0]), int(args[1])
+        limits = [int(item) for item in args[2:7]]
+        candidate_count = int(args[7])
+        key_limits = [int(item) for item in args[8:]]
         assert len(keys) == 6 + candidate_count and len(key_limits) == candidate_count
-        expires_at = now + ttl
-        self.now_ms = now
-        self.owners = {key: value for key, value in self.owners.items() if value[1] > now}
+        expires_at = self.server_now_ms + ttl
         for members in self.sets.values():
             for member, expiry in tuple(members.items()):
-                if expiry <= now:
+                if expiry <= self.server_now_ms:
                     members.pop(member)
         if keys[0] in self.owners or any(len(self.sets.get(scope, {})) >= limit for scope, limit in zip(keys[1:6], limits)):
             return 0
@@ -192,6 +222,7 @@ class ScriptRedis:
         self.owners[keys[0]] = (token, expires_at)
         for scope in (*keys[1:6], keys[6 + selected]):
             self.sets.setdefault(scope, {})[token] = expires_at
+            self.scope_expiries[scope] = self.server_now_ms + ttl + 60_000
         return selected + 1
 
     def _release(self, keys: list[str], args: tuple[object, ...]) -> int:
@@ -200,11 +231,27 @@ class ScriptRedis:
             return 0
         self.owners.pop(keys[0], None)
         for scope in keys[1:]:
-            self.sets.setdefault(scope, {}).pop(token, None)
+            members = self.sets.get(scope)
+            if members is not None:
+                members.pop(token, None)
+                if not members:
+                    self.sets.pop(scope, None)
+                    self.scope_expiries.pop(scope, None)
         return 1
 
     def advance(self, milliseconds: int) -> None:
-        self.now_ms += milliseconds
+        self.server_now_ms += milliseconds
+        self._expire_redis_keys()
+
+    def _expire_redis_keys(self) -> None:
+        self.owners = {
+            key: value for key, value in self.owners.items()
+            if value[1] > self.server_now_ms
+        }
+        for scope, expiry in tuple(self.scope_expiries.items()):
+            if expiry <= self.server_now_ms:
+                self.scope_expiries.pop(scope, None)
+                self.sets.pop(scope, None)
 
 
 def _redis(client: ScriptRedis, **changes: object) -> RedisExecutionCoordinator:
@@ -215,7 +262,6 @@ def _redis(client: ScriptRedis, **changes: object) -> RedisExecutionCoordinator:
         "user_limit": 20,
         "lease_seconds": 5,
         "credential_hmac_key": b"test-only-opaque-hmac-key",
-        "clock_ms": lambda: client.now_ms,
     }
     values.update(changes)
     return RedisExecutionCoordinator(client, **values)  # type: ignore[arg-type]
@@ -238,13 +284,12 @@ def test_redis_credential_acquire_is_atomic_least_used_and_releases() -> None:
     assert all("credential-acquire-v1" in str(call[0]) for call in client.recorded_commands[:3])
 
 
-@pytest.mark.parametrize("limited_scope", ["global", "provider", "user", "route", "pool", "key"])
+@pytest.mark.parametrize("limited_scope", ["global", "provider", "user", "route"])
 def test_redis_credential_leases_enforce_every_capacity_scope(limited_scope: str) -> None:
     async def scenario() -> None:
         client = ScriptRedis()
         route_limit = 1 if limited_scope == "route" else 8
-        key_limits = (("only-key", 1),) if limited_scope in {"pool", "key"} else (("key-a", 4), ("key-b", 4))
-        candidate = _candidate(route=_route(route_limit=route_limit), pool=_pool(key_limits=key_limits))
+        candidate = _candidate(route=_route(route_limit=route_limit), pool=_pool(key_limits=(("key-a", 4), ("key-b", 4))))
         coordinator = _redis(
             client,
             global_limit=1 if limited_scope == "global" else 8,
@@ -255,6 +300,51 @@ def test_redis_credential_leases_enforce_every_capacity_scope(limited_scope: str
             user = "same-user" if limited_scope == "user" else "other-user"
             with pytest.raises(ExecutionCapacityExceeded):
                 async with coordinator.acquire_credential("job-next", user, candidate):
+                    raise AssertionError("unreachable")
+
+    asyncio.run(scenario())
+
+
+def test_redis_per_key_limit_moves_work_to_another_key_in_the_same_pool() -> None:
+    async def scenario() -> tuple[str, str, str]:
+        client = ScriptRedis()
+        coordinator = _redis(client)
+        candidate = _candidate(pool=_pool(key_limits=(("key-a", 1), ("key-b", 3))))
+        async with coordinator.acquire_credential("job-1", "user-1", candidate) as first:
+            async with coordinator.acquire_credential("job-2", "user-2", candidate) as second:
+                async with coordinator.acquire_credential("job-3", "user-3", candidate) as third:
+                    return first.key_id, second.key_id, third.key_id
+
+    assert asyncio.run(scenario()) == ("key-a", "key-b", "key-b")
+
+
+def test_redis_multi_key_pool_exhausts_at_the_sum_of_key_limits() -> None:
+    async def scenario() -> tuple[str, ...]:
+        client = ScriptRedis()
+        coordinator = _redis(client)
+        candidate = _candidate(pool=_pool(key_limits=(("key-a", 2), ("key-b", 2))))
+        async with AsyncExitStack() as stack:
+            leases = [
+                await stack.enter_async_context(coordinator.acquire_credential(f"job-{index}", f"user-{index}", candidate))
+                for index in range(4)
+            ]
+            await _assert_next_exhausted(coordinator, candidate)
+            return tuple(lease.key_id for lease in leases)
+
+    assert asyncio.run(scenario()) == ("key-a", "key-b", "key-a", "key-b")
+
+
+def test_shared_redis_server_time_prevents_fast_application_clock_from_pruning_live_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def scenario() -> None:
+        client = ScriptRedis()
+        first = _redis(client, global_limit=1)
+        second = _redis(client, global_limit=1)
+        candidate = _candidate()
+        monkeypatch.setattr(time, "time_ns", lambda: 1)
+        async with first.acquire_credential("job-held", "user-1", candidate):
+            monkeypatch.setattr(time, "time_ns", lambda: 10**30)
+            with pytest.raises(ExecutionCapacityExceeded):
+                async with second.acquire_credential("job-next", "user-2", candidate):
                     raise AssertionError("unreachable")
 
     asyncio.run(scenario())
@@ -276,6 +366,45 @@ def test_redis_expired_lease_is_pruned_before_capacity_and_key_selection() -> No
     assert asyncio.run(scenario()) == ("key-a", "key-a")
 
 
+def test_release_after_owner_ttl_cannot_delete_and_next_acquire_prunes_stale_members() -> None:
+    async def scenario() -> tuple[int, tuple[int, ...]]:
+        client = ScriptRedis()
+        coordinator = _redis(client, global_limit=1, provider_limit=1, user_limit=1)
+        candidate = _candidate(pool=_pool(key_limits=(("key-a", 1), ("key-b", 1))))
+        expired = coordinator.acquire_credential("job-expired", "user", candidate)
+        await expired.__aenter__()
+        client.advance(5_001)
+        await expired.__aexit__(None, None, None)
+        stale_member_count = sum(len(members) for members in client.sets.values())
+        async with coordinator.acquire_credential("job-new", "user", candidate):
+            live_counts = tuple(len(members) for members in client.sets.values())
+        return stale_member_count, live_counts
+
+    stale_count, counts_during_new_lease = asyncio.run(scenario())
+    assert stale_count == 6
+    assert counts_during_new_lease and set(counts_during_new_lease) == {1}
+
+
+def test_scope_sets_expire_after_crash_even_when_release_is_unavailable() -> None:
+    async def scenario() -> ScriptRedis:
+        client = ScriptRedis()
+        coordinator = _redis(client)
+        candidate = _candidate()
+        abandoned = coordinator.acquire_credential("job-crashed", "user", candidate)
+        await abandoned.__aenter__()
+        client.fail = True
+        await abandoned.__aexit__(None, None, None)
+        client.fail = False
+        assert client.sets
+        client.advance(65_001)
+        return client
+
+    client = asyncio.run(scenario())
+    assert client.owners == {}
+    assert client.sets == {}
+    assert client.scope_expiries == {}
+
+
 def test_redis_release_compares_owner_token_before_removing_lease() -> None:
     async def scenario() -> ScriptRedis:
         client = ScriptRedis()
@@ -286,7 +415,7 @@ def test_redis_release_compares_owner_token_before_removing_lease() -> None:
         acquire_call = client.recorded_commands[0]
         key_count = int(acquire_call[1])
         owner_key = str(acquire_call[2])
-        client.owners[owner_key] = ("replacement-owner", client.now_ms + 5_000)
+        client.owners[owner_key] = ("replacement-owner", client.server_now_ms + 5_000)
         await context.__aexit__(None, None, None)
         return client
 
