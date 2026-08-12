@@ -42,3 +42,16 @@ it("offers separated image and video templates without text or audio operations"
     fireEvent.change(template, { target: { value: "chiyun_image_edit" } });
     expect(screen.getByText("image.edit")).toBeVisible();
 });
+
+it("does not publish a pending save result or error after unmount", async () => {
+    let resolveSave!: (value: AdminLogicalModel) => void;
+    const saved = vi.fn();
+    const save = vi.fn(() => new Promise<AdminLogicalModel>((resolve) => { resolveSave = resolve; }));
+    const { unmount } = render(<ModelEditor model={image} onSave={save} onSaved={saved} />);
+    fireEvent.change(screen.getByLabelText("模型显示名"), { target: { value: "Pending" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存模型" }));
+    unmount();
+    resolveSave({ ...image, display_name: "Pending", revision: 8 });
+    await Promise.resolve();
+    expect(saved).not.toHaveBeenCalled();
+});

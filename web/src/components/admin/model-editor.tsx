@@ -23,6 +23,7 @@ export function ModelEditor({ model, onSave, onSaved, onRefresh }: Props) {
         const template = templateForModel(model);
         setForm({ model_id: model?.model_id || "", display_name: model?.display_name || "", introduction: model?.introduction || "", template_id: template.id });
         savingRef.current = false; setSaving(false); setMessage("");
+        return () => { version.current += 1; savingRef.current = false; };
     }, [model?.model_id, model?.revision]);
     const template = ADMIN_MODEL_TEMPLATES.find((item) => item.id === form.template_id) || ADMIN_MODEL_TEMPLATES[0];
     const submit = async () => {

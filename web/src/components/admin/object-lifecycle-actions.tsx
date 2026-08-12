@@ -4,7 +4,7 @@ import { ApiRequestError } from "@/api/client";
 
 type MaybePromise<T> = T | Promise<T>;
 type Props<T = unknown> = {
-    objectIdentity?: string; objectLabel: string; enabled: boolean; archivedAt?: string | null; revision: number;
+    objectIdentity?: string; objectLabel: string; enabled: boolean; archivedAt?: string | null; revision: number; historical?: boolean;
     onEnable: (revision: number) => MaybePromise<T>; onDisable: (revision: number) => MaybePromise<T>;
     onArchive: (revision: number) => MaybePromise<T>; onRestore: (revision: number) => MaybePromise<T>;
     onDelete: (revision: number) => MaybePromise<void>; onPurge: (revision: number) => MaybePromise<T>;
@@ -13,7 +13,7 @@ type Props<T = unknown> = {
 
 const referenceLabels = { job: "任务", access: "访问授权", assignment: "账号派发", route: "线路", model: "模型" } as const;
 
-export function ObjectLifecycleActions<T>({ objectIdentity, objectLabel, enabled, archivedAt = null, revision, onEnable, onDisable, onArchive, onRestore, onDelete, onPurge, onChanged, onDeleted, onRefresh }: Props<T>) {
+export function ObjectLifecycleActions<T>({ objectIdentity, objectLabel, enabled, archivedAt = null, revision, historical = false, onEnable, onDisable, onArchive, onRestore, onDelete, onPurge, onChanged, onDeleted, onRefresh }: Props<T>) {
     const identity = objectIdentity || objectLabel;
     const [busy, setBusy] = useState(false);
     const [confirm, setConfirm] = useState<"delete" | "purge" | null>(null);
@@ -49,14 +49,15 @@ export function ObjectLifecycleActions<T>({ objectIdentity, objectLabel, enabled
         } catch (caught) { if (identityGeneration.current === generation) setError(caught instanceof ApiRequestError ? caught : new ApiRequestError({ code: "request_failed", message: "", retryable: false, request_id: "", phase: "response" })); }
         finally { if (identityGeneration.current === generation) { busyRef.current = false; setBusy(false); } }
     };
+    if (historical) return <p className="mt-4 border-t border-[#594d2a] pt-4 text-sm text-[#cdbf83]">审计记录永久保留，仅供只读追溯。</p>;
     return <div className="mt-4 border-t border-[#1e482b] pt-4">
         <div className="flex flex-wrap gap-2">
-            {archivedAt ? <button type="button" disabled={busy} onClick={() => void perform(onRestore)} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#8ff0aa] disabled:opacity-50">恢复</button> : <>
+            {!historical && (archivedAt ? <button type="button" disabled={busy} onClick={() => void perform(onRestore)} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#8ff0aa] disabled:opacity-50">恢复</button> : <>
                 {enabled ? <button type="button" disabled={busy} onClick={() => void perform(onDisable)} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#d0e8d6] disabled:opacity-50">停用</button> : <button type="button" disabled={busy} onClick={() => void perform(onEnable)} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#8ff0aa] disabled:opacity-50">启用</button>}
                 <button type="button" disabled={busy} onClick={() => void perform(onArchive)} className="rounded border border-[#6c6131] px-3 py-1.5 text-sm text-[#eadc91] disabled:opacity-50">归档</button>
-            </>}
+            </>)}
             <button type="button" disabled={busy} onClick={() => open("delete")} className="rounded border border-[#78433d] px-3 py-1.5 text-sm text-[#ffb4a8] disabled:opacity-50">删除</button>
-            <button type="button" disabled={busy} onClick={() => open("purge")} className="rounded border border-[#78433d] px-3 py-1.5 text-sm text-[#ffb4a8] disabled:opacity-50">清理历史运行配置</button>
+            {!historical && <button type="button" disabled={busy} onClick={() => open("purge")} className="rounded border border-[#78433d] px-3 py-1.5 text-sm text-[#ffb4a8] disabled:opacity-50">清理历史运行配置</button>}
         </div>
         {error?.code === "REVISION_CONFLICT" && <div role="alert" className="mt-3 flex flex-wrap gap-2 text-sm text-[#ffbd73]">配置已变化，请重新加载。{onRefresh && <button type="button" onClick={onRefresh} className="underline">重新加载</button>}</div>}
         {error?.code === "RESOURCE_REFERENCED" && <div role="alert" className="mt-3 text-sm text-[#ffbd73]">对象仍被引用：{Object.entries(error.references || {}).map(([key, count]) => `${referenceLabels[key as keyof typeof referenceLabels]} ${count}`).join("，") || "引用状态不可用"}。可保留审计记录并清理运行配置。</div>}

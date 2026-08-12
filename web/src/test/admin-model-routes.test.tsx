@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
 import { ModelRouteEditor } from "@/components/admin/model-route-editor";
-import type { AdminCredentialPool, AdminLogicalModel } from "@/api/admin";
+import type { AdminCredentialPool, AdminLogicalModel, AdminModelRoute } from "@/api/admin";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -54,4 +54,39 @@ it("makes a mismatched historical family visibly read-only instead of submitting
     expect(screen.getByLabelText("模型族")).toHaveTextContent("cc");
     expect(screen.getByRole("alert")).toHaveTextContent("只读");
     expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
+});
+
+it("restores each existing route from its own immutable trusted identity", () => {
+    const arkContract = { ...model.operation_contracts![0], parameter_schema: { type: "object", properties: {}, additionalProperties: false }, parameter_mappings: {} };
+    const ark = { route_id: "ark-edit", model_id: "banana", provider_id: "ark", provider_model_name: "seedream", adapter_type: "ark" as const, credential_pool_ref: "ark-image", family: "seedream", operation_contracts: [arkContract], priority: 1, max_concurrency: 1, enabled: false, archived_at: null, revision: 2 };
+    const { rerender } = render(<ModelRouteEditor model={model} route={ark} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByLabelText("线路模板")).toHaveValue("ark_image_edit");
+    expect(screen.getByLabelText("线路模板")).toBeDisabled();
+    expect(screen.getByLabelText("模型族")).toHaveTextContent("seedream");
+    expect(screen.getByRole("button", { name: "保存线路" })).toBeEnabled();
+
+    const chiyun = { ...ark, route_id: "t8-edit", provider_id: "t8star", provider_model_name: "banana", adapter_type: "chiyun_openai_images" as const, credential_pool_ref: "t8-gemini", family: "nano-banana", operation_contracts: model.operation_contracts };
+    rerender(<ModelRouteEditor model={model} route={chiyun} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByLabelText("线路模板")).toHaveValue("chiyun_image_edit");
+    expect(screen.getByLabelText("线路模板")).toBeDisabled();
+    expect(screen.getByLabelText("模型族")).toHaveTextContent("nano-banana");
+    expect(screen.getByRole("button", { name: "保存线路" })).toBeEnabled();
+});
+
+it("does not publish a pending route save after unmount", async () => {
+    let resolveSave!: (value: AdminModelRoute) => void;
+    const saved = vi.fn();
+    const save = vi.fn(() => new Promise<AdminModelRoute>((resolve) => { resolveSave = resolve; }));
+    const { unmount } = render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={save} onSaved={saved} />);
+    fireEvent.change(screen.getByLabelText("线路模板"), { target: { value: "chiyun_image_edit" } });
+    fireEvent.change(screen.getByLabelText("线路 ID"), { target: { value: "pending" } });
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
+    fireEvent.change(screen.getByLabelText("供应商模型名"), { target: { value: "banana" } });
+    fireEvent.change(screen.getByLabelText("凭据池"), { target: { value: "t8-gemini" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
+    expect(save).toHaveBeenCalledTimes(1);
+    unmount();
+    resolveSave({ route_id: "pending", model_id: "banana", enabled: false, archived_at: null, revision: 1 });
+    await Promise.resolve();
+    expect(saved).not.toHaveBeenCalled();
 });

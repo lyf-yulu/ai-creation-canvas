@@ -28,9 +28,10 @@ export function ModelRouteEditor({ model, route, pools, onSave, onSaved, onRefre
     const savingRef = useRef(false);
     useEffect(() => {
         version.current += 1;
-        const template = templateForModel(model);
+        const template = templateForRoute(route) || routeTemplatesForModel(model)[0] || templateForModel(model);
         setForm({ route_id: route?.route_id || "", provider_id: route?.provider_id || "", provider_model_name: route?.provider_model_name || "", template_id: template.id, pool_id: route?.credential_pool_ref || "", priority: route?.priority ?? 100, max_concurrency: route?.max_concurrency ?? 1 });
         savingRef.current = false; setSaving(false); setMessage("");
+        return () => { version.current += 1; savingRef.current = false; };
     }, [model.model_id, model.revision, route?.route_id, route?.revision]);
     const template = templates.find((item) => item.id === form.template_id) || templates[0] || baseTemplate;
     const routeContract = routeContractForModel(template, model);
@@ -58,7 +59,7 @@ export function ModelRouteEditor({ model, route, pools, onSave, onSaved, onRefre
         <p className="mt-1 text-xs text-[#86a991]">凭据由部署配置管理；这里仅绑定兼容的安全凭据池。</p>
         <form className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             <label className="min-w-0 text-sm">线路 ID<input aria-label="线路 ID" disabled={Boolean(route)} value={form.route_id} onChange={(event) => setForm({ ...form, route_id: event.target.value })} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2 disabled:text-[#829889]" /></label>
-            <label className="min-w-0 text-sm">线路模板<select aria-label="线路模板" value={form.template_id} onChange={(event) => { const next = templates.find((item) => item.id === event.target.value) || template; setForm({ ...form, template_id: next.id, pool_id: "" }); }} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2">{templates.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+            <label className="min-w-0 text-sm">线路模板<select aria-label="线路模板" disabled={Boolean(route)} value={form.template_id} onChange={(event) => { const next = templates.find((item) => item.id === event.target.value) || template; setForm({ ...form, template_id: next.id, pool_id: "" }); }} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2 disabled:text-[#829889]">{templates.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
             <label className="min-w-0 text-sm">Provider<select aria-label="Provider" value={form.provider_id} onChange={(event) => setForm({ ...form, provider_id: event.target.value, pool_id: "" })} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2"><option value="">请选择</option>{providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
             <div className="min-w-0 text-sm">模型族<div aria-label="模型族" className="mt-1 min-h-10 w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2 font-mono text-[#9ad7ab]">{effectiveFamily}</div></div>
             <label className="min-w-0 text-sm">供应商模型名<input aria-label="供应商模型名" value={form.provider_model_name} onChange={(event) => setForm({ ...form, provider_model_name: event.target.value })} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2" /></label>
