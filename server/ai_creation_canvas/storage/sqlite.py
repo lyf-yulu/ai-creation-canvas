@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,14 @@ _CHECKPOINT_ATTEMPTS = 4
 _TOMBSTONE_NAME = re.compile(r"\.[0-9a-f]{40}\.delete\Z")
 _TOMBSTONE_JOURNAL_NAME = re.compile(r"\.([0-9a-f]{40})\.delete\.journal\Z")
 _PORTRAIT_RECOVERY_NAME = re.compile(r"\.portrait-recovery-([A-Za-z0-9_-]{1,128})\.pending\Z")
+_MODEL_ROUTING_MIGRATION_MARKER = "model_routing_legacy_migration_v1"
+
+
+def _legacy_route_id(model_id: str) -> str:
+    candidate = f"legacy-{model_id}"
+    if len(candidate) <= 128 and _RESULT_ID.fullmatch(candidate) is not None:
+        return candidate
+    return f"legacy-{hashlib.sha256(model_id.encode('utf-8')).hexdigest()}"
 
 
 class AssetQuotaExceeded(ValueError):
@@ -302,12 +311,85 @@ class CanvasStore:
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_meta (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_logical_models (
+                model_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, introduction TEXT NOT NULL,
+                modality TEXT NOT NULL CHECK(modality IN ('image','video','audio','text')),
+                operation_contracts_json TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                archived_at TEXT, revision INTEGER NOT NULL CHECK(revision >= 1),
+                runtime_purged INTEGER NOT NULL DEFAULT 0 CHECK(runtime_purged IN (0,1)),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_model_routes (
+                route_id TEXT PRIMARY KEY,
+                model_id TEXT NOT NULL REFERENCES canvas_logical_models(model_id),
+                provider_id TEXT, provider_model_name TEXT, adapter_type TEXT,
+                credential_pool_ref TEXT, family TEXT, operation_contracts_json TEXT NOT NULL,
+                priority INTEGER, max_concurrency INTEGER,
+                enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), archived_at TEXT,
+                revision INTEGER NOT NULL CHECK(revision >= 1),
+                runtime_purged INTEGER NOT NULL DEFAULT 0 CHECK(runtime_purged IN (0,1)),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        marker = db.execute(
+            "SELECT value FROM canvas_meta WHERE key=?", (_MODEL_ROUTING_MIGRATION_MARKER,)
+        ).fetchone()
+        if marker is None:
+            legacy_rows = db.execute(
+                "SELECT m.*,p.adapter_type,p.credential_ref,p.enabled AS provider_enabled "
+                "FROM canvas_models m JOIN canvas_providers p ON p.provider_id=m.provider_id "
+                "ORDER BY m.model_id"
+            ).fetchall()
+            for row in legacy_rows:
+                model_id = str(row["model_id"])
+                enabled = int(bool(row["enabled"]))
+                db.execute(
+                    "INSERT INTO canvas_logical_models("
+                    "model_id,display_name,introduction,modality,operation_contracts_json,enabled,"
+                    "archived_at,revision,runtime_purged,created_at,updated_at"
+                    ") VALUES (?,?,?,?,?,?,NULL,?,0,?,?)",
+                    (
+                        model_id,
+                        row["display_name"],
+                        row["introduction"],
+                        row["modality"],
+                        row["operation_contracts_json"],
+                        enabled,
+                        row["revision"],
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO canvas_model_routes("
+                    "route_id,model_id,provider_id,provider_model_name,adapter_type,credential_pool_ref,"
+                    "family,operation_contracts_json,priority,max_concurrency,enabled,archived_at,revision,"
+                    "runtime_purged,created_at,updated_at"
+                    ") VALUES (?,?,?,?,?,?,?,?,100,1,?,NULL,?,0,?,?)",
+                    (
+                        _legacy_route_id(model_id),
+                        model_id,
+                        row["provider_id"],
+                        row["provider_model_name"],
+                        row["adapter_type"],
+                        row["credential_ref"],
+                        row["provider_model_name"],
+                        row["operation_contracts_json"],
+                        int(bool(row["enabled"]) and bool(row["provider_enabled"])),
+                        row["revision"],
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
+                )
+            db.execute(
+                "INSERT INTO canvas_meta(key,value) VALUES (?,?)",
+                (_MODEL_ROUTING_MIGRATION_MARKER, "1"),
+            )
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_jobs (
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
                 error_code TEXT, result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0,
-                model_id TEXT, model_revision INTEGER, provider_id TEXT, adapter_type TEXT, submission_json TEXT,
+                model_id TEXT, model_revision INTEGER, provider_id TEXT, adapter_type TEXT, route_id TEXT, submission_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
@@ -349,7 +431,7 @@ class CanvasStore:
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("submission_json", "TEXT")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
@@ -466,6 +548,542 @@ class CanvasStore:
             "INSERT INTO canvas_admin_audit(actor_user_id,action,target_type,target_id,created_at) VALUES (?,?,?,?,?)",
             (actor_user_id, action, target_type, target_id, _now()),
         )
+
+    @staticmethod
+    def _require_revision(expected_revision: int) -> None:
+        from ai_creation_canvas.model_routing import RevisionConflict
+
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise RevisionConflict("revision conflict")
+
+    @staticmethod
+    def _logical_from_row(row: sqlite3.Row | None):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition
+
+        if row is None:
+            return None
+        if bool(row["runtime_purged"]):
+            return CanvasStore._logical_stub(row)
+        return LogicalModelDefinition.from_record(dict(row))
+
+    @staticmethod
+    def _route_from_row(row: sqlite3.Row | None):
+        from ai_creation_canvas.model_routing import ModelRouteDefinition
+
+        if row is None:
+            return None
+        if bool(row["runtime_purged"]):
+            return CanvasStore._route_stub(row)
+        return ModelRouteDefinition.from_record(dict(row))
+
+    @staticmethod
+    def _logical_stub(row: sqlite3.Row):
+        from ai_creation_canvas.model_routing import HistoricalAuditStub
+
+        return HistoricalAuditStub(
+            object_id=str(row["model_id"]),
+            object_type="model",
+            display_name=str(row["display_name"]),
+            modality=str(row["modality"]),
+            model_id=None,
+            enabled=False,
+            archived_at=str(row["archived_at"]),
+            revision=int(row["revision"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _route_stub(row: sqlite3.Row):
+        from ai_creation_canvas.model_routing import HistoricalAuditStub
+
+        return HistoricalAuditStub(
+            object_id=str(row["route_id"]),
+            object_type="route",
+            display_name=None,
+            modality=None,
+            model_id=str(row["model_id"]),
+            enabled=False,
+            archived_at=str(row["archived_at"]),
+            revision=int(row["revision"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def create_logical_model(self, definition):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition
+
+        if (
+            not isinstance(definition, LogicalModelDefinition)
+            or definition.revision != 1
+            or definition.archived_at is not None
+        ):
+            raise ValueError("logical model definition is invalid")
+        now = _now()
+        try:
+            with self._connection(immediate=True) as db:
+                db.execute(
+                    "INSERT INTO canvas_logical_models("
+                    "model_id,display_name,introduction,modality,operation_contracts_json,enabled,"
+                    "archived_at,revision,runtime_purged,created_at,updated_at"
+                    ") VALUES (?,?,?,?,?,?,NULL,1,0,?,?)",
+                    (
+                        definition.model_id,
+                        definition.display_name,
+                        definition.introduction,
+                        definition.modality.value,
+                        definition.contracts_json(),
+                        int(definition.enabled),
+                        now,
+                        now,
+                    ),
+                )
+                row = db.execute(
+                    "SELECT * FROM canvas_logical_models WHERE model_id=?", (definition.model_id,)
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("logical model already exists") from error
+        assert row is not None
+        return LogicalModelDefinition.from_record(dict(row))
+
+    def logical_model(self, model_id: str):
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+        return self._logical_from_row(row)
+
+    def list_logical_models(self, *, include_archived: bool = True):
+        query = "SELECT * FROM canvas_logical_models"
+        if not include_archived:
+            query += " WHERE archived_at IS NULL AND runtime_purged=0"
+        query += " ORDER BY model_id"
+        with self._connection() as db:
+            rows = db.execute(query).fetchall()
+        return tuple(self._logical_from_row(row) for row in rows)
+
+    def update_logical_model(self, definition, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict, validate_route_model
+
+        self._require_revision(expected_revision)
+        if not isinstance(definition, LogicalModelDefinition) or definition.revision != expected_revision:
+            raise RevisionConflict("logical model revision conflict")
+        with self._connection(immediate=True) as db:
+            current = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (definition.model_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(definition.model_id)
+            if int(current["revision"]) != expected_revision:
+                raise RevisionConflict("logical model revision conflict")
+            if bool(current["runtime_purged"]):
+                raise ValueError("logical model runtime was purged")
+            current_archived = current["archived_at"]
+            if definition.archived_at != current_archived:
+                raise ValueError("use an explicit logical model lifecycle transition")
+            routes = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE model_id=? AND runtime_purged=0 ORDER BY route_id",
+                (definition.model_id,),
+            ).fetchall()
+            for route in routes:
+                validate_route_model(self._route_from_row(route), definition)
+            cursor = db.execute(
+                "UPDATE canvas_logical_models SET display_name=?,introduction=?,modality=?,"
+                "operation_contracts_json=?,enabled=?,revision=revision+1,updated_at=? "
+                "WHERE model_id=? AND revision=? AND runtime_purged=0",
+                (
+                    definition.display_name,
+                    definition.introduction,
+                    definition.modality.value,
+                    definition.contracts_json(),
+                    int(definition.enabled),
+                    _now(),
+                    definition.model_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("logical model revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (definition.model_id,)
+            ).fetchone()
+        assert row is not None
+        return LogicalModelDefinition.from_record(dict(row))
+
+    def archive_logical_model(self, model_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_logical_models SET enabled=0,archived_at=?,revision=revision+1,updated_at=? "
+                "WHERE model_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
+                (_now(), _now(), model_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("logical model revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+        assert row is not None
+        return LogicalModelDefinition.from_record(dict(row))
+
+    def restore_logical_model(self, model_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_logical_models SET enabled=0,archived_at=NULL,revision=revision+1,updated_at=? "
+                "WHERE model_id=? AND revision=? AND archived_at IS NOT NULL AND runtime_purged=0",
+                (_now(), model_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("logical model revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+        assert row is not None
+        return LogicalModelDefinition.from_record(dict(row))
+
+    def create_model_route(self, definition):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition, validate_route_model
+
+        if (
+            not isinstance(definition, ModelRouteDefinition)
+            or definition.revision != 1
+            or definition.archived_at is not None
+        ):
+            raise ValueError("model route definition is invalid")
+        now = _now()
+        try:
+            with self._connection(immediate=True) as db:
+                model_row = db.execute(
+                    "SELECT * FROM canvas_logical_models WHERE model_id=? AND runtime_purged=0",
+                    (definition.model_id,),
+                ).fetchone()
+                if model_row is None:
+                    raise KeyError(definition.model_id)
+                validate_route_model(definition, LogicalModelDefinition.from_record(dict(model_row)))
+                db.execute(
+                    "INSERT INTO canvas_model_routes("
+                    "route_id,model_id,provider_id,provider_model_name,adapter_type,credential_pool_ref,family,"
+                    "operation_contracts_json,priority,max_concurrency,enabled,archived_at,revision,runtime_purged,"
+                    "created_at,updated_at"
+                    ") VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,1,0,?,?)",
+                    (
+                        definition.route_id,
+                        definition.model_id,
+                        definition.provider_id,
+                        definition.provider_model_name,
+                        definition.adapter_type,
+                        definition.credential_pool_ref,
+                        definition.family,
+                        definition.contracts_json(),
+                        definition.priority,
+                        definition.max_concurrency,
+                        int(definition.enabled),
+                        now,
+                        now,
+                    ),
+                )
+                row = db.execute(
+                    "SELECT * FROM canvas_model_routes WHERE route_id=?", (definition.route_id,)
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("model route already exists") from error
+        assert row is not None
+        return ModelRouteDefinition.from_record(dict(row))
+
+    def model_route(self, route_id: str):
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+        return self._route_from_row(row)
+
+    def list_model_routes(self, *, model_id: str | None = None, include_archived: bool = True):
+        clauses: list[str] = []
+        values: list[object] = []
+        if model_id is not None:
+            clauses.append("model_id=?")
+            values.append(model_id)
+        if not include_archived:
+            clauses.append("archived_at IS NULL AND runtime_purged=0")
+        query = "SELECT * FROM canvas_model_routes"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY route_id"
+        with self._connection() as db:
+            rows = db.execute(query, values).fetchall()
+        return tuple(self._route_from_row(row) for row in rows)
+
+    def update_model_route(self, definition, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition, RevisionConflict, validate_route_model
+
+        self._require_revision(expected_revision)
+        if not isinstance(definition, ModelRouteDefinition) or definition.revision != expected_revision:
+            raise RevisionConflict("model route revision conflict")
+        with self._connection(immediate=True) as db:
+            current = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (definition.route_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(definition.route_id)
+            if int(current["revision"]) != expected_revision:
+                raise RevisionConflict("model route revision conflict")
+            if bool(current["runtime_purged"]):
+                raise ValueError("model route runtime was purged")
+            if definition.model_id != current["model_id"]:
+                raise ValueError("model route model_id is immutable")
+            if definition.archived_at != current["archived_at"]:
+                raise ValueError("use an explicit model route lifecycle transition")
+            model_row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=? AND runtime_purged=0",
+                (definition.model_id,),
+            ).fetchone()
+            if model_row is None:
+                raise KeyError(definition.model_id)
+            validate_route_model(definition, LogicalModelDefinition.from_record(dict(model_row)))
+            cursor = db.execute(
+                "UPDATE canvas_model_routes SET provider_id=?,provider_model_name=?,adapter_type=?,"
+                "credential_pool_ref=?,family=?,operation_contracts_json=?,priority=?,max_concurrency=?,"
+                "enabled=?,revision=revision+1,updated_at=? WHERE route_id=? AND revision=? AND runtime_purged=0",
+                (
+                    definition.provider_id,
+                    definition.provider_model_name,
+                    definition.adapter_type,
+                    definition.credential_pool_ref,
+                    definition.family,
+                    definition.contracts_json(),
+                    definition.priority,
+                    definition.max_concurrency,
+                    int(definition.enabled),
+                    _now(),
+                    definition.route_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("model route revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (definition.route_id,)
+            ).fetchone()
+        assert row is not None
+        return ModelRouteDefinition.from_record(dict(row))
+
+    def archive_model_route(self, route_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import ModelRouteDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_model_routes SET enabled=0,archived_at=?,revision=revision+1,updated_at=? "
+                "WHERE route_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
+                (_now(), _now(), route_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("model route revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+        assert row is not None
+        return ModelRouteDefinition.from_record(dict(row))
+
+    def restore_model_route(self, route_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import ModelRouteDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_model_routes SET enabled=0,archived_at=NULL,revision=revision+1,updated_at=? "
+                "WHERE route_id=? AND revision=? AND archived_at IS NOT NULL AND runtime_purged=0",
+                (_now(), route_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("model route revision conflict")
+            row = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+        assert row is not None
+        return ModelRouteDefinition.from_record(dict(row))
+
+    @staticmethod
+    def _route_references_in(db: sqlite3.Connection, route_id: str) -> tuple[str, ...]:
+        route = db.execute(
+            "SELECT model_id FROM canvas_model_routes WHERE route_id=?", (route_id,)
+        ).fetchone()
+        if route is None:
+            return ()
+        model_id = str(route["model_id"])
+        if route_id == _legacy_route_id(model_id):
+            rows = db.execute(
+                "SELECT id FROM canvas_jobs WHERE route_id=? OR (route_id IS NULL AND model_id=?) ORDER BY id",
+                (route_id, model_id),
+            )
+        else:
+            rows = db.execute(
+                "SELECT id FROM canvas_jobs WHERE route_id=? ORDER BY id", (route_id,)
+            )
+        return tuple(f"job:{row['id']}" for row in rows)
+
+    def route_references(self, route_id: str) -> tuple[str, ...]:
+        with self._connection() as db:
+            return self._route_references_in(db, route_id)
+
+    @staticmethod
+    def _logical_model_references_in(db: sqlite3.Connection, model_id: str) -> tuple[str, ...]:
+        references: list[str] = []
+        references.extend(
+            f"job:{row['id']}"
+            for row in db.execute(
+                "SELECT id FROM canvas_jobs WHERE model_id=? ORDER BY id", (model_id,)
+            )
+        )
+        references.extend(
+            f"access:{row['user_id']}"
+            for row in db.execute(
+                "SELECT user_id FROM canvas_model_access WHERE model_id=? ORDER BY user_id", (model_id,)
+            )
+        )
+        references.extend(
+            f"assignment:{row['user_id']}"
+            for row in db.execute(
+                "SELECT user_id FROM canvas_user_models WHERE model_id=? ORDER BY user_id", (model_id,)
+            )
+        )
+        references.extend(
+            f"route:{row['route_id']}"
+            for row in db.execute(
+                "SELECT route_id FROM canvas_model_routes WHERE model_id=? ORDER BY route_id", (model_id,)
+            )
+        )
+        return tuple(sorted(references))
+
+    def logical_model_references(self, model_id: str) -> tuple[str, ...]:
+        with self._connection() as db:
+            return self._logical_model_references_in(db, model_id)
+
+    def delete_model_route(self, route_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import DeleteResult, ObjectReferenced, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT revision FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(route_id)
+            if int(row["revision"]) != expected_revision:
+                raise RevisionConflict("model route revision conflict")
+            references = self._route_references_in(db, route_id)
+            if references:
+                raise ObjectReferenced("model route is referenced: " + ", ".join(references))
+            cursor = db.execute(
+                "DELETE FROM canvas_model_routes WHERE route_id=? AND revision=?",
+                (route_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("model route revision conflict")
+        return DeleteResult(deleted=True)
+
+    def delete_logical_model(self, model_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import DeleteResult, ObjectReferenced, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT revision FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(model_id)
+            if int(row["revision"]) != expected_revision:
+                raise RevisionConflict("logical model revision conflict")
+            references = self._logical_model_references_in(db, model_id)
+            if references:
+                raise ObjectReferenced("logical model is referenced: " + ", ".join(references))
+            cursor = db.execute(
+                "DELETE FROM canvas_logical_models WHERE model_id=? AND revision=?",
+                (model_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("logical model revision conflict")
+        return DeleteResult(deleted=True)
+
+    def purge_model_route_runtime(self, route_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import ObjectReferenced, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(route_id)
+            if int(row["revision"]) != expected_revision:
+                raise RevisionConflict("model route revision conflict")
+            if bool(row["runtime_purged"]):
+                raise ValueError("model route runtime was purged")
+            if not self._route_references_in(db, route_id):
+                raise ObjectReferenced("unreferenced model route must be physically deleted")
+            now = _now()
+            db.execute(
+                "UPDATE canvas_model_routes SET provider_id=NULL,provider_model_name=NULL,adapter_type=NULL,"
+                "credential_pool_ref=NULL,family=NULL,operation_contracts_json='[]',priority=NULL,"
+                "max_concurrency=NULL,enabled=0,archived_at=COALESCE(archived_at,?),revision=revision+1,"
+                "runtime_purged=1,updated_at=? WHERE route_id=? AND revision=?",
+                (now, now, route_id, expected_revision),
+            )
+            updated = db.execute(
+                "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
+            ).fetchone()
+        assert updated is not None
+        return self._route_stub(updated)
+
+    def purge_logical_model_runtime(self, model_id: str, *, expected_revision: int):
+        from ai_creation_canvas.model_routing import ObjectReferenced, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(model_id)
+            if int(row["revision"]) != expected_revision:
+                raise RevisionConflict("logical model revision conflict")
+            if bool(row["runtime_purged"]):
+                raise ValueError("logical model runtime was purged")
+            if not self._logical_model_references_in(db, model_id):
+                raise ObjectReferenced("unreferenced logical model must be physically deleted")
+            now = _now()
+            routes = db.execute(
+                "SELECT route_id FROM canvas_model_routes WHERE model_id=? ORDER BY route_id",
+                (model_id,),
+            ).fetchall()
+            for route in routes:
+                route_id = str(route["route_id"])
+                if self._route_references_in(db, route_id):
+                    db.execute(
+                        "UPDATE canvas_model_routes SET provider_id=NULL,provider_model_name=NULL,adapter_type=NULL,"
+                        "credential_pool_ref=NULL,family=NULL,operation_contracts_json='[]',priority=NULL,"
+                        "max_concurrency=NULL,enabled=0,archived_at=COALESCE(archived_at,?),revision=revision+1,"
+                        "runtime_purged=1,updated_at=? WHERE route_id=? AND runtime_purged=0",
+                        (now, now, route_id),
+                    )
+                else:
+                    db.execute("DELETE FROM canvas_model_routes WHERE route_id=?", (route_id,))
+            db.execute(
+                "UPDATE canvas_logical_models SET introduction='',operation_contracts_json='[]',enabled=0,"
+                "archived_at=COALESCE(archived_at,?),revision=revision+1,runtime_purged=1,updated_at=? "
+                "WHERE model_id=? AND revision=?",
+                (now, now, model_id, expected_revision),
+            )
+            updated = db.execute(
+                "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
+            ).fetchone()
+        assert updated is not None
+        return self._logical_stub(updated)
 
     def create_provider_definition(self, definition, *, actor_user_id: str):
         from ai_creation_canvas.model_registry import ProviderDefinition, provider_from_record
