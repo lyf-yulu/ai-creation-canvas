@@ -12,9 +12,9 @@ const model: AdminLogicalModel = {
     enabled: true, archived_at: null, revision: 1,
 };
 const pools: AdminCredentialPool[] = [
-    { pool_id: "t8-gemini", provider_id: "t8star", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "t8-cc", provider_id: "t8star", group: "cc", allowed_families: ["claude"], revision_digest: "b".repeat(64), key_count: 1, total_capacity: 1, capacity_status: "available", available_count: 1, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "ark-image", provider_id: "ark", group: "official", allowed_families: ["seedream"], revision_digest: "c".repeat(64), key_count: 1, total_capacity: 2, capacity_status: "unavailable", available_count: null, busy_count: null, circuit_status: "unsupported", circuit_open_count: null },
+    { pool_id: "t8-gemini", provider_id: "t8star", adapter_type: "chiyun_openai_images", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
+    { pool_id: "t8-cc", provider_id: "t8star", adapter_type: "chiyun_openai_images", group: "cc", allowed_families: ["claude"], revision_digest: "b".repeat(64), key_count: 1, total_capacity: 1, capacity_status: "available", available_count: 1, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
+    { pool_id: "ark-image", provider_id: "ark", adapter_type: "ark", group: "official", allowed_families: ["seedream"], revision_digest: "c".repeat(64), key_count: 1, total_capacity: 2, capacity_status: "unavailable", available_count: null, busy_count: null, circuit_status: "unsupported", circuit_open_count: null },
 ];
 
 it("filters pools by exact provider and family and clears an invalid selection", () => {
@@ -27,6 +27,26 @@ it("filters pools by exact provider and family and clears an invalid selection",
     fireEvent.change(select, { target: { value: "t8-gemini" } });
     fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "ark" } });
     expect(select).toHaveValue("");
+});
+
+it("hides incompatible providers and explains why an incomplete route cannot be saved", () => {
+    const videoModel: AdminLogicalModel = {
+        ...model,
+        model_id: "seedance",
+        modality: "video",
+        operation_contracts: [{ operation: "video.generate", input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], output_media_type: "video", parameter_schema: { type: "object", properties: {}, additionalProperties: false }, parameter_mappings: {} }],
+    };
+    render(<ModelRouteEditor model={videoModel} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByLabelText("Provider")).not.toHaveTextContent("t8star");
+    expect(screen.getByLabelText("Provider")).not.toHaveTextContent("ark");
+    expect(screen.getByRole("alert")).toHaveTextContent("尚未配置兼容的视频凭据池");
+    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
+});
+
+it("keeps save disabled and lists missing required route fields", () => {
+    render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("线路 ID、Provider、供应商模型名、凭据池");
 });
 
 it("locks the capability family to the trusted route template so cc cannot be selected", () => {

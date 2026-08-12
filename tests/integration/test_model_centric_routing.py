@@ -111,9 +111,14 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
         ProviderDefinition("t8star", "T8Star", "chiyun_openai_images", "https://t8.example", "deployment-only"),
         actor_user_id="bootstrap",
     )
+    store.create_provider_definition(
+        ProviderDefinition("ark-video", "Ark Video", "ark", "https://ark.cn-beijing.volces.com", "deployment-only"),
+        actor_user_id="bootstrap",
+    )
     pools = {
         "banana-official": pool("banana-official", "google-images", "official", ("nano-banana",), ("official-a", "official-b")),
         "banana-t8-gemini": pool("banana-t8-gemini", "t8star", "gemini", ("nano-banana",), ("gemini-a",)),
+        "seedance-offline": pool("seedance-offline", "ark-video", "official", ("seedance",), ("seedance-a",)),
         "t8-cc": pool("t8-cc", "t8star", "cc", ("claude",), ("cc-a",)),
     }
     redis = ScriptRedis()
@@ -132,6 +137,7 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
         provider_protocols={
             "google-images": ProviderProtocol("google-images", "chiyun_openai_images", "https://google.example"),
             "t8star": ProviderProtocol("t8star", "chiyun_openai_images", "https://t8.example"),
+            "ark-video": ProviderProtocol("ark-video", "ark", "https://ark.cn-beijing.volces.com"),
         },
         transport=provider,
     )
@@ -149,6 +155,15 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
     assert accounts.admin is not None and accounts.user is not None
     app.state.local_auth.create_user("canvas-other", "Other User", "offline-other-password", PortalRole.USER, must_change_password=False)
     return AcceptanceApp(app, store, accounts, redis, pools)
+
+
+def test_acceptance_fixture_exposes_an_offline_seedance_route_pool(tmp_path: Path) -> None:
+    environment = build_acceptance_app(tmp_path, httpx.MockTransport(lambda _request: httpx.Response(500)))
+    provider = environment.store.provider_definition("ark-video")
+    assert provider is not None and provider.adapter_type == "ark"
+    seedance = environment.pools["seedance-offline"]
+    assert seedance.provider_id == "ark-video"
+    assert seedance.allowed_families == ("seedance",)
 
 
 def login_and_change(client: TestClient, username: str, password: str) -> dict[str, str]:

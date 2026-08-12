@@ -64,6 +64,22 @@ it("pans on blank left drag and does not pan from a node", () => {
     expect(screen.getByTestId("viewport")).toHaveTextContent("60,60,1");
 });
 
+it("releases an editor focus when blank-canvas interaction begins", () => {
+    render(<CanvasHarness><div data-node-id="node-a"><textarea aria-label="node editor" /></div></CanvasHarness>);
+    const editor = screen.getByLabelText("node editor");
+    const canvas = screen.getByTestId("infinite-canvas");
+    editor.focus();
+    expect(editor).toHaveFocus();
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 20, clientY: 30, pointerId: 9 });
+    expect(canvas).toHaveFocus();
+    fireEvent.pointerUp(window, { pointerId: 9 });
+
+    editor.focus();
+    fireEvent.pointerDown(editor, { button: 0, clientX: 25, clientY: 35, pointerId: 10 });
+    expect(editor).toHaveFocus();
+});
+
 it("keeps a pan owned by its initiating pointer", () => {
     render(<CanvasHarness />);
     const canvas = screen.getByTestId("infinite-canvas");

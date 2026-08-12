@@ -190,6 +190,9 @@ def test_pool_summaries_are_safe_and_use_live_local_capacity(tmp_path) -> None:
     summaries = response.json()["pools"]
     assert {item["pool_id"] for item in summaries} == set(pools)
     gemini = next(item for item in summaries if item["pool_id"] == "t8-gemini")
+    seedance = next(item for item in summaries if item["pool_id"] == "seedance-official")
+    assert gemini["adapter_type"] == "chiyun_openai_images"
+    assert seedance["adapter_type"] == "ark"
     assert gemini["total_capacity"] == 2
     assert gemini["available_count"] == 2
     assert gemini["busy_count"] == 0

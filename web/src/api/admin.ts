@@ -29,7 +29,7 @@ export type AdminModelRoute = {
     enabled: boolean; archived_at: string | null; revision: number;
 };
 export type AdminCredentialPool = {
-    pool_id: string; provider_id: string; group: string; allowed_families: string[];
+    pool_id: string; provider_id: string; adapter_type?: "ark" | "chiyun_openai_images"; group: string; allowed_families: string[];
     revision_digest: string; key_count: number; total_capacity: number;
     capacity_status: "available" | "unavailable"; available_count: number | null; busy_count: number | null;
     circuit_status: "unsupported"; circuit_open_count: number | null;

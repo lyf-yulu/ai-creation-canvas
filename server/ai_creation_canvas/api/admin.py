@@ -672,6 +672,7 @@ async def list_credential_pools(request: Request) -> dict[str, object]:
     summaries: list[dict[str, object]] = []
     for pool_id in sorted(pools):
         pool = pools[pool_id]
+        provider = request.app.state.canvas_store.provider_definition(pool.provider_id)
         total = sum(key.max_concurrency for key in pool.keys)
         metrics: dict[str, object] = {"capacity_status": "unavailable", "available_count": None, "busy_count": None}
         summarize = getattr(runtime.coordinator, "credential_pool_metrics", None)
@@ -690,6 +691,7 @@ async def list_credential_pools(request: Request) -> dict[str, object]:
         summaries.append({
             "pool_id": pool.pool_id,
             "provider_id": pool.provider_id,
+            "adapter_type": provider.adapter_type if isinstance(provider, ProviderDefinition) else None,
             "group": pool.group,
             "allowed_families": list(pool.allowed_families),
             "revision_digest": pool.revision_digest,

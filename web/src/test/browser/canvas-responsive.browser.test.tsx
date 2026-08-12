@@ -87,6 +87,7 @@ function installAdminApi({ startEmpty = false } = {}) {
                     {
                         pool_id: "banana-official",
                         provider_id: "google-images",
+                        adapter_type: "chiyun_openai_images",
                         group: "official",
                         allowed_families: ["nano-banana"],
                         revision_digest: "a".repeat(64),
@@ -101,6 +102,7 @@ function installAdminApi({ startEmpty = false } = {}) {
                     {
                         pool_id: "banana-t8-gemini",
                         provider_id: "t8star",
+                        adapter_type: "chiyun_openai_images",
                         group: "gemini",
                         allowed_families: ["nano-banana"],
                         revision_digest: "b".repeat(64),
@@ -115,6 +117,7 @@ function installAdminApi({ startEmpty = false } = {}) {
                     {
                         pool_id: "t8-cc",
                         provider_id: "t8star",
+                        adapter_type: "chiyun_openai_images",
                         group: "cc",
                         allowed_families: ["claude"],
                         revision_digest: "c".repeat(64),
