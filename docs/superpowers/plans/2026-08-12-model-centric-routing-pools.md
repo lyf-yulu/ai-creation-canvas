@@ -130,7 +130,7 @@ git commit -m "feat: load grouped credential pools"
 - Produces store methods `create/update/archive/restore/delete_logical_model`, equivalent route methods, `route_references(route_id)`, and `logical_model_references(model_id)`.
 - Consumes: Task 1 pool `(provider_id, group, allowed_families)` for route validation, but does not store secrets.
 
-- [ ] **Step 1: Write RED domain invariants**
+- [x] **Step 1: Write RED domain invariants**
 
 Test modality/operation isolation, bounded ports/schema/mappings, route/model contract compatibility, exact Provider/family/pool matching, strict revisions, archived objects disabled, and no route may silently omit an operation parameter it claims to support.
 
@@ -140,7 +140,7 @@ def test_cc_pool_cannot_back_nano_banana_route() -> None:
         validate_route_pool(nano_banana_route(), pool(provider="t8star", group="cc", families=("claude",)))
 ```
 
-- [ ] **Step 2: Write RED additive migration and lifecycle tests**
+- [x] **Step 2: Write RED additive migration and lifecycle tests**
 
 Assert new tables `canvas_logical_models`, `canvas_model_routes` and lifecycle columns are additive. Migrate each current `canvas_models` record once into one logical model plus one route; preserve model ID and `canvas_model_access`; keep old tables. Test repeated startup is byte-stable and that an existing Chiyun model becomes an `image.edit` logical model.
 
@@ -155,21 +155,21 @@ assert stub.enabled is False and stub.archived_at is not None
 assert "credential_pool_ref" not in json.dumps(stub.audit_projection())
 ```
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_routing.py tests/server/test_model_routing_migration.py`
 
 Expected: imports and schema assertions fail.
 
-- [ ] **Step 4: Implement contracts and additive SQLite operations**
+- [x] **Step 4: Implement contracts and additive SQLite operations**
 
 Use canonical bounded JSON and `BEGIN IMMEDIATE` for revision updates and lifecycle transitions. Store references using foreign keys where possible and explicit task/assignment checks where historical rows intentionally survive. A historical audit stub retains only IDs, display name, modality, revision and timestamps; it clears provider model name, Base URL linkage and pool reference.
 
-- [ ] **Step 5: Implement idempotent old-model migration**
+- [x] **Step 5: Implement idempotent old-model migration**
 
 Write a schema marker after successful migration. Convert current `credential_ref` to `credential_pool_ref` with the same identifier and mark the route unhealthy until Task 1 supplies that pool. Static Ark declarations remain read-only and are not duplicated here.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_routing.py tests/server/test_model_routing_migration.py tests/server/test_model_registry.py tests/server/test_local_auth.py`
 
