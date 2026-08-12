@@ -74,3 +74,21 @@ def test_registry_admin_endpoints_are_hidden_and_reject_freeform_protocols(tmp_p
         "request_script": "import os",
     })
     assert freeform.status_code == 400
+
+
+def test_provider_delete_reports_legacy_model_reference_category(tmp_path, monkeypatch) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = _clients(tmp_path, monkeypatch)
+    del accounts, user, user_headers
+    assert admin.post("/api/v1/admin/model-registry/providers", headers=admin_headers, json={
+        "provider_id": "legacy", "display_name": "Legacy", "adapter_type": "chiyun_openai_images",
+        "base_url": "https://legacy.example", "credential_ref": "chiyun-primary", "enabled": True,
+    }).status_code == 201
+    assert admin.post("/api/v1/admin/model-registry/models", headers=admin_headers, json={
+        "model_id": "legacy-image", "provider_id": "legacy", "provider_model_name": "gpt-image-2",
+        "display_name": "Legacy Image", "introduction": "Legacy model", "template_id": "chiyun_gpt_image_edit_v1", "enabled": True,
+    }).status_code == 201
+
+    response = admin.delete("/api/v1/admin/model-registry/providers/legacy?revision=1", headers=admin_headers)
+
+    assert response.status_code == 409
+    assert response.json()["references"] == {"model": 1}

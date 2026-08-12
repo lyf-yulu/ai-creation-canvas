@@ -118,3 +118,25 @@ def test_route_update_cannot_switch_lifecycle_state_or_immutable_ids(tmp_path) -
     assert admin.put("/api/v1/admin/logical-models/banana/routes/banana-t8", headers=headers, json=changed_id).status_code == 400
     stored = admin.get("/api/v1/admin/logical-models/banana/routes/banana-t8").json()
     assert stored["enabled"] is True and stored["revision"] == 1
+
+
+def test_stale_route_revision_wins_before_current_pool_provider_or_template_validation(tmp_path) -> None:
+    app, accounts, admin, user, headers, user_headers, pools = clients(tmp_path)
+    del accounts, user, user_headers, pools
+    admin.post("/api/v1/admin/logical-models", headers=headers, json=model_body())
+    admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=route_body())
+    update = route_body()
+    update.update({"revision": 1, "priority": 7})
+    assert admin.put("/api/v1/admin/logical-models/banana/routes/banana-t8", headers=headers, json=update).status_code == 200
+    app.state.canvas_store.update_provider_definition(
+        app.state.canvas_store.provider_definition("t8star").__class__("t8star", "T8", "chiyun_openai_images", "https://t8.example", "unused", False, 1),
+        expected_revision=1,
+        actor_user_id="bootstrap",
+    )
+    stale = route_body()
+    stale.update({"revision": 1, "credential_pool_ref": "missing-pool"})
+
+    response = admin.put("/api/v1/admin/logical-models/banana/routes/banana-t8", headers=headers, json=stale)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "REVISION_CONFLICT"

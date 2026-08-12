@@ -5,14 +5,17 @@ import json
 from fastapi.testclient import TestClient
 
 from ai_creation_canvas.adapters.factory import ProviderProtocol, RouteAdapterFactory
+from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.catalog import ManagedRoutingRuntime
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.coordination import LocalExecutionCoordinator
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
+from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from tests.server.test_model_assignments import AssignmentAdapter
 
 
 ORIGIN = "http://127.0.0.1:45996"
@@ -99,10 +102,14 @@ def clients(tmp_path):
         },
     )
     runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory)
+    registry = AdapterRegistry()
+    registry.register_generation(AssignmentAdapter())
     app = create_app(
         Settings("test", 45996, tmp_path / "data", "unused", identity_mode="local", allowed_origins=(ORIGIN,)),
         static_dir=tmp_path / "dist",
         canvas_store=store,
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
         managed_routing_runtime=runtime,
     )
     accounts = app.state.local_auth.bootstrap_accounts(())
@@ -217,3 +224,42 @@ def test_logical_models_use_existing_assignment_api_without_exposing_routes(tmp_
     lowered = public.text.lower()
     for forbidden in ("route_id", "provider_id", "credential", "pool", "group", "key"):
         assert forbidden not in lowered
+
+
+def test_stale_logical_model_revision_is_409_before_contract_compatibility(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers, pools = clients(tmp_path)
+    del accounts, user, user_headers, pools
+    admin.post("/api/v1/admin/logical-models", headers=admin_headers, json=model_body())
+    update = model_body()
+    update.update({"revision": 1, "display_name": "revision-two"})
+    assert admin.put("/api/v1/admin/logical-models/banana", headers=admin_headers, json=update).status_code == 200
+    stale = model_body()
+    stale.update({"revision": 1, "operation_contracts": [video_contract()], "modality": "video"})
+
+    response = admin.put("/api/v1/admin/logical-models/banana", headers=admin_headers, json=stale)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "REVISION_CONFLICT"
+
+
+def test_assignment_api_atomically_replaces_mixed_static_and_logical_models_with_audit(tmp_path, monkeypatch) -> None:
+    app, accounts, admin, user, admin_headers, user_headers, pools = clients(tmp_path)
+    del user_headers, pools
+    assert accounts.user is not None
+    admin.post("/api/v1/admin/logical-models", headers=admin_headers, json=model_body())
+    admin.post("/api/v1/admin/logical-models/banana/routes", headers=admin_headers, json=route_body())
+    monkeypatch.setattr(app.state.canvas_store, "replace_model_assignments", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy static path")))
+    monkeypatch.setattr(app.state.canvas_store, "replace_governed_model_access", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy governed path")))
+
+    response = admin.put(
+        f"/api/v1/admin/users/{accounts.user.user_id}/models",
+        headers=admin_headers,
+        json={"model_ids": ["visible-model", "banana"]},
+    )
+
+    assert response.status_code == 200
+    assert app.state.canvas_store.assigned_models(accounts.user.user_id) == ("visible-model",)
+    assert app.state.canvas_store.governed_assigned_models(accounts.user.user_id) == ("banana",)
+    assert {item["model_id"] for item in user.get("/api/v1/models").json()["models"]} == {"visible-model", "banana"}
+    actions = [event["action"] for event in app.state.canvas_store.admin_audit_events()]
+    assert actions[-2:] == ["model_assignment.grant", "model_access.grant"]

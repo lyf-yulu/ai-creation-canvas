@@ -111,8 +111,7 @@ async def replace_models(user_id: str, body: ModelAssignments, request: Request)
     }
     static_ids = tuple(model_id for model_id in body.model_ids if model_id not in governed)
     governed_ids = tuple(model_id for model_id in body.model_ids if model_id in governed)
-    store.replace_model_assignments(user_id, static_ids)
-    store.replace_governed_model_access(user_id, governed_ids, actor_user_id=admin.user_id)
+    store.replace_user_model_access(user_id, static_ids, governed_ids, actor_user_id=admin.user_id)
     model_ids = tuple(body.model_ids)
     return {"user_id": user_id, "model_ids": list(model_ids)}
 
@@ -385,7 +384,7 @@ def _reference_counts(references: tuple[str, ...]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for reference in references:
         category = reference.split(":", 1)[0]
-        if category in {"job", "access", "assignment", "route"}:
+        if category in {"job", "access", "assignment", "route", "model"}:
             counts[category] = counts.get(category, 0) + 1
     return counts
 
@@ -473,6 +472,8 @@ async def update_logical_model(model_id: str, body: LogicalModelUpdate, request:
     current = request.app.state.canvas_store.logical_model(model_id)
     if current is None:
         raise problem(request, "RESOURCE_NOT_FOUND", "The requested resource was not found.", status=404)
+    if current.revision != body.revision:
+        raise problem(request, "REVISION_CONFLICT", "The resource changed. Reload and try again.", status=409)
     if not isinstance(current, LogicalModelDefinition) or model_id != body.model_id or body.enabled != current.enabled:
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=400)
     try:
@@ -584,6 +585,8 @@ async def get_model_route(model_id: str, route_id: str, request: Request) -> dic
 async def update_model_route(model_id: str, route_id: str, body: ModelRouteUpdate, request: Request) -> dict[str, object]:
     admin = _require_admin(request)
     current = _route_for_parent(request, model_id, route_id)
+    if current.revision != body.revision:
+        raise problem(request, "REVISION_CONFLICT", "The resource changed. Reload and try again.", status=409)
     if (
         not isinstance(current, ModelRouteDefinition)
         or model_id != body.model_id

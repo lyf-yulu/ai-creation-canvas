@@ -740,7 +740,7 @@ class CanvasStore:
             if current is None:
                 raise KeyError(model_id)
             if current["archived_at"] is not None or bool(current["runtime_purged"]):
-                raise ValueError("logical model lifecycle transition is unavailable")
+                raise RevisionConflict("logical model lifecycle transition conflict")
             cursor = db.execute(
                 "UPDATE canvas_logical_models SET enabled=?,revision=revision+1,updated_at=? WHERE model_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
                 (int(enabled), _now(), model_id, expected_revision),
@@ -758,6 +758,11 @@ class CanvasStore:
 
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
+            current = db.execute("SELECT revision,archived_at,runtime_purged FROM canvas_logical_models WHERE model_id=?", (model_id,)).fetchone()
+            if current is None:
+                raise KeyError(model_id)
+            if int(current["revision"]) != expected_revision or current["archived_at"] is not None or bool(current["runtime_purged"]):
+                raise RevisionConflict("logical model revision conflict")
             cursor = db.execute(
                 "UPDATE canvas_logical_models SET enabled=0,archived_at=?,revision=revision+1,updated_at=? "
                 "WHERE model_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
@@ -778,6 +783,11 @@ class CanvasStore:
 
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
+            current = db.execute("SELECT revision,archived_at,runtime_purged FROM canvas_logical_models WHERE model_id=?", (model_id,)).fetchone()
+            if current is None:
+                raise KeyError(model_id)
+            if int(current["revision"]) != expected_revision or current["archived_at"] is None or bool(current["runtime_purged"]):
+                raise RevisionConflict("logical model revision conflict")
             cursor = db.execute(
                 "UPDATE canvas_logical_models SET enabled=0,archived_at=NULL,revision=revision+1,updated_at=? "
                 "WHERE model_id=? AND revision=? AND archived_at IS NOT NULL AND runtime_purged=0",
@@ -936,7 +946,7 @@ class CanvasStore:
             if current is None:
                 raise KeyError(route_id)
             if current["archived_at"] is not None or bool(current["runtime_purged"]):
-                raise ValueError("model route lifecycle transition is unavailable")
+                raise RevisionConflict("model route lifecycle transition conflict")
             cursor = db.execute(
                 "UPDATE canvas_model_routes SET enabled=?,revision=revision+1,updated_at=? WHERE route_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
                 (int(enabled), _now(), route_id, expected_revision),
@@ -954,6 +964,11 @@ class CanvasStore:
 
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
+            current = db.execute("SELECT revision,archived_at,runtime_purged FROM canvas_model_routes WHERE route_id=?", (route_id,)).fetchone()
+            if current is None:
+                raise KeyError(route_id)
+            if int(current["revision"]) != expected_revision or current["archived_at"] is not None or bool(current["runtime_purged"]):
+                raise RevisionConflict("model route revision conflict")
             cursor = db.execute(
                 "UPDATE canvas_model_routes SET enabled=0,archived_at=?,revision=revision+1,updated_at=? "
                 "WHERE route_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
@@ -974,6 +989,11 @@ class CanvasStore:
 
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
+            current = db.execute("SELECT revision,archived_at,runtime_purged FROM canvas_model_routes WHERE route_id=?", (route_id,)).fetchone()
+            if current is None:
+                raise KeyError(route_id)
+            if int(current["revision"]) != expected_revision or current["archived_at"] is None or bool(current["runtime_purged"]):
+                raise RevisionConflict("model route revision conflict")
             cursor = db.execute(
                 "UPDATE canvas_model_routes SET enabled=0,archived_at=NULL,revision=revision+1,updated_at=? "
                 "WHERE route_id=? AND revision=? AND archived_at IS NOT NULL AND runtime_purged=0",
@@ -1365,6 +1385,67 @@ class CanvasStore:
                 db.execute("UPDATE canvas_model_access SET revoked_at=? WHERE user_id=? AND model_id=?", (now, user_id, model_id))
                 self._audit(db, actor_user_id=actor_user_id, action="model_access.revoke", target_type="user_model", target_id=f"{user_id}:{model_id}")
         return tuple(model_id for model_id in model_ids)
+
+    def replace_user_model_access(
+        self,
+        user_id: str,
+        static_model_ids: tuple[str, ...],
+        governed_model_ids: tuple[str, ...],
+        *,
+        actor_user_id: str,
+    ) -> tuple[str, ...]:
+        """Atomically replace both catalog assignments and governed access."""
+        all_ids = (*static_model_ids, *governed_model_ids)
+        if (
+            len(all_ids) > 128
+            or len(all_ids) != len(set(all_ids))
+            or any(not isinstance(item, str) or not item or len(item) > 128 for item in all_ids)
+        ):
+            raise ValueError("model access is invalid")
+        with self._connection(immediate=True) as db:
+            if db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is None:
+                raise KeyError(user_id)
+            if governed_model_ids:
+                placeholders = ",".join("?" for _ in governed_model_ids)
+                found = {
+                    str(row[0])
+                    for row in db.execute(
+                        f"SELECT model_id FROM canvas_models WHERE model_id IN ({placeholders}) "
+                        f"UNION SELECT model_id FROM canvas_logical_models WHERE runtime_purged=0 AND model_id IN ({placeholders})",
+                        (*governed_model_ids, *governed_model_ids),
+                    )
+                }
+                if found != set(governed_model_ids):
+                    raise KeyError("model")
+            current_static = {
+                str(row[0])
+                for row in db.execute("SELECT model_id FROM canvas_user_models WHERE user_id=?", (user_id,))
+            }
+            current_governed = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT model_id FROM canvas_model_access WHERE user_id=? AND revoked_at IS NULL", (user_id,)
+                )
+            }
+            desired_static, desired_governed = set(static_model_ids), set(governed_model_ids)
+            now = _now()
+            for model_id in sorted(current_static - desired_static):
+                db.execute("DELETE FROM canvas_user_models WHERE user_id=? AND model_id=?", (user_id, model_id))
+                self._audit(db, actor_user_id=actor_user_id, action="model_assignment.revoke", target_type="user_model", target_id=f"{user_id}:{model_id}")
+            for model_id in sorted(desired_static - current_static):
+                db.execute("INSERT INTO canvas_user_models(user_id,model_id,created_at) VALUES (?,?,?)", (user_id, model_id, now))
+                self._audit(db, actor_user_id=actor_user_id, action="model_assignment.grant", target_type="user_model", target_id=f"{user_id}:{model_id}")
+            for model_id in sorted(desired_governed - current_governed):
+                db.execute(
+                    "INSERT INTO canvas_model_access(user_id,model_id,granted_by,granted_at,revoked_at) VALUES (?,?,?,?,NULL) "
+                    "ON CONFLICT(user_id,model_id) DO UPDATE SET granted_by=excluded.granted_by,granted_at=excluded.granted_at,revoked_at=NULL",
+                    (user_id, model_id, actor_user_id, now),
+                )
+                self._audit(db, actor_user_id=actor_user_id, action="model_access.grant", target_type="user_model", target_id=f"{user_id}:{model_id}")
+            for model_id in sorted(current_governed - desired_governed):
+                db.execute("UPDATE canvas_model_access SET revoked_at=? WHERE user_id=? AND model_id=?", (now, user_id, model_id))
+                self._audit(db, actor_user_id=actor_user_id, action="model_access.revoke", target_type="user_model", target_id=f"{user_id}:{model_id}")
+        return tuple(all_ids)
 
     def admin_audit_events(self) -> tuple[dict[str, object], ...]:
         with self._connection() as db:

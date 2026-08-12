@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+import pytest
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.app import create_app
@@ -110,3 +111,36 @@ def test_normal_user_cannot_call_admin_api(tmp_path) -> None:
 
     assert user.get("/api/v1/admin/users").status_code == 404
     assert user.patch("/api/v1/admin/users/anything", headers=user_headers, json={"enabled": False}).status_code == 404
+
+
+def test_unified_assignment_replace_rolls_back_static_and_governed_changes_on_failure(tmp_path, monkeypatch) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del admin, user, admin_headers, user_headers
+    assert accounts.user is not None
+    from ai_creation_canvas.model_registry import OperationContract
+    from ai_creation_canvas.model_routing import LogicalModelDefinition
+    from ai_creation_canvas.domain.models import ModelInputPort, ModelOperation
+
+    logical = LogicalModelDefinition(
+        "logical-image", "Logical", "Logical model", "image",
+        (OperationContract(ModelOperation.IMAGE_GENERATE, (ModelInputPort("prompt", "text", 1, 1),), "image", {"type": "object", "properties": {}, "additionalProperties": False}, {}),),
+    )
+    app.state.canvas_store.create_logical_model(logical, actor_user_id="admin")
+    original_audit = app.state.canvas_store._audit
+
+    def fail_on_access(db, *, actor_user_id, action, target_type, target_id):
+        if action == "model_access.grant":
+            raise RuntimeError("fixture rollback")
+        return original_audit(db, actor_user_id=actor_user_id, action=action, target_type=target_type, target_id=target_id)
+
+    monkeypatch.setattr(app.state.canvas_store, "_audit", fail_on_access)
+    with pytest.raises(RuntimeError, match="rollback"):
+        app.state.canvas_store.replace_user_model_access(
+            accounts.user.user_id,
+            ("hidden-model",),
+            ("logical-image",),
+            actor_user_id="admin",
+        )
+
+    assert app.state.canvas_store.assigned_models(accounts.user.user_id) == ("visible-model",)
+    assert app.state.canvas_store.governed_assigned_models(accounts.user.user_id) == ()

@@ -134,3 +134,22 @@ def test_parent_runtime_purge_audits_each_referenced_child_route(tmp_path) -> No
     assert response.status_code == 200
     actions = [event["action"] for event in app.state.canvas_store.admin_audit_events()]
     assert actions[-2:] == ["model_route.purge_runtime", "logical_model.purge_runtime"]
+
+
+def test_missing_lifecycle_targets_return_404_without_audit(tmp_path) -> None:
+    app, accounts, admin, user, headers, user_headers, pools = clients(tmp_path)
+    del accounts, user, user_headers, pools
+    before = tuple(app.state.canvas_store.admin_audit_events())
+
+    calls = (
+        "/api/v1/admin/logical-models/missing/archive",
+        "/api/v1/admin/logical-models/missing/restore",
+        "/api/v1/admin/logical-models/missing/disable",
+        "/api/v1/admin/logical-models/missing/routes/missing/archive",
+        "/api/v1/admin/logical-models/missing/routes/missing/restore",
+        "/api/v1/admin/logical-models/missing/routes/missing/disable",
+    )
+    for path in calls:
+        response = admin.post(path, headers=headers, json={"revision": 1})
+        assert response.status_code == 404, (path, response.text)
+    assert tuple(app.state.canvas_store.admin_audit_events()) == before
