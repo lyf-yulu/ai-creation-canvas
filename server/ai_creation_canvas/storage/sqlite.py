@@ -625,7 +625,7 @@ class CanvasStore:
             updated_at=str(row["updated_at"]),
         )
 
-    def create_logical_model(self, definition):
+    def create_logical_model(self, definition, *, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition
 
         if (
@@ -653,6 +653,8 @@ class CanvasStore:
                         now,
                     ),
                 )
+                if actor_user_id is not None:
+                    self._audit(db, actor_user_id=actor_user_id, action="logical_model.create", target_type="logical_model", target_id=definition.model_id)
                 row = db.execute(
                     "SELECT * FROM canvas_logical_models WHERE model_id=?", (definition.model_id,)
                 ).fetchone()
@@ -677,7 +679,7 @@ class CanvasStore:
             rows = db.execute(query).fetchall()
         return tuple(self._logical_from_row(row) for row in rows)
 
-    def update_logical_model(self, definition, *, expected_revision: int):
+    def update_logical_model(self, definition, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict, validate_route_model
 
         self._require_revision(expected_revision)
@@ -719,13 +721,39 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("logical model revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="logical_model.update", target_type="logical_model", target_id=definition.model_id)
             row = db.execute(
                 "SELECT * FROM canvas_logical_models WHERE model_id=?", (definition.model_id,)
             ).fetchone()
         assert row is not None
         return LogicalModelDefinition.from_record(dict(row))
 
-    def archive_logical_model(self, model_id: str, *, expected_revision: int):
+    def set_logical_model_enabled(self, model_id: str, *, enabled: bool, expected_revision: int, actor_user_id: str | None = None):
+        from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        if type(enabled) is not bool:
+            raise ValueError("logical model enabled state is invalid")
+        with self._connection(immediate=True) as db:
+            current = db.execute("SELECT archived_at,runtime_purged FROM canvas_logical_models WHERE model_id=?", (model_id,)).fetchone()
+            if current is None:
+                raise KeyError(model_id)
+            if current["archived_at"] is not None or bool(current["runtime_purged"]):
+                raise ValueError("logical model lifecycle transition is unavailable")
+            cursor = db.execute(
+                "UPDATE canvas_logical_models SET enabled=?,revision=revision+1,updated_at=? WHERE model_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
+                (int(enabled), _now(), model_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("logical model revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action=f"logical_model.{'enable' if enabled else 'disable'}", target_type="logical_model", target_id=model_id)
+            row = db.execute("SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)).fetchone()
+        assert row is not None
+        return LogicalModelDefinition.from_record(dict(row))
+
+    def archive_logical_model(self, model_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -737,13 +765,15 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("logical model revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="logical_model.archive", target_type="logical_model", target_id=model_id)
             row = db.execute(
                 "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
             ).fetchone()
         assert row is not None
         return LogicalModelDefinition.from_record(dict(row))
 
-    def restore_logical_model(self, model_id: str, *, expected_revision: int):
+    def restore_logical_model(self, model_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -755,13 +785,15 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("logical model revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="logical_model.restore", target_type="logical_model", target_id=model_id)
             row = db.execute(
                 "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
             ).fetchone()
         assert row is not None
         return LogicalModelDefinition.from_record(dict(row))
 
-    def create_model_route(self, definition):
+    def create_model_route(self, definition, *, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition, validate_route_model
 
         if (
@@ -802,6 +834,8 @@ class CanvasStore:
                         now,
                     ),
                 )
+                if actor_user_id is not None:
+                    self._audit(db, actor_user_id=actor_user_id, action="model_route.create", target_type="model_route", target_id=definition.route_id)
                 row = db.execute(
                     "SELECT * FROM canvas_model_routes WHERE route_id=?", (definition.route_id,)
                 ).fetchone()
@@ -833,7 +867,7 @@ class CanvasStore:
             rows = db.execute(query, values).fetchall()
         return tuple(self._route_from_row(row) for row in rows)
 
-    def update_model_route(self, definition, *, expected_revision: int):
+    def update_model_route(self, definition, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition, RevisionConflict, validate_route_model
 
         self._require_revision(expected_revision)
@@ -881,13 +915,41 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("model route revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="model_route.update", target_type="model_route", target_id=definition.route_id)
+                if int(current["priority"]) != definition.priority:
+                    self._audit(db, actor_user_id=actor_user_id, action="model_route.priority_change", target_type="model_route", target_id=definition.route_id)
             row = db.execute(
                 "SELECT * FROM canvas_model_routes WHERE route_id=?", (definition.route_id,)
             ).fetchone()
         assert row is not None
         return ModelRouteDefinition.from_record(dict(row))
 
-    def archive_model_route(self, route_id: str, *, expected_revision: int):
+    def set_model_route_enabled(self, route_id: str, *, enabled: bool, expected_revision: int, actor_user_id: str | None = None):
+        from ai_creation_canvas.model_routing import ModelRouteDefinition, RevisionConflict
+
+        self._require_revision(expected_revision)
+        if type(enabled) is not bool:
+            raise ValueError("model route enabled state is invalid")
+        with self._connection(immediate=True) as db:
+            current = db.execute("SELECT archived_at,runtime_purged FROM canvas_model_routes WHERE route_id=?", (route_id,)).fetchone()
+            if current is None:
+                raise KeyError(route_id)
+            if current["archived_at"] is not None or bool(current["runtime_purged"]):
+                raise ValueError("model route lifecycle transition is unavailable")
+            cursor = db.execute(
+                "UPDATE canvas_model_routes SET enabled=?,revision=revision+1,updated_at=? WHERE route_id=? AND revision=? AND archived_at IS NULL AND runtime_purged=0",
+                (int(enabled), _now(), route_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise RevisionConflict("model route revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action=f"model_route.{'enable' if enabled else 'disable'}", target_type="model_route", target_id=route_id)
+            row = db.execute("SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)).fetchone()
+        assert row is not None
+        return ModelRouteDefinition.from_record(dict(row))
+
+    def archive_model_route(self, route_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import ModelRouteDefinition, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -899,13 +961,15 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("model route revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="model_route.archive", target_type="model_route", target_id=route_id)
             row = db.execute(
                 "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
             ).fetchone()
         assert row is not None
         return ModelRouteDefinition.from_record(dict(row))
 
-    def restore_model_route(self, route_id: str, *, expected_revision: int):
+    def restore_model_route(self, route_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import ModelRouteDefinition, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -917,6 +981,8 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("model route revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="model_route.restore", target_type="model_route", target_id=route_id)
             row = db.execute(
                 "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
             ).fetchone()
@@ -979,7 +1045,7 @@ class CanvasStore:
         with self._connection() as db:
             return self._logical_model_references_in(db, model_id)
 
-    def delete_model_route(self, route_id: str, *, expected_revision: int):
+    def delete_model_route(self, route_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import DeleteResult, ObjectReferenced, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -1002,9 +1068,11 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("model route revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="model_route.delete", target_type="model_route", target_id=route_id)
         return DeleteResult(deleted=True)
 
-    def delete_logical_model(self, model_id: str, *, expected_revision: int):
+    def delete_logical_model(self, model_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import DeleteResult, ObjectReferenced, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -1027,9 +1095,11 @@ class CanvasStore:
             )
             if cursor.rowcount != 1:
                 raise RevisionConflict("logical model revision conflict")
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="logical_model.delete", target_type="logical_model", target_id=model_id)
         return DeleteResult(deleted=True)
 
-    def purge_model_route_runtime(self, route_id: str, *, expected_revision: int):
+    def purge_model_route_runtime(self, route_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import ObjectReferenced, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -1053,13 +1123,15 @@ class CanvasStore:
                 "runtime_purged=1,updated_at=? WHERE route_id=? AND revision=?",
                 (now, now, route_id, expected_revision),
             )
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="model_route.purge_runtime", target_type="model_route", target_id=route_id)
             updated = db.execute(
                 "SELECT * FROM canvas_model_routes WHERE route_id=?", (route_id,)
             ).fetchone()
         assert updated is not None
         return self._route_stub(updated)
 
-    def purge_logical_model_runtime(self, model_id: str, *, expected_revision: int):
+    def purge_logical_model_runtime(self, model_id: str, *, expected_revision: int, actor_user_id: str | None = None):
         from ai_creation_canvas.model_routing import ObjectReferenced, RevisionConflict
 
         self._require_revision(expected_revision)
@@ -1092,14 +1164,20 @@ class CanvasStore:
                         "runtime_purged=1,updated_at=? WHERE route_id=? AND runtime_purged=0",
                         (now, now, route_id),
                     )
+                    if actor_user_id is not None:
+                        self._audit(db, actor_user_id=actor_user_id, action="model_route.purge_runtime", target_type="model_route", target_id=route_id)
                 else:
                     db.execute("DELETE FROM canvas_model_routes WHERE route_id=?", (route_id,))
+                    if actor_user_id is not None:
+                        self._audit(db, actor_user_id=actor_user_id, action="model_route.delete", target_type="model_route", target_id=route_id)
             db.execute(
                 "UPDATE canvas_logical_models SET introduction='',operation_contracts_json='[]',enabled=0,"
                 "archived_at=COALESCE(archived_at,?),revision=revision+1,runtime_purged=1,updated_at=? "
                 "WHERE model_id=? AND revision=?",
                 (now, now, model_id, expected_revision),
             )
+            if actor_user_id is not None:
+                self._audit(db, actor_user_id=actor_user_id, action="logical_model.purge_runtime", target_type="logical_model", target_id=model_id)
             updated = db.execute(
                 "SELECT * FROM canvas_logical_models WHERE model_id=?", (model_id,)
             ).fetchone()
@@ -1135,6 +1213,38 @@ class CanvasStore:
         with self._connection() as db:
             rows = db.execute("SELECT * FROM canvas_providers ORDER BY provider_id").fetchall()
         return tuple(provider_from_record(dict(row)) for row in rows)
+
+    def provider_references(self, provider_id: str) -> tuple[str, ...]:
+        with self._connection() as db:
+            references = [
+                f"route:{row['route_id']}"
+                for row in db.execute("SELECT route_id FROM canvas_model_routes WHERE provider_id=? ORDER BY route_id", (provider_id,))
+            ]
+            references.extend(
+                f"model:{row['model_id']}"
+                for row in db.execute("SELECT model_id FROM canvas_models WHERE provider_id=? ORDER BY model_id", (provider_id,))
+            )
+        return tuple(references)
+
+    def delete_provider_definition(self, provider_id: str, *, expected_revision: int, actor_user_id: str):
+        from ai_creation_canvas.model_routing import DeleteResult, ObjectReferenced, RevisionConflict
+
+        self._require_revision(expected_revision)
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT revision FROM canvas_providers WHERE provider_id=?", (provider_id,)).fetchone()
+            if row is None:
+                raise KeyError(provider_id)
+            if int(row["revision"]) != expected_revision:
+                raise RevisionConflict("provider revision conflict")
+            routes = db.execute("SELECT route_id FROM canvas_model_routes WHERE provider_id=?", (provider_id,)).fetchall()
+            models = db.execute("SELECT model_id FROM canvas_models WHERE provider_id=?", (provider_id,)).fetchall()
+            if routes or models:
+                raise ObjectReferenced("provider is referenced")
+            cursor = db.execute("DELETE FROM canvas_providers WHERE provider_id=? AND revision=?", (provider_id, expected_revision))
+            if cursor.rowcount != 1:
+                raise RevisionConflict("provider revision conflict")
+            self._audit(db, actor_user_id=actor_user_id, action="provider.delete", target_type="provider", target_id=provider_id)
+        return DeleteResult(deleted=True)
 
     def update_provider_definition(self, definition, *, expected_revision: int, actor_user_id: str):
         from ai_creation_canvas.model_registry import ProviderDefinition, provider_from_record
@@ -1235,7 +1345,14 @@ class CanvasStore:
                 raise KeyError(user_id)
             if model_ids:
                 placeholders = ",".join("?" for _ in model_ids)
-                found = {str(row[0]) for row in db.execute(f"SELECT model_id FROM canvas_models WHERE model_id IN ({placeholders})", model_ids)}
+                found = {
+                    str(row[0])
+                    for row in db.execute(
+                        f"SELECT model_id FROM canvas_models WHERE model_id IN ({placeholders}) "
+                        f"UNION SELECT model_id FROM canvas_logical_models WHERE runtime_purged=0 AND model_id IN ({placeholders})",
+                        (*model_ids, *model_ids),
+                    )
+                }
                 if found != set(model_ids):
                     raise KeyError("model")
             current = {str(row[0]) for row in db.execute("SELECT model_id FROM canvas_model_access WHERE user_id=? AND revoked_at IS NULL", (user_id,))}

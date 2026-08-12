@@ -26,6 +26,8 @@ class ExecutionCoordinator(Protocol):
 
     def fingerprint_secret(self, secret: str) -> str: ...
 
+    async def credential_pool_metrics(self, pool) -> dict[str, object]: ...
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class CredentialLease:
@@ -133,6 +135,16 @@ class LocalExecutionCoordinator:
             raise ValueError("credential secret is invalid")
         return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
+    async def credential_pool_metrics(self, pool) -> dict[str, object]:
+        from ai_creation_canvas.credential_pools import CredentialPool
+
+        if not isinstance(pool, CredentialPool):
+            raise ValueError("credential pool is required")
+        async with self._lock:
+            busy = sum(self._keys.get((pool.pool_id, key.key_id), 0) for key in pool.keys)
+        total = sum(key.max_concurrency for key in pool.keys)
+        return {"capacity_status": "available", "available_count": max(0, total - busy), "busy_count": busy}
+
 
 _ACQUIRE = """
 local owner = KEYS[1]
@@ -201,6 +213,18 @@ if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 redis.call('DEL', KEYS[1])
 for i=2,#KEYS do redis.call('ZREM', KEYS[i], ARGV[1]) end
 return 1
+"""
+
+
+_CREDENTIAL_POOL_METRICS = """-- credential-pool-metrics-v1
+local redis_time = redis.call('TIME')
+local now = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local busy = 0
+for i=1,#KEYS do
+  redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', now)
+  busy = busy + redis.call('ZCARD', KEYS[i])
+end
+return busy
 """
 
 
@@ -330,6 +354,24 @@ class RedisExecutionCoordinator:
         if not isinstance(secret, str) or not secret or self._credential_hmac_key is None:
             raise CoordinationUnavailable("credential fingerprinting is unavailable")
         return self._credential_opaque("fingerprint", secret)
+
+    async def credential_pool_metrics(self, pool) -> dict[str, object]:
+        from ai_creation_canvas.credential_pools import CredentialPool
+
+        if not isinstance(pool, CredentialPool) or self._credential_hmac_key is None:
+            raise CoordinationUnavailable("credential metrics are unavailable")
+        keys = tuple(
+            f"{self._namespace}:cl:k:{self._credential_opaque('credential', pool.pool_id, key.key_id)}"
+            for key in sorted(pool.keys, key=lambda item: item.key_id)
+        )
+        try:
+            busy = await self._client.eval(_CREDENTIAL_POOL_METRICS, len(keys), *keys)
+        except Exception as error:
+            raise CoordinationUnavailable("Redis is unavailable") from error
+        if type(busy) is not int or busy < 0:
+            raise CoordinationUnavailable("credential metrics are unavailable")
+        total = sum(key.max_concurrency for key in pool.keys)
+        return {"capacity_status": "available", "available_count": max(0, total - busy), "busy_count": busy}
 
 
 def _limits(*values: int) -> None:

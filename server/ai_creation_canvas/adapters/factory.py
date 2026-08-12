@@ -188,18 +188,13 @@ class RouteAdapterFactory:
     def __repr__(self) -> str:
         return f"RouteAdapterFactory(provider_count={len(self._protocols)})"
 
-    def build(self, route: ModelRouteDefinition, lease: CredentialLease):
-        if not isinstance(route, ModelRouteDefinition) or not isinstance(lease, CredentialLease):
-            raise ValueError("route and credential lease are required")
+    def validate_route(self, route: ModelRouteDefinition) -> None:
+        """Validate against code-owned templates without reading a deployed credential."""
         if (
-            not route.enabled
+            not isinstance(route, ModelRouteDefinition)
             or route.archived_at is not None
             or not route.provider_model_name
             or not route.credential_pool_ref
-            or route.route_id != lease.route_id
-            or route.credential_pool_ref != lease.pool_id
-            or not isinstance(lease.secret, str)
-            or len(lease.secret.strip()) < 8
         ):
             raise ValueError("route runtime is unavailable")
         protocol = self._protocols.get(route.provider_id)
@@ -209,10 +204,9 @@ class RouteAdapterFactory:
             raise ValueError("route must bind exactly one operation template")
         contract = route.operation_contracts[0]
         _validate_parameter_contract(route.adapter_type, contract.operation, contract.parameter_schema, contract.parameter_mappings)
-        transport = self._transport_factory(protocol) if self._transport_factory is not None else self._transport
+        ports = {port.port_id: port for port in contract.input_ports}
         if route.adapter_type == "ark":
             targets = set(contract.parameter_mappings.values())
-            ports = {port.port_id: port for port in contract.input_ports}
             if not _is_prompt_port(ports.get("prompt")):
                 raise ValueError("Ark prompt contract is unsupported")
             if contract.operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
@@ -229,25 +223,60 @@ class RouteAdapterFactory:
                     or references.max_items > 14
                 ):
                     raise ValueError("Ark image edit inputs are unsupported")
-            elif contract.operation is ModelOperation.VIDEO_GENERATE:
+                return
+            if contract.operation is ModelOperation.VIDEO_GENERATE:
                 if contract.output_media_type != "video" or not targets <= _ARK_VIDEO_TARGETS:
                     raise ValueError("Ark video route contract is unsupported")
-                video_limits = {
+                limits = {
                     "first_frame": ("image", 1),
                     "last_frame": ("image", 1),
                     "reference_images": ("image", 9),
                     "reference_audio": ("audio", 3),
                 }
-                if set(ports) - ({"prompt"} | set(video_limits)):
+                if set(ports) - ({"prompt"} | set(limits)):
                     raise ValueError("Ark video inputs are unsupported")
                 for name, port in ports.items():
                     if name == "prompt":
                         continue
-                    media_type, maximum = video_limits[name]
+                    media_type, maximum = limits[name]
                     if port.media_type != media_type or port.min_items != 0 or port.max_items > maximum:
                         raise ValueError("Ark video inputs are unsupported")
-            else:
-                raise ValueError("Ark route operation is unsupported")
+                return
+            raise ValueError("Ark route operation is unsupported")
+        references = ports.get("reference_images")
+        if (
+            route.adapter_type != "chiyun_openai_images"
+            or contract.operation is not ModelOperation.IMAGE_EDIT
+            or contract.output_media_type != "image"
+            or set(ports) != {"prompt", "reference_images"}
+            or not _is_prompt_port(ports.get("prompt"))
+            or references is None
+            or references.media_type != "image"
+            or references.min_items < 1
+            or references.max_items > 10
+            or dict(contract.parameter_mappings) != {"size": "size", "output_count": "n"}
+        ):
+            raise ValueError("Chiyun route contract is unsupported")
+
+    def build(self, route: ModelRouteDefinition, lease: CredentialLease):
+        if not isinstance(route, ModelRouteDefinition) or not isinstance(lease, CredentialLease):
+            raise ValueError("route and credential lease are required")
+        if (
+            not route.enabled
+            or route.archived_at is not None
+            or not route.provider_model_name
+            or not route.credential_pool_ref
+            or route.route_id != lease.route_id
+            or route.credential_pool_ref != lease.pool_id
+            or not isinstance(lease.secret, str)
+            or len(lease.secret.strip()) < 8
+        ):
+            raise ValueError("route runtime is unavailable")
+        self.validate_route(route)
+        protocol = self._protocols[route.provider_id]
+        contract = route.operation_contracts[0]
+        transport = self._transport_factory(protocol) if self._transport_factory is not None else self._transport
+        if route.adapter_type == "ark":
             declaration = ArkModelDeclaration(
                 route.model_id,
                 route.route_id,
@@ -266,20 +295,6 @@ class RouteAdapterFactory:
                 asset_loader=self._asset_loader,
             )
         if route.adapter_type == "chiyun_openai_images":
-            ports = {port.port_id: port for port in contract.input_ports}
-            references = ports.get("reference_images")
-            if (
-                contract.operation is not ModelOperation.IMAGE_EDIT
-                or contract.output_media_type != "image"
-                or set(ports) != {"prompt", "reference_images"}
-                or not _is_prompt_port(ports.get("prompt"))
-                or references is None
-                or references.media_type != "image"
-                or references.min_items < 1
-                or references.max_items > 10
-                or dict(contract.parameter_mappings) != {"size": "size", "output_count": "n"}
-            ):
-                raise ValueError("Chiyun route contract is unsupported")
             service_id = route.route_id
             provider = ProviderDefinition(
                 service_id,

@@ -197,6 +197,13 @@ class ScriptRedis:
             return self._acquire(script, keys, args)
         if "credential-release-v1" in script:
             return self._release(keys, args)
+        if "credential-pool-metrics-v1" in script:
+            assert "redis.call('TIME')" in script
+            for members in self.sets.values():
+                for member, expiry in tuple(members.items()):
+                    if expiry <= self.server_now_ms:
+                        members.pop(member)
+            return sum(len(self.sets.get(key, {})) for key in keys)
         raise AssertionError("unexpected script")
 
     def _acquire(self, script: str, keys: list[str], args: tuple[object, ...]) -> int:
@@ -316,6 +323,22 @@ def test_redis_per_key_limit_moves_work_to_another_key_in_the_same_pool() -> Non
                     return first.key_id, second.key_id, third.key_id
 
     assert asyncio.run(scenario()) == ("key-a", "key-b", "key-b")
+
+
+def test_redis_pool_metrics_use_only_hmac_opaque_keys_and_prune_with_redis_time() -> None:
+    async def scenario() -> tuple[dict[str, object], ScriptRedis]:
+        client = ScriptRedis()
+        coordinator = _redis(client)
+        pool = _pool(key_limits=(("key-a-visible", 1), ("key-b-visible", 2)))
+        metrics = await coordinator.credential_pool_metrics(pool)
+        return metrics, client
+
+    metrics, client = asyncio.run(scenario())
+    assert metrics == {"capacity_status": "available", "available_count": 3, "busy_count": 0}
+    encoded = json.dumps(client.recorded_commands)
+    assert "credential-pool-metrics-v1" in encoded
+    for forbidden in ("t8-gemini", "gemini", "key-a-visible", "key-b-visible", "api-key"):
+        assert forbidden not in encoded
 
 
 def test_redis_multi_key_pool_exhausts_at_the_sum_of_key_limits() -> None:

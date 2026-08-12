@@ -157,7 +157,8 @@ class GovernedModelDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_id", _stable_id(self.model_id, "model_id"))
         object.__setattr__(self, "provider_id", _stable_id(self.provider_id, "provider_id"))
-        object.__setattr__(self, "provider_model_name", _stable_id(self.provider_model_name, "provider_model_name"))
+        if not isinstance(self.provider_model_name, str) or _CREDENTIAL_REF.fullmatch(self.provider_model_name) is None:
+            raise ValueError("provider_model_name is invalid")
         object.__setattr__(self, "display_name", _text(self.display_name, "display_name", 128))
         object.__setattr__(self, "introduction", _text(self.introduction, "introduction", 1000))
         try:
