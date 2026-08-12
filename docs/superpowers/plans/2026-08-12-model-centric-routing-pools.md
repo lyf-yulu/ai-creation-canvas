@@ -295,31 +295,31 @@ git commit -m "feat: bind trusted adapters to model routes"
 - Produces terminal/intermediate `submission_state` values `reserved`, `submitted`, `submission_unknown`, `rejected`.
 - Consumes Tasks 1–4 snapshots, selector, credential lease and route adapter factory.
 
-- [ ] **Step 1: Write RED catalog and authorization tests**
+- [x] **Step 1: Write RED catalog and authorization tests**
 
 Assert users receive one Nano Banana logical model even when it has three routes; public JSON has no route/provider/group/pool/key fields. Revocation, archive, no healthy route and modality mismatch reject before credential acquisition.
 
-- [ ] **Step 2: Write RED immutable routing and retry tests**
+- [x] **Step 2: Write RED immutable routing and retry tests**
 
 Cover official route busy → T8 `gemini` route selected, first key explicit 429 → second key in the same pool, `cc` never used, and a request-body timeout produces `submission_unknown` with no second provider request. Updating routes/pools later must not mutate stored snapshot fields.
 
-- [ ] **Step 3: Write RED concurrent idempotency tests**
+- [x] **Step 3: Write RED concurrent idempotency tests**
 
 Use two ASGI clients and the same user/key/payload. Assert one SQL job, one selected route snapshot and at most one uncertain provider submission. Same key/different logical request remains 409.
 
-- [ ] **Step 4: Run RED tests**
+- [x] **Step 4: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_jobs_model_routes.py tests/server/test_submission_unknown.py tests/server/test_logical_model_catalog.py`
 
-- [ ] **Step 5: Implement catalog and submission orchestration**
+- [x] **Step 5: Implement catalog and submission orchestration**
 
 Return logical models from the catalog. In `POST /jobs`, reserve the platform job first, choose compatible candidates, acquire one credential lease, persist the immutable routing snapshot before network I/O, then submit. Retry only when the typed disposition permits it. Map `submission_unknown` to a non-terminal visible state that polling/recovery can inspect but users cannot manually duplicate with the same idempotency key.
 
-- [ ] **Step 6: Preserve poll/result ownership**
+- [x] **Step 6: Preserve poll/result ownership**
 
 Resolve polling and result adapters from the immutable route snapshot, never from the current route list. Keep current user ownership checks, GET-only recovery, bounded result proxy and source-job/result-node deduplication.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [x] **Step 7: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_jobs_model_routes.py tests/server/test_submission_unknown.py tests/server/test_logical_model_catalog.py tests/server/test_jobs_api.py tests/server/test_results_api.py`
 
