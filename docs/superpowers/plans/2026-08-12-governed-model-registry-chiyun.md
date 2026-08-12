@@ -30,25 +30,25 @@
 - Modify: `server/ai_creation_canvas/storage/sqlite.py`
 - Test: `tests/server/test_model_registry.py`
 
-- [ ] **Step 1: Write RED domain and migration tests**
+- [x] **Step 1: Write RED domain and migration tests**
 
 Add tests that create a `ProviderDefinition` and `ModelDefinition`, reject unknown adapter types, non-HTTPS origins, secrets in public projections, mismatched modality/operation/output, duplicate ports and unsafe parameter mappings. Add SQLite round-trip tests for create/update revision, enabled state, access grant/revoke and audit rows.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_registry.py`
 
 Expected: collection fails because `model_registry` and store methods do not exist.
 
-- [ ] **Step 3: Implement immutable contracts**
+- [x] **Step 3: Implement immutable contracts**
 
 Implement bounded dataclasses/enums for provider, model and per-operation contracts. Permit only adapter types from an injected allowlist; require HTTPS origin; store `credential_ref` but omit it, `base_url`, adapter mapping and provider model name from user projections. Convert each operation into an existing `ModelSpec` without guessing from names.
 
-- [ ] **Step 4: Implement additive SQLite migration and atomic CRUD**
+- [x] **Step 4: Implement additive SQLite migration and atomic CRUD**
 
 Create `canvas_providers`, `canvas_models`, `canvas_model_access` and `canvas_admin_audit` with foreign keys, uniqueness constraints and monotonically increasing revisions. Store operation contracts as bounded canonical JSON. Make grant/revoke an immediate transaction; preserve current `canvas_user_models` only as a compatibility source during migration, then resolve new access from `canvas_model_access`.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_model_registry.py tests/server/test_local_auth.py`
 

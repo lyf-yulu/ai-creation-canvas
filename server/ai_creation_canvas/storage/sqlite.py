@@ -269,6 +269,30 @@ class CanvasStore:
                 model_id TEXT NOT NULL, created_at TEXT NOT NULL,
                 PRIMARY KEY(user_id, model_id)
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_providers (
+                provider_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+                adapter_type TEXT NOT NULL, base_url TEXT NOT NULL,
+                credential_ref TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                revision INTEGER NOT NULL CHECK(revision >= 1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_models (
+                model_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL REFERENCES canvas_providers(provider_id),
+                provider_model_name TEXT NOT NULL, display_name TEXT NOT NULL, introduction TEXT NOT NULL,
+                modality TEXT NOT NULL CHECK(modality IN ('image','video','audio','text')),
+                operation_contracts_json TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                revision INTEGER NOT NULL CHECK(revision >= 1), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_model_access (
+                user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
+                model_id TEXT NOT NULL REFERENCES canvas_models(model_id) ON DELETE CASCADE,
+                granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT,
+                PRIMARY KEY(user_id, model_id)
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_admin_audit (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id TEXT NOT NULL,
+                action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_projects (
                 project_id TEXT NOT NULL, user_id TEXT NOT NULL,
                 title TEXT NOT NULL, document_json TEXT NOT NULL,
@@ -432,6 +456,121 @@ class CanvasStore:
             row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
         assert row is not None
         return dict(row)
+
+    def _audit(self, db: sqlite3.Connection, *, actor_user_id: str, action: str, target_type: str, target_id: str) -> None:
+        if not all(isinstance(value, str) and value and len(value) <= 128 for value in (actor_user_id, action, target_type, target_id)):
+            raise ValueError("audit event is invalid")
+        db.execute(
+            "INSERT INTO canvas_admin_audit(actor_user_id,action,target_type,target_id,created_at) VALUES (?,?,?,?,?)",
+            (actor_user_id, action, target_type, target_id, _now()),
+        )
+
+    def create_provider_definition(self, definition, *, actor_user_id: str):
+        from ai_creation_canvas.model_registry import ProviderDefinition, provider_from_record
+        if not isinstance(definition, ProviderDefinition) or definition.revision != 1:
+            raise ValueError("provider definition is invalid")
+        now = _now()
+        try:
+            with self._connection(immediate=True) as db:
+                db.execute(
+                    "INSERT INTO canvas_providers(provider_id,display_name,adapter_type,base_url,credential_ref,enabled,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (definition.provider_id, definition.display_name, definition.adapter_type, definition.base_url, definition.credential_ref, int(definition.enabled), 1, now, now),
+                )
+                self._audit(db, actor_user_id=actor_user_id, action="provider.create", target_type="provider", target_id=definition.provider_id)
+                row = db.execute("SELECT * FROM canvas_providers WHERE provider_id=?", (definition.provider_id,)).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("provider already exists") from error
+        assert row is not None
+        return provider_from_record(dict(row))
+
+    def provider_definition(self, provider_id: str):
+        from ai_creation_canvas.model_registry import provider_from_record
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM canvas_providers WHERE provider_id=?", (provider_id,)).fetchone()
+        return provider_from_record(dict(row)) if row is not None else None
+
+    def list_provider_definitions(self):
+        from ai_creation_canvas.model_registry import provider_from_record
+        with self._connection() as db:
+            rows = db.execute("SELECT * FROM canvas_providers ORDER BY provider_id").fetchall()
+        return tuple(provider_from_record(dict(row)) for row in rows)
+
+    def update_provider_definition(self, definition, *, expected_revision: int, actor_user_id: str):
+        from ai_creation_canvas.model_registry import ProviderDefinition, provider_from_record
+        if not isinstance(definition, ProviderDefinition) or type(expected_revision) is not int or expected_revision < 1 or definition.revision != expected_revision:
+            raise ValueError("provider revision conflict")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_providers SET display_name=?,adapter_type=?,base_url=?,credential_ref=?,enabled=?,revision=revision+1,updated_at=? WHERE provider_id=? AND revision=?",
+                (definition.display_name, definition.adapter_type, definition.base_url, definition.credential_ref, int(definition.enabled), _now(), definition.provider_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("provider revision conflict")
+            self._audit(db, actor_user_id=actor_user_id, action="provider.update", target_type="provider", target_id=definition.provider_id)
+            row = db.execute("SELECT * FROM canvas_providers WHERE provider_id=?", (definition.provider_id,)).fetchone()
+        assert row is not None
+        return provider_from_record(dict(row))
+
+    def create_model_definition(self, definition, *, actor_user_id: str):
+        from ai_creation_canvas.model_registry import GovernedModelDefinition
+        if not isinstance(definition, GovernedModelDefinition) or definition.revision != 1:
+            raise ValueError("model definition is invalid")
+        now = _now()
+        try:
+            with self._connection(immediate=True) as db:
+                if db.execute("SELECT 1 FROM canvas_providers WHERE provider_id=?", (definition.provider_id,)).fetchone() is None:
+                    raise KeyError(definition.provider_id)
+                db.execute(
+                    "INSERT INTO canvas_models(model_id,provider_id,provider_model_name,display_name,introduction,modality,operation_contracts_json,enabled,revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (definition.model_id, definition.provider_id, definition.provider_model_name, definition.display_name, definition.introduction, definition.modality.value, definition.contracts_json(), int(definition.enabled), 1, now, now),
+                )
+                self._audit(db, actor_user_id=actor_user_id, action="model.create", target_type="model", target_id=definition.model_id)
+                row = db.execute("SELECT * FROM canvas_models WHERE model_id=?", (definition.model_id,)).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("model already exists") from error
+        assert row is not None
+        return GovernedModelDefinition.from_record(dict(row))
+
+    def model_definition(self, model_id: str):
+        from ai_creation_canvas.model_registry import GovernedModelDefinition
+        with self._connection() as db:
+            row = db.execute("SELECT * FROM canvas_models WHERE model_id=?", (model_id,)).fetchone()
+        return GovernedModelDefinition.from_record(dict(row)) if row is not None else None
+
+    def list_model_definitions(self, *, enabled_only: bool = False):
+        from ai_creation_canvas.model_registry import GovernedModelDefinition
+        query = "SELECT * FROM canvas_models" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY model_id"
+        with self._connection() as db:
+            rows = db.execute(query).fetchall()
+        return tuple(GovernedModelDefinition.from_record(dict(row)) for row in rows)
+
+    def grant_model_access(self, user_id: str, model_id: str, *, actor_user_id: str) -> None:
+        with self._connection(immediate=True) as db:
+            if db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is None or db.execute("SELECT 1 FROM canvas_models WHERE model_id=?", (model_id,)).fetchone() is None:
+                raise KeyError((user_id, model_id))
+            now = _now()
+            db.execute(
+                "INSERT INTO canvas_model_access(user_id,model_id,granted_by,granted_at,revoked_at) VALUES (?,?,?,?,NULL) ON CONFLICT(user_id,model_id) DO UPDATE SET granted_by=excluded.granted_by,granted_at=excluded.granted_at,revoked_at=NULL",
+                (user_id, model_id, actor_user_id, now),
+            )
+            self._audit(db, actor_user_id=actor_user_id, action="model_access.grant", target_type="user_model", target_id=f"{user_id}:{model_id}")
+
+    def revoke_model_access(self, user_id: str, model_id: str, *, actor_user_id: str) -> None:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute("UPDATE canvas_model_access SET revoked_at=? WHERE user_id=? AND model_id=? AND revoked_at IS NULL", (_now(), user_id, model_id))
+            if cursor.rowcount != 1:
+                raise KeyError((user_id, model_id))
+            self._audit(db, actor_user_id=actor_user_id, action="model_access.revoke", target_type="user_model", target_id=f"{user_id}:{model_id}")
+
+    def governed_assigned_models(self, user_id: str) -> tuple[str, ...]:
+        with self._connection() as db:
+            rows = db.execute("SELECT model_id FROM canvas_model_access WHERE user_id=? AND revoked_at IS NULL ORDER BY model_id", (user_id,)).fetchall()
+        return tuple(str(row["model_id"]) for row in rows)
+
+    def admin_audit_events(self) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            rows = db.execute("SELECT * FROM canvas_admin_audit ORDER BY event_id").fetchall()
+        return tuple(dict(row) for row in rows)
 
     def bootstrap_users(self, *, admin_id: str, admin_password_hash: str, user_id: str, user_password_hash: str, initial_user_model_ids: tuple[str, ...]) -> bool:
         if len(initial_user_model_ids) > 128 or any(not isinstance(item, str) or not item or len(item) > 128 for item in initial_user_model_ids):
