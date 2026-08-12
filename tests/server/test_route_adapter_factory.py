@@ -12,6 +12,7 @@ import pytest
 from ai_creation_canvas.adapters.ark import ArkGenerationAdapter
 from ai_creation_canvas.adapters.chiyun import ChiyunGenerationAdapter
 from ai_creation_canvas.adapters.factory import ProviderProtocol, RouteAdapterFactory
+from ai_creation_canvas.api.admin import _chiyun_template
 from ai_creation_canvas.coordination import CredentialLease
 from ai_creation_canvas.domain.models import JobRequest, ModelInputPort, ModelOperation, PortalRole, PortalUser, RequestContext
 from ai_creation_canvas.model_registry import OperationContract
@@ -173,8 +174,8 @@ def test_route_factory_builds_exact_chiyun_edit_from_trusted_protocol(tmp_path: 
         ModelOperation.IMAGE_EDIT,
         inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
         properties={
-            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
-            "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
         },
         mappings={"size": "size", "output_count": "n"},
         required=["size", "output_count"],
@@ -201,6 +202,17 @@ def test_route_factory_builds_exact_chiyun_edit_from_trusted_protocol(tmp_path: 
     assert request.content.index(b"two") < request.content.index(b"one")
 
 
+def test_route_factory_builds_the_existing_admin_chiyun_template(tmp_path: Path) -> None:
+    factory = _factory(tmp_path, [])
+    route = _route(
+        provider_id="chiyun",
+        provider_model_name="gpt-image-2",
+        adapter_type="chiyun_openai_images",
+        contract=_chiyun_template(),
+    )
+    assert isinstance(factory.build(route, _lease(route.route_id)), ChiyunGenerationAdapter)
+
+
 def test_route_factory_rejects_wrong_or_inactive_route_and_untrusted_contracts(tmp_path: Path) -> None:
     factory = _factory(tmp_path, [])
     image = _contract(ModelOperation.IMAGE_GENERATE)
@@ -219,8 +231,8 @@ def test_route_factory_rejects_wrong_or_inactive_route_and_untrusted_contracts(t
                 ModelOperation.IMAGE_EDIT,
                 inputs=(ModelInputPort("prompt", "image", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
                 properties={
-                    "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
-                    "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+                    "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+                    "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
                 },
                 mappings={"size": "size", "output_count": "n"},
                 required=["size", "output_count"],
@@ -284,8 +296,8 @@ def test_route_factory_rejects_parameter_contracts_that_widen_trusted_templates(
             ModelOperation.IMAGE_EDIT,
             inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
             properties={
-                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
-                "output_count": {"type": "integer", "minimum": 1, "maximum": 100},
+                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+                "output_count": {"type": "integer", "minimum": 1, "maximum": 100, "default": 1},
             },
             mappings={"size": "size", "output_count": "n"},
             required=["size", "output_count"],
@@ -318,13 +330,27 @@ def test_route_factory_rejects_parameter_contracts_that_widen_trusted_templates(
             ModelOperation.IMAGE_EDIT,
             inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
             properties={
-                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
-                "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+                "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
             },
             mappings={"size": "size", "output_count": "n"},
         ),
     )
-    for route in (chiyun, ark_video, ark_image, wrong_default, widened_enum, missing_required):
+    wrong_chiyun_default = _route(
+        provider_id="chiyun",
+        adapter_type="chiyun_openai_images",
+        contract=_contract(
+            ModelOperation.IMAGE_EDIT,
+            inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
+            properties={
+                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "1024x1024"},
+                "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
+            },
+            mappings={"size": "size", "output_count": "n"},
+            required=["size", "output_count"],
+        ),
+    )
+    for route in (chiyun, ark_video, ark_image, wrong_default, widened_enum, missing_required, wrong_chiyun_default):
         with pytest.raises(ValueError, match="parameter"):
             factory.build(route, _lease(route.route_id))
 

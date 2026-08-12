@@ -62,8 +62,8 @@ _ARK_VIDEO_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingP
     "watermark": ("watermark", {"type": "boolean", "default": False}),
 })
 _CHIYUN_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
-    "size": ("size", {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]}),
-    "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 4}),
+    "size": ("size", {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"}),
+    "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 4, "default": 1}),
 })
 _RULE_KEYS = frozenset({"type", "enum", "minimum", "maximum", "default", "x-ark-size", "title", "description", "x-ui-visible-when"})
 
