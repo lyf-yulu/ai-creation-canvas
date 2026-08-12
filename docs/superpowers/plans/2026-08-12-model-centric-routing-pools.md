@@ -444,25 +444,25 @@ git commit -m "feat: edit logical models and routes"
 - Consumes all prior tasks.
 - Produces a reproducible offline acceptance instance and final evidence report.
 
-- [ ] **Step 1: Write RED full API integration**
+- [x] **Step 1: Write RED full API integration**
 
 Use real FastAPI, SQLite, an in-memory Redis fake, three credential pools and mock official/T8 transports. Through admin APIs create one Nano Banana logical model with official and T8 `gemini` routes plus a rejected T8 `cc` route. Grant a user, upload ordered references, submit two concurrent equal idempotency requests, induce a safe 429 key rotation, poll, and verify result GET/HEAD/Range, route snapshot, revoke and cross-user isolation.
 
-- [ ] **Step 2: Write RED Chromium administrator workflow**
+- [x] **Step 2: Write RED Chromium administrator workflow**
 
 Cover creating/editing a logical image model, adding two routes, seeing safe pool health, archiving/restoring, blocked referenced deletion, user assignment and creating the corresponding canvas node. At 415 px and 240 px, ensure editors remain usable without hiding action buttons or overflowing the page.
 
-- [ ] **Step 3: Run RED integration tests**
+- [x] **Step 3: Run RED integration tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_model_centric_routing.py`
 
 Run: `npm run test:browser --prefix web`
 
-- [ ] **Step 4: Add example config and operations documentation**
+- [x] **Step 4: Add example config and operations documentation**
 
 The example uses fake values only and documents file mode, external/ignored location, pool/group/family isolation, atomic reload, Redis requirement, `submission_unknown`, lifecycle semantics and rollback. Security scan must reject `api_key:` literals outside the example fixture and tests, browser Key fields, dynamic imports and non-admin Base URL surfaces.
 
-- [ ] **Step 5: Run full release gates sequentially**
+- [x] **Step 5: Run full release gates sequentially**
 
 Do not overlap Python release tests with frontend verification because release tests run `npm ci` in copied worktrees.
 
@@ -479,15 +479,15 @@ git diff --check
 
 Expected: all pass; audit reports zero high vulnerabilities.
 
-- [ ] **Step 6: Verify both release build paths**
+- [x] **Step 6: Verify both release build paths**
 
 Run a full `scripts/build-release.sh` into a new `/private/tmp` directory, then `--skip-web-build` into another new directory. Verify both manifests and Python-only entry points.
 
-- [ ] **Step 7: Start a fresh offline user-acceptance instance**
+- [x] **Step 7: Start a fresh offline user-acceptance instance**
 
 Use the next available port discovered read-only and a new Git-ignored data directory. Seed fake official, T8 `gemini` and T8 `cc` pools; never reuse 8997/9001/9002 state. Perform administrator and ordinary-user browser checks, leave the login or selected model page open, and provide one administrator plus one ordinary-user account to the user.
 
-- [ ] **Step 8: Record evidence and commit**
+- [x] **Step 8: Record evidence and commit**
 
 Report exact test counts, Chromium widths, migration result, selected compatible pools, zero paid calls, known deferred durable-worker boundary and any existing bundle warnings. Do not record keys, prompts, media or result URLs.
 
