@@ -115,3 +115,13 @@ it("keeps a normal colon in a short user-facing message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: "Please retry: the item is locked." }), { status: 403, headers: { "Content-Type": "application/json" } })));
     await expect(apiFetch("/api/v1/jobs")).rejects.toMatchObject({ message: "Please retry: the item is locked." });
 });
+
+it("retains only bounded reference categories from a conflict", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "RESOURCE_REFERENCED", message: "safe", references: { job: 2, route: 1 } }), { status: 409, headers: { "Content-Type": "application/json" } })));
+    await expect(apiFetch("/api/v1/admin/logical-models/model")).rejects.toMatchObject({ references: { job: 2, route: 1 } });
+});
+
+it.each([{ job: 2, secret: 1 }, { job: -1 }, { job: 1.5 }, { job: 1_000_001 }])("drops an invalid reference map %j", async (references) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "RESOURCE_REFERENCED", message: "safe", references }), { status: 409, headers: { "Content-Type": "application/json" } })));
+    try { await apiFetch("/api/v1/admin/logical-models/model"); } catch (error) { expect((error as ApiRequestError).references).toBeUndefined(); }
+});

@@ -60,16 +60,26 @@ export class ApiRequestError extends Error implements ApiError {
     readonly retryable: boolean;
     readonly request_id: string;
     readonly phase: string;
+    readonly references?: Readonly<Partial<Record<"job" | "access" | "assignment" | "route" | "model", number>>>;
 
-    constructor(details: ApiError) {
+    constructor(details: ApiError, references?: Partial<Record<"job" | "access" | "assignment" | "route" | "model", number>>) {
         super(details.message);
         this.name = "ApiRequestError";
         this.code = details.code;
         this.retryable = details.retryable;
         this.request_id = details.request_id;
         this.phase = details.phase;
+        this.references = references ? Object.freeze({ ...references }) : undefined;
     }
 }
+
+const safeReferences = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const entries = Object.entries(value);
+    const allowed = new Set(["job", "access", "assignment", "route", "model"]);
+    if (entries.length > allowed.size || entries.some(([key, count]) => !allowed.has(key) || !Number.isSafeInteger(count) || (count as number) < 1 || (count as number) > 1_000_000)) return undefined;
+    return Object.fromEntries(entries) as Partial<Record<"job" | "access" | "assignment" | "route" | "model", number>>;
+};
 
 async function responseError(response: Response): Promise<ApiRequestError> {
     const fallback = defaultError(response.status);
@@ -87,7 +97,7 @@ async function responseError(response: Response): Promise<ApiRequestError> {
         request_id: safeString(payload?.request_id, requestId, /^[A-Za-z0-9_-]{1,128}$/),
         phase: safeString(payload?.phase, "response", /^[a-z0-9_.-]{1,80}$/i),
     };
-    return new ApiRequestError(details);
+    return new ApiRequestError(details, safeReferences(payload?.references));
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {

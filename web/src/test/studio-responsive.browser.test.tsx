@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ProductShell } from "@/components/layout/product-shell";
 import CanvasProjectPage from "@/pages/canvas/project";
+import AdminModelsPage from "@/pages/admin/models";
 import { appendResultNode } from "@/features/generation/result-node";
 import { clearCanvasInMemory, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useSessionStore } from "@/stores/portal/use-session-store";
@@ -91,6 +92,34 @@ it.each([415, 240])("keeps canvas controls contained and non-overlapping at %i p
     const controlClasses = document.querySelector('[data-testid="studio-canvas"] [data-canvas-no-zoom]')!.classList;
     expect(controlClasses).toContain("left-4");
     expect(controlClasses).toContain("max-w-[calc(100%-2rem)]");
+});
+
+it("keeps the logical-model administrator usable without horizontal overflow at 415 px", async () => {
+    await page.viewport(415, 900);
+    useSessionStore.setState({ session: { user_id: "admin", username: "管理员", role: "admin", must_change_password: false } });
+    const contract = { operation: "image.edit", input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: { type: "object", properties: { size: { type: "string", enum: ["auto"], default: "auto" }, output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 } }, required: ["size", "output_count"], additionalProperties: false }, parameter_mappings: { size: "size", output_count: "n" } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        let body: unknown = {};
+        if (url.includes("/admin/users")) body = { users: [{ user_id: "user", username: "user", display_name: "普通用户", role: "user", enabled: true, must_change_password: false, model_ids: ["banana"], created_at: 1, updated_at: 1 }] };
+        else if (url.includes("/admin/models")) body = { models: [{ model_id: "banana", service_id: "banana", display_name: "Nano Banana", operations: ["image.edit"], input_media: ["text", "image"], parameter_schema: {} }] };
+        else if (url.includes("/credential-pools")) body = { pools: [{ pool_id: "t8-gemini", provider_id: "t8star", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null }] };
+        else if (url.includes("/routes")) body = { routes: [] };
+        else if (url.includes("/logical-models")) body = { models: [{ model_id: "banana", display_name: "Nano Banana", introduction: "多参考图编辑", modality: "image", operation_contracts: [contract], enabled: true, archived_at: null, revision: 1 }] };
+        return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    }));
+    flushSync(() => root.render(<MemoryRouter><ProductShell><AdminModelsPage /></ProductShell></MemoryRouter>));
+    await expect.element(page.getByRole("heading", { name: "模型与调用线路" })).toBeVisible();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    for (const name of ["保存模型", "新建线路", "保存派发"]) {
+        const button = page.getByRole("button", { name });
+        await expect.element(button).toBeVisible();
+        const rectangle = (await button.element()).getBoundingClientRect();
+        expect(rectangle.left).toBeGreaterThanOrEqual(0);
+        expect(rectangle.right).toBeLessThanOrEqual(window.innerWidth);
+    }
 });
 
 it("runs the connected media graph editing path in desktop Chromium", async () => {

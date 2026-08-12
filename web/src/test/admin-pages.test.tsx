@@ -64,11 +64,12 @@ it("saves the selected model assignments in one request", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
         .mockResolvedValueOnce(new Response(JSON.stringify({ users }), { status: 200, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ models, diagnostics: [] }), { status: 200, headers: { "content-type": "application/json" } }))
-        .mockResolvedValueOnce(new Response(JSON.stringify({ providers: [], models: [], templates: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ models: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ pools: [] }), { status: 200, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ user_id: "user-1", model_ids: ["image-pro", "video-fast"] }), { status: 200, headers: { "content-type": "application/json" } }));
 
     render(<AdminModelsPage />);
-    await screen.findByRole("heading", { name: "模型派发" });
+    await screen.findByRole("heading", { name: "模型与调用线路" });
     fireEvent.change(await screen.findByLabelText("选择账号"), { target: { value: "user-1" } });
     fireEvent.click(await screen.findByLabelText("视频 Fast"));
     fireEvent.click(screen.getByRole("button", { name: "保存派发" }));

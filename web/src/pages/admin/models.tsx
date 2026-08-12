@@ -1,101 +1,143 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { createAdminModel, createAdminProvider, fetchAdminModelRegistry, fetchAdminModels, fetchAdminUsers, replaceAdminUserModels, type AdminModelRegistry, type AdminUser } from "@/api/admin";
+import {
+    changeAdminLogicalModelLifecycle, changeAdminModelRouteLifecycle, createAdminLogicalModel, createAdminModelRoute,
+    deleteAdminLogicalModel, deleteAdminModelRoute, fetchAdminCredentialPools, fetchAdminLogicalModel,
+    fetchAdminLogicalModels, fetchAdminModelRoute, fetchAdminModelRoutes, fetchAdminModels, fetchAdminUsers,
+    replaceAdminUserModels, updateAdminLogicalModel, updateAdminModelRoute,
+    type AdminCredentialPool, type AdminLogicalModel, type AdminModelRoute, type AdminUser,
+} from "@/api/admin";
 import type { ModelSpec } from "@/api/contracts";
-
+import { ModelEditor } from "@/components/admin/model-editor";
+import { ModelRouteEditor } from "@/components/admin/model-route-editor";
+import { ObjectLifecycleActions } from "@/components/admin/object-lifecycle-actions";
 
 export default function AdminModelsPage() {
     const [users, setUsers] = useState<AdminUser[]>([]);
-    const [models, setModels] = useState<ModelSpec[]>([]);
+    const [assignable, setAssignable] = useState<ModelSpec[]>([]);
+    const [models, setModels] = useState<AdminLogicalModel[]>([]);
+    const [pools, setPools] = useState<AdminCredentialPool[]>([]);
+    const [routes, setRoutes] = useState<AdminModelRoute[]>([]);
+    const [selectedModelId, setSelectedModelId] = useState("");
+    const [selectedRouteId, setSelectedRouteId] = useState("");
+    const [creatingModel, setCreatingModel] = useState(false);
+    const [creatingRoute, setCreatingRoute] = useState(false);
+    const [showArchived, setShowArchived] = useState(false);
     const [userId, setUserId] = useState("");
-    const [selected, setSelected] = useState<string[]>([]);
+    const [assignedIds, setAssignedIds] = useState<string[]>([]);
     const [status, setStatus] = useState<"loading" | "ready" | "saving" | "saved" | "failed">("loading");
-    const [registry, setRegistry] = useState<AdminModelRegistry>({ providers: [], models: [], templates: [] });
-    const [providerStatus, setProviderStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-    const [modelStatus, setModelStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-    const [providerForm, setProviderForm] = useState({ provider_id: "", display_name: "", adapter_type: "chiyun_openai_images", base_url: "", credential_ref: "", enabled: true });
-    const [modelForm, setModelForm] = useState({ model_id: "", provider_id: "", provider_model_name: "", display_name: "", introduction: "", template_id: "chiyun_gpt_image_edit_v1", enabled: true });
-    const user = useMemo(() => users.find((item) => item.user_id === userId), [userId, users]);
+    const loadVersion = useRef(0);
+    const routeVersion = useRef(0);
+    const selectedModelIdRef = useRef("");
+    const selectedRouteIdRef = useRef("");
+    const selectedModel = useMemo(() => models.find((item) => item.model_id === selectedModelId) || null, [models, selectedModelId]);
+    const selectedRoute = useMemo(() => routes.find((item) => item.route_id === selectedRouteId) || null, [routes, selectedRouteId]);
+    const user = useMemo(() => users.find((item) => item.user_id === userId), [users, userId]);
+    useEffect(() => { selectedModelIdRef.current = selectedModelId; }, [selectedModelId]);
+    useEffect(() => { selectedRouteIdRef.current = selectedRouteId; }, [selectedRouteId]);
 
-    useEffect(() => {
-        void Promise.all([fetchAdminUsers(), fetchAdminModels(), fetchAdminModelRegistry()]).then(([nextUsers, nextModels, nextRegistry]) => {
-            setUsers(nextUsers);
-            setModels(nextModels);
-            setRegistry(nextRegistry);
-            if (nextRegistry.providers[0]) setModelForm((current) => ({ ...current, provider_id: nextRegistry.providers[0].provider_id }));
+    const load = async () => {
+        const version = ++loadVersion.current;
+        setStatus("loading");
+        try {
+            const [nextUsers, nextAssignable, nextModels, nextPools] = await Promise.all([fetchAdminUsers(), fetchAdminModels(), fetchAdminLogicalModels(showArchived), fetchAdminCredentialPools()]);
+            if (version !== loadVersion.current) return;
+            setUsers(nextUsers); setAssignable(nextAssignable); setModels(nextModels); setPools(nextPools);
+            setSelectedModelId((current) => nextModels.some((item) => item.model_id === current) ? current : (nextModels[0]?.model_id || ""));
             setStatus("ready");
-        }).catch(() => setStatus("failed"));
-    }, []);
+        } catch { if (version === loadVersion.current) setStatus("failed"); }
+    };
+    useEffect(() => { void load(); return () => { loadVersion.current += 1; routeVersion.current += 1; }; }, [showArchived]);
+    useEffect(() => {
+        const version = ++routeVersion.current;
+        setSelectedRouteId(""); setRoutes([]); setCreatingRoute(false);
+        if (!selectedModelId) return;
+        void fetchAdminModelRoutes(selectedModelId, showArchived).then((next) => {
+            if (routeVersion.current !== version) return;
+            setRoutes(next); setSelectedRouteId(next[0]?.route_id || "");
+        }).catch(() => { if (routeVersion.current === version) setStatus("failed"); });
+    }, [selectedModelId, showArchived]);
+    useEffect(() => { setAssignedIds(user?.model_ids || []); setStatus((current) => current === "loading" ? current : "ready"); }, [userId]);
 
-    useEffect(() => { setSelected(user?.model_ids || []); setStatus((current) => current === "loading" ? current : "ready"); }, [userId]);
-
-    const toggle = (modelId: string) => setSelected((current) => current.includes(modelId) ? current.filter((id) => id !== modelId) : [...current, modelId]);
-    const save = async () => {
-        if (!userId) return;
+    const replaceModel = (updated: AdminLogicalModel) => {
+        setModels((current) => current.some((item) => item.model_id === updated.model_id) ? current.map((item) => item.model_id === updated.model_id ? updated : item) : [...current, updated]);
+        setSelectedModelId(updated.model_id); setCreatingModel(false);
+    };
+    const replaceRoute = (updated: AdminModelRoute) => {
+        setRoutes((current) => current.some((item) => item.route_id === updated.route_id) ? current.map((item) => item.route_id === updated.route_id ? updated : item) : [...current, updated]);
+        setSelectedRouteId(updated.route_id); setCreatingRoute(false);
+    };
+    const refreshModel = async () => {
+        const modelId = selectedModelId;
+        if (!modelId) return;
+        const updated = await fetchAdminLogicalModel(modelId);
+        setModels((current) => current.map((item) => item.model_id === updated.model_id ? updated : item));
+    };
+    const refreshRoute = async () => {
+        const modelId = selectedModelId, routeId = selectedRouteId;
+        if (!modelId || !routeId) return;
+        const updated = await fetchAdminModelRoute(modelId, routeId);
+        if (selectedModelIdRef.current !== modelId || selectedRouteIdRef.current !== routeId) return;
+        setRoutes((current) => current.map((item) => item.route_id === updated.route_id ? updated : item));
+    };
+    const removeModel = () => {
+        setModels((current) => { const next = current.filter((item) => item.model_id !== selectedModelId); setSelectedModelId(next[0]?.model_id || ""); return next; });
+    };
+    const removeRoute = () => {
+        setRoutes((current) => { const next = current.filter((item) => item.route_id !== selectedRouteId); setSelectedRouteId(next[0]?.route_id || ""); return next; });
+    };
+    const toggleAssignment = (id: string) => setAssignedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+    const saveAssignments = async () => {
+        if (!userId || status === "saving") return;
         setStatus("saving");
         try {
-            const response = await replaceAdminUserModels(userId, selected);
+            const response = await replaceAdminUserModels(userId, assignedIds);
             setUsers((current) => current.map((item) => item.user_id === userId ? { ...item, model_ids: response.model_ids } : item));
             setStatus("saved");
-        } catch {
-            setStatus("failed");
-        }
+        } catch { setStatus("failed"); }
     };
+    const unavailableAssigned = assignedIds.filter((id) => !assignable.some((model) => model.model_id === id));
 
-    const saveProvider = async () => {
-        setProviderStatus("saving");
-        try {
-            const saved = await createAdminProvider(providerForm);
-            setRegistry((current) => ({ ...current, providers: [...current.providers, saved] }));
-            setModelForm((current) => ({ ...current, provider_id: current.provider_id || saved.provider_id }));
-            setProviderStatus("saved");
-        } catch { setProviderStatus("failed"); }
-    };
-    const saveModel = async () => {
-        setModelStatus("saving");
-        try {
-            const saved = await createAdminModel(modelForm);
-            setRegistry((current) => ({ ...current, models: [...current.models, saved] }));
-            setModels((current) => [...current, { model_id: saved.model_id, service_id: saved.provider_id, display_name: saved.display_name, operations: saved.operations as ModelSpec["operations"], input_media: [], parameter_schema: {} }]);
-            setModelStatus("saved");
-        } catch { setModelStatus("failed"); }
-    };
+    return <section className="mx-auto min-w-0 max-w-7xl overflow-x-clip px-4 py-7 text-[#e5f5e9] sm:px-5">
+        <p className="text-xs tracking-[0.2em] text-[#58ed87]">ADMIN · LOGICAL MODELS</p>
+        <div className="mt-2 flex flex-wrap items-end justify-between gap-3"><div><h1 className="text-2xl font-semibold sm:text-3xl">模型与调用线路</h1><p className="mt-2 max-w-3xl text-sm text-[#95ad9c]">用户只选择逻辑模型。Provider、线路和凭据池由管理员在这里隔离管理，真实凭据仅由部署配置提供。</p></div><label className="flex items-center gap-2 text-sm text-[#b9d0c0]"><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="accent-[#58ed87]" />显示已归档</label></div>
+        {status === "loading" && <p role="status" className="mt-5 text-sm text-[#86a991]">正在加载管理配置…</p>}
+        {status === "failed" && <p role="alert" className="mt-5 text-sm text-[#ffbd73]">管理配置未能加载，请重试。</p>}
 
-    return <section className="mx-auto max-w-6xl px-5 py-8">
-        <p className="text-xs tracking-[0.2em] text-[#58ed87]">ADMIN · MODELS</p>
-        <h1 className="mt-2 text-3xl font-semibold">模型派发</h1>
-        <p className="mt-2 text-sm text-[#829889]">用户只会看到这里分配的模型；服务密钥由管理员在服务端部署时配置。</p>
-        <label className="mt-7 block max-w-md text-sm text-[#b9d0c0]">选择账号<select aria-label="选择账号" value={userId} onChange={(event) => setUserId(event.target.value)} className="mt-2 block w-full rounded-lg border border-[#285038] bg-[#08100b] px-3 py-2 text-[#e5f5e9]"><option value="">请选择账号</option>{users.map((item) => <option key={item.user_id} value={item.user_id}>{item.display_name} · {item.username}</option>)}</select></label>
-        <div className="mt-6 grid gap-3 md:grid-cols-2">{models.map((model) => <label key={model.model_id} className="flex cursor-pointer items-start gap-3 rounded-xl border border-[#1f3f2a] bg-[#09120c] p-4"><input type="checkbox" aria-label={model.display_name} disabled={!userId} checked={selected.includes(model.model_id)} onChange={() => toggle(model.model_id)} className="mt-1 accent-[#58ed87]" /><span><span className="block text-sm text-[#e4f5e9]">{model.display_name}</span><span className="mt-1 block text-xs text-[#688371]">{model.service_id} · {model.operations.join(" / ")}</span></span></label>)}</div>
-        <div className="mt-6 flex items-center gap-4"><button type="button" disabled={!userId || status === "saving"} onClick={() => void save()} className="rounded-lg bg-[#47d978] px-4 py-2 text-sm font-medium text-[#041008] disabled:opacity-40">保存派发</button>{status === "saved" && <span className="text-sm text-[#58d881]">派发已保存</span>}{status === "failed" && <span role="alert" className="text-sm text-[#ffbd73]">操作未完成，请重试。</span>}</div>
-        <div className="mt-10 grid gap-6 lg:grid-cols-2">
-            <section className="rounded-xl border border-[#1f3f2a] bg-[#09120c] p-5">
-                <h2 className="text-lg font-medium text-[#e4f5e9]">创建 Provider</h2>
-                <p className="mt-1 text-xs text-[#688371]">这里只绑定服务地址和部署凭据引用，不读取或显示真实 API Key。</p>
-                <div className="mt-4 grid gap-3">
-                    <label className="text-sm">Provider ID<input aria-label="Provider ID" value={providerForm.provider_id} onChange={(event) => setProviderForm({ ...providerForm, provider_id: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">Provider 名称<input aria-label="Provider 名称" value={providerForm.display_name} onChange={(event) => setProviderForm({ ...providerForm, display_name: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">适配器<select aria-label="适配器" value={providerForm.adapter_type} onChange={(event) => setProviderForm({ ...providerForm, adapter_type: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2"><option value="chiyun_openai_images">Chiyun OpenAI Images</option></select></label>
-                    <label className="text-sm">Base URL<input aria-label="Base URL" value={providerForm.base_url} onChange={(event) => setProviderForm({ ...providerForm, base_url: event.target.value })} placeholder="https://example.com" className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">凭据引用<input aria-label="凭据引用" value={providerForm.credential_ref} onChange={(event) => setProviderForm({ ...providerForm, credential_ref: event.target.value })} placeholder="chiyun-primary" className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <button type="button" disabled={providerStatus === "saving"} onClick={() => void saveProvider()} className="rounded bg-[#183f26] px-4 py-2 text-sm text-[#8ff0aa] disabled:opacity-40">创建 Provider</button>
-                    {providerStatus === "saved" && <span className="text-sm text-[#58d881]">Provider 已创建</span>}{providerStatus === "failed" && <span role="alert" className="text-sm text-[#ffbd73]">Provider 创建失败</span>}
-                </div>
-            </section>
-            <section className="rounded-xl border border-[#1f3f2a] bg-[#09120c] p-5">
-                <h2 className="text-lg font-medium text-[#e4f5e9]">创建模型对象</h2>
-                <p className="mt-1 text-xs text-[#688371]">用途由服务端模板固定，图片模型不会进入视频节点。</p>
-                <div className="mt-4 grid gap-3">
-                    <label className="text-sm">Provider<select aria-label="模型 Provider" value={modelForm.provider_id} onChange={(event) => setModelForm({ ...modelForm, provider_id: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2"><option value="">请选择 Provider</option>{registry.providers.map((provider) => <option key={provider.provider_id} value={provider.provider_id}>{provider.display_name}</option>)}</select></label>
-                    <label className="text-sm">模型模板<select aria-label="模型模板" value={modelForm.template_id} onChange={(event) => setModelForm({ ...modelForm, template_id: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2">{registry.templates.map((template) => <option key={template.template_id} value={template.template_id}>{template.title}</option>)}</select></label>
-                    <label className="text-sm">模型 ID<input aria-label="模型 ID" value={modelForm.model_id} onChange={(event) => setModelForm({ ...modelForm, model_id: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">供应商模型名<input aria-label="供应商模型名" value={modelForm.provider_model_name} onChange={(event) => setModelForm({ ...modelForm, provider_model_name: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">模型显示名<input aria-label="模型显示名" value={modelForm.display_name} onChange={(event) => setModelForm({ ...modelForm, display_name: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <label className="text-sm">模型介绍<textarea aria-label="模型介绍" value={modelForm.introduction} onChange={(event) => setModelForm({ ...modelForm, introduction: event.target.value })} className="mt-1 block w-full rounded border border-[#285038] bg-[#08100b] px-3 py-2" /></label>
-                    <button type="button" disabled={!modelForm.provider_id || modelStatus === "saving"} onClick={() => void saveModel()} className="rounded bg-[#183f26] px-4 py-2 text-sm text-[#8ff0aa] disabled:opacity-40">创建模型</button>
-                    {modelStatus === "saved" && <span className="text-sm text-[#58d881]">模型已创建</span>}{modelStatus === "failed" && <span role="alert" className="text-sm text-[#ffbd73]">模型创建失败</span>}
-                </div>
-            </section>
+        <div className="mt-6 grid min-w-0 gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
+            <aside className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-3">
+                <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">逻辑模型</h2><button type="button" onClick={() => { setCreatingModel(true); setSelectedModelId(""); }} className="rounded bg-[#183f26] px-2.5 py-1.5 text-xs text-[#8ff0aa]">新建</button></div>
+                <div className="mt-3 grid gap-2" role="list" aria-label="逻辑模型列表">{models.map((model) => <button key={model.model_id} type="button" role="listitem" onClick={() => { setCreatingModel(false); setSelectedModelId(model.model_id); }} className={`min-w-0 rounded-lg border p-3 text-left ${selectedModelId === model.model_id ? "border-[#58ed87] bg-[#102719]" : "border-[#1e482b] bg-[#0a1710]"}`}>
+                    <span className="block truncate text-sm font-medium">{model.display_name}</span><span className="mt-1 block truncate text-xs text-[#86a991]">{model.modality === "image" ? "图像" : "视频"} · {model.enabled ? "已启用" : "已停用"}{model.archived_at ? " · 已归档" : ""}</span>
+                </button>)}</div>
+            </aside>
+            <main className="min-w-0 space-y-5">
+                {creatingModel && <ModelEditor model={null} onSave={createAdminLogicalModel} onSaved={replaceModel} />}
+                {selectedModel && <>
+                    <ModelEditor model={selectedModel} onSave={(body) => updateAdminLogicalModel(body as Parameters<typeof updateAdminLogicalModel>[0])} onSaved={replaceModel} onRefresh={() => void refreshModel()} />
+                    <ObjectLifecycleActions objectIdentity={selectedModel.model_id} objectLabel={selectedModel.display_name} enabled={selectedModel.enabled} archivedAt={selectedModel.archived_at} revision={selectedModel.revision}
+                        onEnable={(revision) => changeAdminLogicalModelLifecycle(selectedModel.model_id, "enable", revision)} onDisable={(revision) => changeAdminLogicalModelLifecycle(selectedModel.model_id, "disable", revision)}
+                        onArchive={(revision) => changeAdminLogicalModelLifecycle(selectedModel.model_id, "archive", revision)} onRestore={(revision) => changeAdminLogicalModelLifecycle(selectedModel.model_id, "restore", revision)}
+                        onDelete={(revision) => deleteAdminLogicalModel(selectedModel.model_id, revision)} onPurge={(revision) => changeAdminLogicalModelLifecycle(selectedModel.model_id, "purge-runtime", revision)}
+                        onChanged={(updated) => { if (!showArchived && updated.archived_at) removeModel(); else replaceModel(updated); }} onDeleted={removeModel} onRefresh={() => void refreshModel()} />
+                    <section className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-lg font-semibold">调用线路</h2><p className="mt-1 text-xs text-[#86a991]">先以停用状态保存，确认兼容后再显式启用。</p></div><button type="button" onClick={() => { setCreatingRoute(true); setSelectedRouteId(""); }} className="rounded bg-[#183f26] px-3 py-2 text-sm text-[#8ff0aa]">新建线路</button></div>
+                        <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-2">{routes.map((route) => <button key={route.route_id} type="button" onClick={() => { setCreatingRoute(false); setSelectedRouteId(route.route_id); }} className={`min-w-0 rounded-lg border p-3 text-left ${selectedRouteId === route.route_id ? "border-[#58ed87] bg-[#102719]" : "border-[#1e482b] bg-[#0a1710]"}`}><span className="block truncate text-sm">{route.route_id}</span><span className="mt-1 block truncate text-xs text-[#86a991]">{route.provider_id || "历史记录"} · {route.enabled ? "已启用" : "已停用"}{route.archived_at ? " · 已归档" : ""}</span></button>)}</div>
+                    </section>
+                    {creatingRoute && <ModelRouteEditor model={selectedModel} route={null} pools={pools} onSave={createAdminModelRoute} onSaved={replaceRoute} />}
+                    {selectedRoute && <><ModelRouteEditor model={selectedModel} route={selectedRoute} pools={pools} onSave={(body) => updateAdminModelRoute(body as Parameters<typeof updateAdminModelRoute>[0])} onSaved={replaceRoute} onRefresh={() => void refreshRoute()} />
+                        <ObjectLifecycleActions objectIdentity={`${selectedModel.model_id}:${selectedRoute.route_id}`} objectLabel={selectedRoute.route_id} enabled={selectedRoute.enabled} archivedAt={selectedRoute.archived_at} revision={selectedRoute.revision}
+                            onEnable={(revision) => changeAdminModelRouteLifecycle(selectedModel.model_id, selectedRoute.route_id, "enable", revision)} onDisable={(revision) => changeAdminModelRouteLifecycle(selectedModel.model_id, selectedRoute.route_id, "disable", revision)}
+                            onArchive={(revision) => changeAdminModelRouteLifecycle(selectedModel.model_id, selectedRoute.route_id, "archive", revision)} onRestore={(revision) => changeAdminModelRouteLifecycle(selectedModel.model_id, selectedRoute.route_id, "restore", revision)}
+                            onDelete={(revision) => deleteAdminModelRoute(selectedModel.model_id, selectedRoute.route_id, revision)} onPurge={(revision) => changeAdminModelRouteLifecycle(selectedModel.model_id, selectedRoute.route_id, "purge-runtime", revision)}
+                            onChanged={(updated) => { if (!showArchived && updated.archived_at) removeRoute(); else replaceRoute(updated); }} onDeleted={removeRoute} onRefresh={() => void refreshRoute()} /></>}
+                </>}
+            </main>
         </div>
+
+        <section className="mt-8 min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-4"><h2 className="text-lg font-semibold">用户模型派发</h2><p className="mt-1 text-xs text-[#86a991]">只派发逻辑模型 ID；线路和凭据池对普通用户不可见。</p>
+            <label className="mt-4 block max-w-md text-sm">选择账号<select aria-label="选择账号" value={userId} onChange={(event) => setUserId(event.target.value)} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2"><option value="">请选择账号</option>{users.map((item) => <option key={item.user_id} value={item.user_id}>{item.display_name} · {item.username}</option>)}</select></label>
+            <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">{assignable.map((model) => <label key={model.model_id} className="flex min-w-0 gap-2 rounded-lg border border-[#1e482b] bg-[#0a1710] p-3 text-sm"><input type="checkbox" aria-label={model.display_name} disabled={!userId} checked={assignedIds.includes(model.model_id)} onChange={() => toggleAssignment(model.model_id)} className="accent-[#58ed87]" /><span className="min-w-0 truncate">{model.display_name}</span></label>)}{unavailableAssigned.map((id) => <label key={id} className="flex min-w-0 gap-2 rounded-lg border border-[#594d2a] bg-[#171408] p-3 text-sm text-[#d8c981]"><input type="checkbox" checked disabled /><span className="min-w-0 truncate">{id} · 当前不可用</span></label>)}</div>
+            <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={!userId || status === "saving"} onClick={() => void saveAssignments()} className="rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40">保存派发</button>{status === "saved" && <span role="status" className="text-sm text-[#58d881]">派发已保存</span>}</div>
+        </section>
     </section>;
 }
