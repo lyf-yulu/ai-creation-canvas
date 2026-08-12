@@ -403,3 +403,48 @@ def test_referenced_model_purge_physically_deletes_unreferenced_child_route(tmp_
         store.delete_logical_model("nano-banana-edit", expected_revision=2)
     with pytest.raises(ValueError, match="already exists"):
         store.create_logical_model(logical_model())
+
+
+def test_model_purge_preserves_purged_child_stub_and_applies_other_child_lifecycle_rules(tmp_path) -> None:
+    store = CanvasStore(tmp_path)
+    store.create_logical_model(logical_model())
+    store.create_model_route(model_route(route_id="prepurged-child"))
+    store.create_model_route(model_route(route_id="unused-child"))
+    store.create_model_route(model_route(route_id="referenced-child"))
+    with sqlite3.connect(store.database) as db:
+        db.execute(
+            "INSERT INTO canvas_jobs(id,user_id,service_id,operation,status,idempotency_key,request_hash,route_id,created_at,updated_at) "
+            "VALUES ('prepurge-job','user-1','svc','image.edit','succeeded','prepurge-key','hash','prepurged-child','now','now')"
+        )
+        db.execute(
+            "INSERT INTO canvas_jobs(id,user_id,service_id,operation,status,idempotency_key,request_hash,route_id,created_at,updated_at) "
+            "VALUES ('route-job','user-1','svc','image.edit','succeeded','route-key','hash','referenced-child','now','now')"
+        )
+        db.execute(
+            "INSERT INTO canvas_jobs(id,user_id,service_id,operation,status,idempotency_key,request_hash,model_id,created_at,updated_at) "
+            "VALUES ('model-job','user-1','svc','image.edit','succeeded','model-key','hash','nano-banana-edit','now','now')"
+        )
+
+    store.purge_model_route_runtime("prepurged-child", expected_revision=1)
+    with sqlite3.connect(store.database) as db:
+        db.execute("DELETE FROM canvas_jobs WHERE id='prepurge-job'")
+
+    store.purge_logical_model_runtime("nano-banana-edit", expected_revision=1)
+
+    with sqlite3.connect(store.database) as db:
+        prepurged = db.execute(
+            "SELECT runtime_purged,provider_id,revision FROM canvas_model_routes WHERE route_id='prepurged-child'"
+        ).fetchone()
+        unused = db.execute(
+            "SELECT 1 FROM canvas_model_routes WHERE route_id='unused-child'"
+        ).fetchone()
+        referenced = db.execute(
+            "SELECT runtime_purged,provider_id,revision FROM canvas_model_routes WHERE route_id='referenced-child'"
+        ).fetchone()
+    assert prepurged == (1, None, 2)
+    assert unused is None
+    assert referenced == (1, None, 2)
+
+    store.create_logical_model(logical_model(model_id="other-model"))
+    with pytest.raises(ValueError, match="already exists"):
+        store.create_model_route(model_route(route_id="prepurged-child", model_id="other-model"))

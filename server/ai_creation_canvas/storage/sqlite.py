@@ -1062,11 +1062,13 @@ class CanvasStore:
                 raise ObjectReferenced("unreferenced logical model must be physically deleted")
             now = _now()
             routes = db.execute(
-                "SELECT route_id FROM canvas_model_routes WHERE model_id=? ORDER BY route_id",
+                "SELECT route_id,runtime_purged FROM canvas_model_routes WHERE model_id=? ORDER BY route_id",
                 (model_id,),
             ).fetchall()
             for route in routes:
                 route_id = str(route["route_id"])
+                if bool(route["runtime_purged"]):
+                    continue
                 if self._route_references_in(db, route_id):
                     db.execute(
                         "UPDATE canvas_model_routes SET provider_id=NULL,provider_model_name=NULL,adapter_type=NULL,"
