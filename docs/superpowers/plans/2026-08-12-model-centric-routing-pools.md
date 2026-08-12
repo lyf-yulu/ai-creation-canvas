@@ -392,31 +392,31 @@ git commit -m "feat: administer logical model routes"
 - Produces a three-level UI: logical-model list, selected model editor/routes, safe pool summaries.
 - Produces callbacks `onSaved(updated)`, `onArchived(updated)`, `onRestored(updated)`, `onDeleted(id)` in focused components.
 
-- [ ] **Step 1: Write RED logical-model edit tests**
+- [x] **Step 1: Write RED logical-model edit tests**
 
 Render two logical models. Select one, edit display name/introduction, save with revision, and assert the list updates. Assert image/video/text templates are separated and ordinary model assignment uses only logical IDs.
 
-- [ ] **Step 2: Write RED route/pool tests**
+- [x] **Step 2: Write RED route/pool tests**
 
 Add an official Nano Banana route and a T8 `gemini` route. Assert pool choices are filtered by provider/family, `cc` is absent for Banana, safe health counts render, and no input named API Key exists.
 
-- [ ] **Step 3: Write RED lifecycle and conflict tests**
+- [x] **Step 3: Write RED lifecycle and conflict tests**
 
 Assert disable, archive, show archived, restore, unused-delete confirmation, referenced-delete blocked explanation and 409 refresh prompt. Confirm archived objects disappear from the default list without losing selection state incorrectly.
 
-- [ ] **Step 4: Run RED tests**
+- [x] **Step 4: Run RED tests**
 
 Run: `npm test --prefix web -- --run src/test/admin-logical-models.test.tsx src/test/admin-model-routes.test.tsx src/test/admin-model-lifecycle.test.tsx`
 
-- [ ] **Step 5: Implement focused components**
+- [x] **Step 5: Implement focused components**
 
 Keep `models.tsx` as orchestration only. Forms use controlled inputs, operation-template select and revision-bearing API calls. Pool cards display status summaries and group labels, never keys. Destructive actions require object-name confirmation and render safe server reference categories.
 
-- [ ] **Step 6: Preserve canvas capability behavior**
+- [x] **Step 6: Preserve canvas capability behavior**
 
 Use existing `/models` logical projection. Ensure image-only, video-only and edit-only logical models enable only their corresponding canvas entries; retain the `image.edit` fallback added in commit `3e8d586`.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [x] **Step 7: Run GREEN and commit**
 
 Run: `npm test --prefix web -- --run src/test/admin-logical-models.test.tsx src/test/admin-model-routes.test.tsx src/test/admin-model-lifecycle.test.tsx src/test/canvas-generation-page.test.tsx`
 
