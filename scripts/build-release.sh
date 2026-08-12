@@ -293,14 +293,12 @@ if find "$target" \( -type d -o -type f \) \( \
     exit 65
 fi
 
-# The nonce marker protects failure cleanup only. A successful release must not
-# list this transient file in its reproducible manifest.
-rm -f "$marker"
 (
     cd "$target"
-    LC_ALL=C find . -type f ! -name manifest.sha256 -print | LC_ALL=C sort | while IFS= read -r path; do
+    LC_ALL=C find . -type f ! -name manifest.sha256 ! -name .ai-creation-canvas-release-marker -print | LC_ALL=C sort | while IFS= read -r path; do
         shasum -a 256 "$path"
     done > manifest.sha256
 )
+rm -f "$marker"
 trap - EXIT
 printf '%s\n' "$target"

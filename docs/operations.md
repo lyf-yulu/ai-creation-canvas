@@ -40,7 +40,7 @@ bash scripts/run-real-media-local.sh
 chmod 0600 /受控配置目录/credential-pools.yaml
 ```
 
-启动时同时传入 `--credential-pools /受控配置目录/credential-pools.yaml` 与 `--credential-pools-root /受控配置目录`。生产受管线路还必须配置 Redis 和独立的 `AICC_CREDENTIAL_HMAC_KEY`；Redis 只保存 HMAC 不透明标识、租约、计数和过期时间，不保存 Key、池名、分组、用户 ID、提示词或媒体。配置重载只有在整个新文件解析、权限和分组校验全部通过后才原子替换；失败时继续使用上一份有效快照并告警，不使用半份配置。
+启动时同时传入 `--credential-pools /受控配置目录/credential-pools.yaml` 与 `--credential-pools-root /受控配置目录`。生产受管线路还必须配置 Redis 和独立的 `AICC_CREDENTIAL_HMAC_KEY`；Redis 只保存 HMAC 不透明标识、租约、计数和过期时间，不保存 Key、池名、分组、用户 ID、提示词或媒体。配置重载只有在整个新文件解析、权限和分组校验全部通过后才原子替换；失败时继续使用上一份有效快照、不使用半份配置，并让本次重载请求返回受控错误。部署监控应采集该错误并主动告警；当前服务不会自行发送外部告警。
 
 同一逻辑模型的轮询候选必须精确满足线路绑定的 `(provider, group, family)`。例如 T8Star `gemini` 池可与 Nano Banana 线路并列官方池参与调度；T8Star `cc` 池即使属于同一供应商也不能进入该任务。明确 429 且确认未创建上游任务时可以在同池换 Key，池耗尽后才尝试下一条兼容线路。发送后响应不明会进入 `submission_unknown`，禁止自动换 Key 或跨线路重发，避免重复计费。
 
@@ -48,9 +48,11 @@ chmod 0600 /受控配置目录/credential-pools.yaml
 
 回滚顺序：先停用受影响的逻辑模型或线路，再恢复上一发布包和上一份已验证凭据池配置，最后确认 Redis 与 SQLite 健康。不得回滚或手工删除 SQLite 数据文件。当前 Redis 是跨进程提交租约，不是持久队列；进程崩溃后的任务接管、多区域 durable worker/Redis Streams 仍是后续边界。
 
-## 旧版管理员模型对象与 Chiyun GPT Image 2
+## 旧版管理员模型对象与 Chiyun GPT Image 2（兼容说明）
 
-管理员页面可以创建受控 Provider 和模型对象，再把模型使用权分配给普通用户。Provider 保存显示名、固定适配器类型、HTTPS 服务地址和部署系统中的凭据引用名；模型保存提供方模型名、用途说明、固定操作模板、启用状态和版本。数据库和浏览器都不保存真实 Key，普通用户只会看到获授权模型的名称、介绍、操作、输入端口和安全参数。
+以下内容描述旧版 API 与既有数据库记录的只读/迁移兼容，不代表当前管理 UI。当前页面只创建和编辑逻辑模型及其受信线路，不再提供 Provider 创建、任意 Base URL 或 `credential_ref` 输入。旧 Provider/模型记录仍可由兼容 API 读取，并在迁移时转换为逻辑模型和线路；新部署应使用前述仓库外凭据池配置，不能继续从浏览器维护 Provider 地址或凭据引用。
+
+旧版 Provider 记录保存显示名、固定适配器类型、HTTPS 服务地址和部署系统中的凭据引用名；旧版模型记录保存提供方模型名、用途说明、固定操作模板、启用状态和版本。数据库和浏览器都不保存真实 Key，普通用户只会看到获授权模型的名称、介绍、操作、输入端口和安全参数。
 
 当前首个动态模板是 `chiyun_gpt_image_edit_v1`，只允许 `image.edit`，最多 10 张有序参考图，参数仅为尺寸和 1–4 张输出数量。它不会被列入视频节点，也不接受管理员上传脚本、任意参数映射或远程插件。服务端从 `credential_ref` 解析环境变量：例如 `chiyun-primary` 对应 `AICC_CREDENTIAL_CHIYUN_PRIMARY`。部署系统负责注入变量，管理页面只能显示该引用是否可用，不能读取值。
 

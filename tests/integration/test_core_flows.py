@@ -276,6 +276,31 @@ def test_release_build_failure_cleans_only_its_new_target(tmp_path):
     assert refused.returncode != 0 and sentinel.read_text(encoding="utf-8") == "keep"
 
 
+def test_release_manifest_failure_keeps_cleanup_marker_until_target_is_removed(tmp_path):
+    script = ROOT / "scripts" / "build-release.sh"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    failing_shasum = fake_bin / "shasum"
+    failing_shasum.write_text("#!/usr/bin/env bash\nexit 73\n", encoding="utf-8")
+    failing_shasum.chmod(0o755)
+    npm = shutil.which("npm")
+    assert npm is not None
+    environment = {**dict(__import__("os").environ), "PATH": f"{fake_bin}:{Path(npm).parent}:{Path(sys.executable).parent}:/usr/bin:/bin"}
+    failed_target = tmp_path / "manifest-failed-release"
+
+    failed = subprocess.run(
+        ["bash", str(script), str(failed_target)],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert failed.returncode == 73
+    assert not failed_target.exists()
+
+
 def test_skip_web_build_rejects_every_dist_manifest_difference_in_an_isolated_copy(tmp_path):
     def copy_source(name: str, source_root: Path = ROOT) -> Path:
         copied = tmp_path / name

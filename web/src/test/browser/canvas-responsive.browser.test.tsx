@@ -57,6 +57,7 @@ function installAdminApi({ startEmpty = false } = {}) {
           };
     let routes: AdminModelRoute[] = [];
     let assignment: string[] = [];
+    let routeUpdateConflict = true;
     const calls: Array<{ url: string; method: string; body: unknown }> = [];
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -131,12 +132,41 @@ function installAdminApi({ startEmpty = false } = {}) {
             assignment = [...(body as { model_ids: string[] }).model_ids];
             return json({ user_id: "ordinary-user", model_ids: assignment });
         }
-        if (url.match(/\/api\/v1\/admin\/logical-models\/nano-banana\/routes\?/) && method === "GET") return json({ routes });
+        if (url.match(/\/api\/v1\/admin\/logical-models\/nano-banana\/routes\?/) && method === "GET") {
+            const includeArchived = url.includes("include_archived=true");
+            return json({ routes: includeArchived ? routes : routes.filter((item) => !item.archived_at) });
+        }
         if (url.endsWith("/api/v1/admin/logical-models/nano-banana/routes") && method === "POST") {
             const write = body as ModelRouteWrite;
             const created: AdminModelRoute = { ...write, enabled: false, archived_at: null, revision: 1 };
             routes = [...routes, created];
             return json(created, 201);
+        }
+        const routeMatch = url.match(/\/api\/v1\/admin\/logical-models\/nano-banana\/routes\/([^/?]+)(?:\/(enable|disable|archive|restore))?$/);
+        if (routeMatch && method === "PUT") {
+            const routeId = decodeURIComponent(routeMatch[1]);
+            const index = routes.findIndex((item) => item.route_id === routeId);
+            if (routeUpdateConflict) {
+                routeUpdateConflict = false;
+                routes[index] = { ...routes[index], revision: routes[index].revision + 1 };
+                return problem("REVISION_CONFLICT");
+            }
+            const write = body as ModelRouteWrite & { revision: number };
+            routes[index] = { ...routes[index], ...write, revision: routes[index].revision + 1 };
+            return json(routes[index]);
+        }
+        if (routeMatch && routeMatch[2] && method === "POST") {
+            const routeId = decodeURIComponent(routeMatch[1]);
+            const action = routeMatch[2];
+            const index = routes.findIndex((item) => item.route_id === routeId);
+            const current = routes[index];
+            routes[index] = {
+                ...current,
+                enabled: action === "enable" ? true : false,
+                archived_at: action === "archive" ? "2026-08-12T01:00:00Z" : action === "restore" ? null : current.archived_at,
+                revision: current.revision + 1,
+            };
+            return json(routes[index]);
         }
         if (url.endsWith("/api/v1/admin/logical-models") && method === "POST") {
             const write = body as LogicalModelWrite;
@@ -157,7 +187,7 @@ function installAdminApi({ startEmpty = false } = {}) {
             return json(model);
         }
         if (url.match(/\/api\/v1\/admin\/logical-models\/nano-banana\?revision=/) && method === "DELETE") return problem("RESOURCE_REFERENCED", { route: 2, assignment: 1 });
-        if (url.match(/\/api\/v1\/admin\/logical-models\/nano-banana\/routes\/[^/?]+$/) && method === "GET") {
+        if (routeMatch && method === "GET") {
             return json(routes.find((item) => url.endsWith(`/${item.route_id}`)));
         }
         if (url.endsWith("/api/v1/admin/logical-models/nano-banana")) return json(model);
@@ -256,6 +286,36 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     expect(document.body.textContent).toContain("可用 2");
     expect(document.body.textContent).not.toMatch(/offline-fixture-secret|api key|base url/i);
 
+    await page.getByRole("button", { name: /official-route/ }).click();
+    await page.getByLabelText("供应商模型名").fill("gemini-image-offline-v2");
+    await page.getByLabelText("优先级").fill("9");
+    await page.getByLabelText("最大并发").fill("3");
+    await page.getByRole("button", { name: "保存线路" }).click();
+    await expect.element(page.getByRole("alert")).toHaveTextContent("配置已变化，请重新加载");
+    await page.getByRole("button", { name: "重新加载" }).click();
+    await expect.element(page.getByLabelText("优先级")).toHaveValue(100);
+    await page.getByLabelText("供应商模型名").fill("gemini-image-offline-v2");
+    await page.getByLabelText("优先级").fill("9");
+    await page.getByLabelText("最大并发").fill("3");
+    await page.getByRole("button", { name: "保存线路" }).click();
+    await expect.element(page.getByLabelText("优先级")).toHaveValue(9);
+    const routeUpdates = state.calls.filter((item) => item.method === "PUT" && item.url.endsWith("/routes/official-route"));
+    expect(routeUpdates).toHaveLength(2);
+    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_model_name: "gemini-image-offline-v2", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_model_name: "gemini-image-offline-v2", priority: 9, max_concurrency: 3 });
+
+    await page.getByRole("button", { name: "启用" }).last().click();
+    await expect.element(page.getByRole("button", { name: "停用" }).last()).toBeVisible();
+    await page.getByRole("button", { name: "停用" }).last().click();
+    await expect.element(page.getByRole("button", { name: "启用" }).last()).toBeVisible();
+    await page.getByRole("button", { name: "归档" }).last().click();
+    await expect.element(page.getByRole("button", { name: /official-route/ })).not.toBeInTheDocument();
+    await page.getByRole("checkbox", { name: "显示已归档" }).click();
+    await expect.element(page.getByRole("button", { name: /official-route/ })).toBeVisible();
+    await page.getByRole("button", { name: /official-route/ }).click();
+    await page.getByRole("button", { name: "恢复" }).last().click();
+    await expect.element(page.getByRole("button", { name: "启用" }).last()).toBeVisible();
+
     await page.getByLabelText("选择账号").selectOptions("ordinary-user");
     await page.getByLabelText("Nano Banana Offline").click();
     await page.getByRole("button", { name: "保存派发" }).click();
@@ -263,8 +323,7 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     expect(state.assignment()).toEqual(["nano-banana"]);
 
     await page.getByRole("button", { name: "归档" }).first().click();
-    await expect.element(page.getByRole("list", { name: "逻辑模型列表" })).not.toHaveTextContent("Nano Banana Offline");
-    await page.getByRole("checkbox", { name: "显示已归档" }).click();
+    await expect.element(page.getByRole("list", { name: "逻辑模型列表" })).toHaveTextContent("已归档");
     await expect.element(page.getByText("Nano Banana Offline", { exact: true }).first()).toBeVisible();
     await page.getByText("Nano Banana Offline", { exact: true }).first().click();
     await page.getByRole("button", { name: "恢复" }).first().click();
