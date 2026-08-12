@@ -1491,7 +1491,17 @@ class CanvasStore:
                 item = dict(existing)
                 if item["request_hash"] != request_hash:
                     return Reservation(item, False, True)
-                if item["status"] == "submitting" and float(item.get("lease_until") or 0) <= self._clock():
+                lease_expired = float(item.get("lease_until") or 0) <= self._clock()
+                if item["status"] == "submitting" and item.get("submission_state") == "in_flight" and lease_expired:
+                    db.execute(
+                        "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                        "error_code='SUBMISSION_UNKNOWN',submission_token=NULL,lease_until=NULL,updated_at=? "
+                        "WHERE id=? AND submission_token IS ? AND status='submitting' AND submission_state='in_flight'",
+                        (now, item["id"], item.get("submission_token")),
+                    )
+                    item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
+                    return Reservation(item, False)
+                if item["status"] == "submitting" and item.get("submission_state") in {None, "reserved"} and lease_expired:
                     db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, updated_at=? WHERE id=? AND submission_token IS ?", (token, lease_until, now, item["id"], item.get("submission_token")))
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
@@ -1520,12 +1530,15 @@ class CanvasStore:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise KeyError(job_id)
-            if row["submission_token"] != token or row["status"] != "submitting" or row["submission_state"] != "reserved":
+            if row["submission_token"] != token or row["status"] != "submitting" or row["submission_state"] not in {"reserved", "in_flight"}:
                 return dict(row)
-            db.execute(
-                "UPDATE canvas_jobs SET logical_model_id=?,logical_model_revision=?,route_id=?,route_revision=?,pool_revision_digest=?,key_fingerprint=?,route_snapshot_json=?,updated_at=? WHERE id=?",
-                (logical_model_id, logical_model_revision, route_id, route_revision, pool_revision_digest, key_fingerprint, route_snapshot_json, _now(), job_id),
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET logical_model_id=?,logical_model_revision=?,route_id=?,route_revision=?,pool_revision_digest=?,key_fingerprint=?,route_snapshot_json=?,submission_state='in_flight',updated_at=? "
+                "WHERE id=? AND submission_token=? AND status='submitting' AND submission_state IN ('reserved','in_flight')",
+                (logical_model_id, logical_model_revision, route_id, route_revision, pool_revision_digest, key_fingerprint, route_snapshot_json, _now(), job_id, token),
             )
+            if cursor.rowcount != 1:
+                return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def mark_submission_unknown(self, job_id: str, token: str, error_code: str = "SUBMISSION_UNKNOWN") -> dict[str, object]:
@@ -1548,13 +1561,27 @@ class CanvasStore:
             db.execute("UPDATE canvas_jobs SET status='failed',submission_state='rejected',error_code=?,submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (error_code, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
+    def mark_safe_retry(self, job_id: str, token: str, *, lease_seconds: float = 30.0) -> dict[str, object]:
+        """Return a verified not-submitted attempt to its short pre-I/O lease."""
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] != token or row["submission_state"] != "in_flight":
+                return dict(row)
+            db.execute(
+                "UPDATE canvas_jobs SET submission_state='reserved',lease_until=?,updated_at=? WHERE id=? AND submission_token=? AND submission_state='in_flight'",
+                (self._clock() + lease_seconds, _now(), job_id, token),
+            )
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
     def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:
         # Retain a short-lived reservation that can be reclaimed, without losing the key.
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token: return dict(row)
-            db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, updated_at=? WHERE id=?", (error_code, self._clock() - 1, _now(), job_id))
+            db.execute("UPDATE canvas_jobs SET error_code=?, lease_until=?, submission_state=CASE WHEN submission_state='in_flight' THEN 'reserved' ELSE submission_state END, updated_at=? WHERE id=?", (error_code, self._clock() - 1, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def mark_failed(self, job_id: str, error_code: str, token: str | None = None) -> dict[str, object]:

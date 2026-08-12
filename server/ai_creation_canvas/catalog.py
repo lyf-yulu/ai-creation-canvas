@@ -49,9 +49,11 @@ class ManagedRoutingRuntime:
 
     def has_healthy_route(self, model: LogicalModelDefinition) -> bool:
         pools = self.pools()
+        providers = {item.provider_id: item for item in self.store.list_provider_definitions() if item.enabled}
         for route in self.store.list_model_routes(model_id=model.model_id, include_archived=False):
             pool = pools.get(route.credential_pool_ref)
-            if not route.enabled or not isinstance(pool, CredentialPool) or not pool.keys:
+            provider = providers.get(route.provider_id)
+            if not route.enabled or provider is None or provider.adapter_type != route.adapter_type or not isinstance(pool, CredentialPool) or not pool.keys:
                 continue
             try:
                 validate_route_model(route, model)

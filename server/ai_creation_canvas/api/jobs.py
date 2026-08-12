@@ -120,7 +120,7 @@ def _response(item: dict[str, object], request: Request) -> dict[str, object]:
     return body
 
 
-def _route_snapshot(route: ModelRouteDefinition) -> str:
+def _route_snapshot(route: ModelRouteDefinition, pool_revision_digest: str) -> str:
     body = {
         "route_id": route.route_id,
         "model_id": route.model_id,
@@ -135,6 +135,7 @@ def _route_snapshot(route: ModelRouteDefinition) -> str:
         "enabled": route.enabled,
         "archived_at": route.archived_at,
         "revision": route.revision,
+        "pool_revision_digest": pool_revision_digest,
     }
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
 
@@ -146,7 +147,7 @@ def _route_from_snapshot(value: object) -> ModelRouteDefinition:
         body = json.loads(value)
     except (TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("managed route snapshot is invalid") from None
-    expected = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision"}
+    expected = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision", "pool_revision_digest"}
     if not isinstance(body, dict) or set(body) != expected or not isinstance(body["operation_contracts"], list):
         raise ValueError("managed route snapshot is invalid")
     try:
@@ -164,6 +165,22 @@ def _route_from_snapshot(value: object) -> ModelRouteDefinition:
         raise ValueError("managed route snapshot is invalid") from None
 
 
+def _validated_job_route(item: Mapping[str, object]) -> ModelRouteDefinition:
+    route = _route_from_snapshot(item.get("route_snapshot_json"))
+    try:
+        body = json.loads(str(item.get("route_snapshot_json")))
+    except ValueError:
+        raise ValueError("managed job snapshot is inconsistent") from None
+    if (
+        item.get("logical_model_id") != route.model_id
+        or item.get("route_id") != route.route_id
+        or item.get("route_revision") != route.revision
+        or item.get("pool_revision_digest") != body.get("pool_revision_digest")
+    ):
+        raise ValueError("managed job snapshot is inconsistent")
+    return route
+
+
 def _adapter_template(route: ModelRouteDefinition, operation: str) -> str:
     return f"{route.adapter_type}.{operation}"
 
@@ -173,7 +190,8 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
     store = request.app.state.canvas_store
     model = runtime.logical_model(domain_request.model_id)
     token = str(reservation.job["submission_token"])
-    if model is None or not model.enabled or model.archived_at is not None:
+    authorized = context.user.role.value == "admin" or domain_request.model_id in store.governed_assigned_models(context.user.user_id)
+    if model is None or not authorized or not model.enabled or model.archived_at is not None or model.revision != reservation.job.get("logical_model_revision"):
         store.mark_submission_rejected(str(reservation.job["id"]), token, "MODEL_UNAVAILABLE")
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
     input_facts: dict[str, tuple[str, ...]] = {"prompt": ("text",)}
@@ -197,7 +215,11 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
         domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs,
     )
     had_capacity = False
+    coordination_failed = False
     for original in candidates:
+        provider = next((item for item in store.list_provider_definitions() if item.provider_id == original.route.provider_id), None)
+        if provider is None or not provider.enabled or provider.adapter_type != original.route.adapter_type:
+            continue
         remaining = tuple(original.pool.keys)
         while remaining:
             candidate = RouteCandidate(original.route, replace(original.pool, keys=remaining))
@@ -205,24 +227,47 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
             try:
                 async with runtime.coordinator.acquire_credential(str(reservation.job["id"]), context.user.user_id, candidate) as acquired:
                     lease = acquired
-                    snapshot = _route_snapshot(candidate.route)
-                    store.record_routing_snapshot(
+                    snapshot = _route_snapshot(candidate.route, original.pool.revision_digest)
+                    snapshot_item = store.record_routing_snapshot(
                         str(reservation.job["id"]), token,
                         logical_model_id=model.model_id, logical_model_revision=model.revision,
                         route_id=candidate.route.route_id, route_revision=candidate.route.revision,
                         pool_revision_digest=original.pool.revision_digest,
                         key_fingerprint=lease.key_fingerprint, route_snapshot_json=snapshot,
                     )
+                    if (
+                        snapshot_item.get("submission_token") != token
+                        or snapshot_item.get("submission_state") != "in_flight"
+                        or snapshot_item.get("route_snapshot_json") != snapshot
+                        or snapshot_item.get("key_fingerprint") != lease.key_fingerprint
+                    ):
+                        return snapshot_item
                     adapter = runtime.adapter_factory.build(candidate.route, lease)
-                    upstream = await adapter.submit(context, upstream_request)
-                result_ids = tuple(result.asset_id for result in upstream.state.results)
-                return store.mark_submitted(
-                    str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value,
-                    token, result_ids=result_ids or None,
-                )
+                    try:
+                        upstream = await adapter.submit(context, upstream_request)
+                    except asyncio.CancelledError:
+                        store.mark_submission_unknown(str(reservation.job["id"]), token)
+                        raise
+                    except Exception as error:
+                        disposition = classify_submission_error(error, _adapter_template(candidate.route, domain_request.operation.value))
+                        if isinstance(error, SubmissionError) and error.disposition is SubmissionDisposition.ACCEPTED and error.provider_task_id:
+                            return store.mark_submitted(str(reservation.job["id"]), error.provider_task_id, "queued", token)
+                        if disposition is SubmissionDisposition.REJECTED:
+                            store.mark_submission_rejected(str(reservation.job["id"]), token)
+                            raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
+                        if disposition not in {SubmissionDisposition.NOT_SUBMITTED, SubmissionDisposition.TEMPORARY_UNAVAILABLE}:
+                            return store.mark_submission_unknown(str(reservation.job["id"]), token)
+                        store.mark_safe_retry(str(reservation.job["id"]), token)
+                        raise
+                    result_ids = tuple(result.asset_id for result in upstream.state.results)
+                    return store.mark_submitted(
+                        str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value,
+                        token, result_ids=result_ids or None,
+                    )
             except ExecutionCapacityExceeded:
                 break
             except CoordinationUnavailable:
+                coordination_failed = True
                 break
             except asyncio.CancelledError:
                 store.mark_submission_unknown(str(reservation.job["id"]), token)
@@ -230,17 +275,14 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
             except Exception as error:
                 had_capacity = True
                 disposition = classify_submission_error(error, _adapter_template(candidate.route, domain_request.operation.value))
-                if isinstance(error, SubmissionError) and error.disposition is SubmissionDisposition.ACCEPTED and error.provider_task_id:
-                    return store.mark_submitted(str(reservation.job["id"]), error.provider_task_id, "queued", token)
                 if disposition in {SubmissionDisposition.NOT_SUBMITTED, SubmissionDisposition.TEMPORARY_UNAVAILABLE} and lease is not None:
                     remaining = tuple(key for key in remaining if key.key_id != lease.key_id)
                     continue
-                if disposition is SubmissionDisposition.REJECTED:
-                    store.mark_submission_rejected(str(reservation.job["id"]), token)
-                    raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
                 item = store.mark_submission_unknown(str(reservation.job["id"]), token)
                 return item
-    store.fail_reservation(str(reservation.job["id"]), "TASK_CAPACITY" if not had_capacity else "UPSTREAM_UNAVAILABLE", token)
+    store.fail_reservation(str(reservation.job["id"]), "COORDINATION_UNAVAILABLE" if coordination_failed else ("TASK_CAPACITY" if not had_capacity else "UPSTREAM_UNAVAILABLE"), token)
+    if coordination_failed:
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True)
     if had_capacity:
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True)
     raise problem(request, "CAPACITY_EXCEEDED", "The generation service is busy.", status=429, retryable=True)
@@ -249,7 +291,7 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
 @asynccontextmanager
 async def _managed_adapter(request: Request, context, item: Mapping[str, object]):
     runtime = request.app.state.managed_routing_runtime
-    route = _route_from_snapshot(item.get("route_snapshot_json"))
+    route = _validated_job_route(item)
     expected = item.get("key_fingerprint")
     if not isinstance(expected, str) or not expected:
         raise ValueError("managed credential snapshot is unavailable")
@@ -345,7 +387,13 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                 if source_forbidden:
                     forbidden = True
                 elif source and source.get("status") == "succeeded" and source.get("service_id") in reusable_result_services and index < len(source_results):
-                    asset = {"status": "active", "kind": "reference", "media_type": expected_media, "resolved_result_id": source_results[index]}
+                    if managed:
+                        try:
+                            _validated_job_route(source)
+                        except ValueError:
+                            source = None
+                    if source is not None and (not managed or source.get("logical_model_id") == domain_request.model_id):
+                        asset = {"status": "active", "kind": "reference", "media_type": expected_media, "resolved_result_id": source_results[index]}
         if forbidden:
             raise problem(request, "FORBIDDEN", "You do not have access to this resource.", status=403)
         if asset is None or asset["status"] != "active":

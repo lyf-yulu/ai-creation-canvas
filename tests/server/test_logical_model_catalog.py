@@ -12,6 +12,7 @@ from ai_creation_canvas.catalog import LogicalModelCatalog, ManagedRoutingRuntim
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
 from ai_creation_canvas.domain.models import ModelInputPort, PortalRole, PortalUser, RequestContext
 from ai_creation_canvas.model_registry import OperationContract
+from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
@@ -67,6 +68,8 @@ def runtime(store: CanvasStore) -> ManagedRoutingRuntime:
 
 def test_public_catalog_projects_one_logical_model_without_routing_fields(tmp_path: Path) -> None:
     store = CanvasStore(tmp_path / "data")
+    for provider_id in ("google", "t8star", "backup"):
+        store.create_provider_definition(ProviderDefinition(provider_id, provider_id, "chiyun_openai_images", f"https://{provider_id}.example", provider_id), actor_user_id="bootstrap")
     store.create_logical_model(model())
     for item in (route("official-route", "google", "official", 1), route("gemini-route", "t8star", "gemini", 2), route("backup-route", "backup", "backup", 3)):
         store.create_model_route(item)

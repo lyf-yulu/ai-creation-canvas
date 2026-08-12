@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.errors import DomainError
-from ai_creation_canvas.api.jobs import _result_ids, _route_from_snapshot
+from ai_creation_canvas.api.jobs import _result_ids, _validated_job_route
 
 router = APIRouter(prefix="/api/v1")
 _MAX = 64 * 1024 * 1024
@@ -101,7 +101,7 @@ async def get_result(job_id: str, request: Request, result_index: int | None = N
         if runtime is None:
             raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404)
         try:
-            adapter = runtime.adapter_factory.build_result_reader(_route_from_snapshot(item.get("route_snapshot_json")))
+            adapter = runtime.adapter_factory.build_result_reader(_validated_job_route(item))
         except ValueError:
             raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404) from None
     else:

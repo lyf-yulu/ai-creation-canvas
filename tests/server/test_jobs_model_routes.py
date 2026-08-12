@@ -6,6 +6,8 @@ import hmac
 import json
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,11 +20,12 @@ from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.catalog import ManagedRoutingRuntime
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.coordination import CredentialLease, ExecutionCapacityExceeded
+from ai_creation_canvas.coordination import CredentialLease, CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
 from ai_creation_canvas.domain.models import ModelInputPort
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.model_registry import OperationContract
+from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
@@ -83,9 +86,10 @@ class ScriptedCoordinator:
         return hashlib.sha256(secret.encode()).hexdigest()
 
 
-def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator):
-    store = CanvasStore(tmp_path / "data")
-    store.create_provider_definition(_provider(), actor_user_id="bootstrap")
+def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, store: CanvasStore | None = None):
+    store = store or CanvasStore(tmp_path / "data")
+    store.create_provider_definition(ProviderDefinition("google", "Google", "chiyun_openai_images", "https://google.example", "official"), actor_user_id="bootstrap")
+    store.create_provider_definition(ProviderDefinition("t8star", "T8", "chiyun_openai_images", "https://t8.example", "gemini"), actor_user_id="bootstrap")
     store.create_logical_model(logical())
     store.create_model_route(route("official-route", "google", "official", 1))
     store.create_model_route(route("gemini-route", "t8star", "gemini", 2))
@@ -172,6 +176,46 @@ def test_managed_rejection_before_credentials_and_never_falls_back(tmp_path: Pat
     revoked = client.post("/api/v1/jobs", headers=headers(), json=payload(idempotency_key="revoked"))
     assert revoked.status_code == 400
     assert coordinator.acquisitions == [] and coordinator.legacy_calls == 0
+
+
+def test_access_revoked_immediately_after_reservation_stops_before_credential(tmp_path: Path, monkeypatch) -> None:
+    coordinator = ScriptedCoordinator()
+    app, store, _ = build_app(tmp_path, lambda request: (_ for _ in ()).throw(AssertionError("provider called")), coordinator)
+    original = store.reserve_job
+
+    def reserve_then_revoke(**kwargs):
+        result = original(**kwargs)
+        store.revoke_model_access("user-a", "nano-banana", actor_user_id="admin")
+        return result
+
+    monkeypatch.setattr(store, "reserve_job", reserve_then_revoke)
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", headers=headers(), json=payload())
+    assert response.status_code == 400
+    assert coordinator.acquisitions == []
+
+
+def test_coordination_outage_returns_503_not_capacity_429(tmp_path: Path) -> None:
+    class UnavailableCoordinator(ScriptedCoordinator):
+        @asynccontextmanager
+        async def acquire_credential(self, job_id, user_id, candidate):
+            raise CoordinationUnavailable("offline")
+            yield
+
+    app, _, _ = build_app(tmp_path, lambda request: (_ for _ in ()).throw(AssertionError("provider called")), UnavailableCoordinator())
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", headers=headers(), json=payload())
+    assert response.status_code == 503
+
+
+def test_provider_disable_hides_catalog_and_stops_submission(tmp_path: Path) -> None:
+    coordinator = ScriptedCoordinator()
+    app, store, _ = build_app(tmp_path, lambda request: (_ for _ in ()).throw(AssertionError("provider called")), coordinator)
+    for provider in store.list_provider_definitions():
+        store.update_provider_definition(replace(provider, enabled=False), expected_revision=provider.revision, actor_user_id="admin")
+    client = TestClient(app, raise_server_exceptions=False)
+    catalog = client.get("/api/v1/models", headers=headers())
+    submitted = client.post("/api/v1/jobs", headers=headers(), json=payload())
+    assert catalog.status_code == 200 and catalog.json()["models"] == []
+    assert submitted.status_code == 400 and coordinator.acquisitions == []
 
 
 def test_production_logical_routes_require_pool_configuration_after_redis(tmp_path: Path) -> None:

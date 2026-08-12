@@ -30,6 +30,7 @@ from ai_creation_canvas.parameter_schema import validate_parameter_schema, valid
 
 _ARK_URL = "https://ark.cn-beijing.volces.com"
 _RESULT_ID = re.compile(r"ark_result_[0-9a-f]{64}\Z")
+_CHIYUN_RESULT_ID = re.compile(r"chiyun_result_[0-9a-f]{64}\Z")
 _CONTENT_TASK_ID = re.compile(r"cgt-[A-Za-z0-9_-]{1,120}\Z")
 _MAX_RESULT_BYTES = 256 * 1024 * 1024
 _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -563,6 +564,14 @@ def _local_asset_loader(data_dir: Path) -> Callable[[str], tuple[bytes, str]]:
             if mime not in _IMAGE_MIME:
                 raise ValueError("Ark result asset is invalid")
             return candidate.read_bytes(), mime
+        if _CHIYUN_RESULT_ID.fullmatch(asset_id):
+            candidate = data_dir / "chiyun-results" / asset_id
+            if candidate.is_symlink() or not candidate.is_file() or not 0 < candidate.stat().st_size <= 32 * 1024 * 1024:
+                raise ValueError("Chiyun result asset is invalid")
+            body = candidate.read_bytes()
+            if not body.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("Chiyun result asset is invalid")
+            return body, "image/png"
         with sqlite3.connect(database) as connection:
             row = connection.execute("SELECT relative_path,mime_type,status,kind,size_bytes FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
         if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME | _AUDIO_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
