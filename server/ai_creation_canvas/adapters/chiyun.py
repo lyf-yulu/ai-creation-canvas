@@ -94,9 +94,15 @@ class ChiyunGenerationAdapter:
         except SubmissionError:
             raise
         except InvalidUpstreamResult:
-            typed_error = UnknownSubmissionResult()
+            typed_error = UnknownSubmissionResult("chiyun_openai_images.image.edit")
         except ValueError as error:
-            typed_error = local_rejection(error)
+            typed_error = local_rejection(error, "chiyun_openai_images.image.edit")
+        except OSError:
+            typed_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "LOCAL_STATE_UNAVAILABLE",
+                adapter_template="chiyun_openai_images.image.edit",
+            )
         raise typed_error
 
     async def _submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
@@ -133,14 +139,37 @@ class ChiyunGenerationAdapter:
         payload = await self._post(data, files)
         results = _decode_results(payload, expected=int(params["output_count"]))
         upstream_id = "chiyun_" + hashlib.sha256(f"{request.model_id}\n{request.idempotency_key}".encode()).hexdigest()
-        result_ids = tuple(self._store_result(upstream_id, index, body) for index, body in enumerate(results))
-        async with self._lock:
-            values = self._read_index()
-            values[upstream_id] = list(result_ids)
-            self._write_index(values)
+        planned = tuple(_result_id(upstream_id, index) for index in range(len(results)))
+        materialized: list[str] = []
+        try:
+            for index, body in enumerate(results):
+                materialized.append(self._store_result(upstream_id, index, body))
+            async with self._lock:
+                values = self._read_index()
+                values[upstream_id] = list(materialized)
+                self._write_index(values)
+        except OSError:
+            for result_id in planned:
+                _safe_unlink(self._root / result_id)
+            raise
+        result_ids = tuple(materialized)
         return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        local_error: SubmissionError | None = None
+        try:
+            return await self._poll(context, upstream_job_id)
+        except SubmissionError:
+            raise
+        except OSError:
+            local_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "LOCAL_STATE_UNAVAILABLE",
+                adapter_template="chiyun_openai_images.image.edit",
+            )
+        raise local_error
+
+    async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun job is invalid")
@@ -182,7 +211,7 @@ class ChiyunGenerationAdapter:
                                 break
                             error_body.extend(chunk)
                         safe_response = httpx.Response(response.status_code, content=bytes(error_body))
-                        raise error_from_response(safe_response, "chiyun_openai_images")
+                        raise error_from_response(safe_response, "chiyun_openai_images.image.edit")
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(raw) + len(chunk) > _MAX_RESPONSE:
@@ -191,9 +220,13 @@ class ChiyunGenerationAdapter:
         except (SubmissionError, InvalidUpstreamResult):
             raise
         except httpx.HTTPError as error:
-            submission_error = error_from_transport(error, "chiyun_openai_images")
+            submission_error = error_from_transport(error, "chiyun_openai_images.image.edit")
         except OSError:
-            submission_error = SubmissionError(SubmissionDisposition.SUBMISSION_UNKNOWN, "SUBMISSION_UNKNOWN")
+            submission_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "SUBMISSION_UNKNOWN",
+                adapter_template="chiyun_openai_images.image.edit",
+            )
         if submission_error is not None:
             raise submission_error
         try:
@@ -205,7 +238,7 @@ class ChiyunGenerationAdapter:
         return payload
 
     def _store_result(self, upstream_id: str, index: int, body: bytes) -> str:
-        result_id = "chiyun_result_" + hashlib.sha256(f"{upstream_id}\n{index}".encode()).hexdigest()
+        result_id = _result_id(upstream_id, index)
         destination, temporary = self._root / result_id, self._root / f".{result_id}.tmp"
         try:
             with temporary.open("xb") as output:
@@ -215,7 +248,7 @@ class ChiyunGenerationAdapter:
             os.chmod(temporary, 0o600)
             os.replace(temporary, destination)
         finally:
-            temporary.unlink(missing_ok=True)
+            _safe_unlink(temporary)
         return result_id
 
     def _read_index(self) -> dict[str, object]:
@@ -229,9 +262,12 @@ class ChiyunGenerationAdapter:
 
     def _write_index(self, values: Mapping[str, object]) -> None:
         temporary = self._root / ".pending.tmp"
-        temporary.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")), encoding="ascii")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self._index)
+        try:
+            temporary.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")), encoding="ascii")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self._index)
+        finally:
+            _safe_unlink(temporary)
 
 
 def _decode_results(payload: Mapping[str, object], *, expected: int) -> tuple[bytes, ...]:
@@ -258,6 +294,10 @@ def _decode_results(payload: Mapping[str, object], *, expected: int) -> tuple[by
 
 def _extension(mime: str) -> str:
     return {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
+
+
+def _result_id(upstream_id: str, index: int) -> str:
+    return "chiyun_result_" + hashlib.sha256(f"{upstream_id}\n{index}".encode()).hexdigest()
 
 
 def _range(value: str, size: int) -> tuple[int, int] | None:
@@ -292,3 +332,10 @@ def _empty_stream(status: int, *, size: int | None = None):
 
 async def _noop() -> None:
     return None
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass

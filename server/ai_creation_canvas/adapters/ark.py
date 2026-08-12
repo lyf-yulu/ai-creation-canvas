@@ -24,7 +24,7 @@ import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
-from ai_creation_canvas.adapters.retry import SubmissionError, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
+from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.parameter_schema import validate_parameter_schema, validate_parameter_values
 
 
@@ -133,14 +133,23 @@ class ArkGenerationAdapter:
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
         typed_error: SubmissionError | None = None
+        adapter_template = f"ark.{request.operation.value}"
+        if adapter_template not in {"ark.image.generate", "ark.image.edit", "ark.video.generate"}:
+            adapter_template = "ark.image.generate"
         try:
             return await self._submit(context, request)
         except SubmissionError:
             raise
         except InvalidUpstreamResult:
-            typed_error = UnknownSubmissionResult()
+            typed_error = UnknownSubmissionResult(adapter_template)
         except ValueError as error:
-            typed_error = local_rejection(error)
+            typed_error = local_rejection(error, adapter_template)
+        except OSError:
+            typed_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "LOCAL_STATE_UNAVAILABLE",
+                adapter_template=adapter_template,
+            )
         raise typed_error
 
     async def _submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
@@ -155,7 +164,12 @@ class ArkGenerationAdapter:
             if request.operation is ModelOperation.IMAGE_EDIT and not references or request.operation is ModelOperation.IMAGE_GENERATE and references:
                 raise ValueError("Ark image operation does not match its inputs")
             payload = {"model": declaration.provider_model_name, "prompt": request.prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
-            response = await self._api("POST", "/api/v3/images/generations", json=payload, submission=True)
+            response = await self._api(
+                "POST",
+                "/api/v3/images/generations",
+                json=payload,
+                submission_template=f"ark.{request.operation.value}",
+            )
             data = self._json(response)
             items = data.get("data")
             if not isinstance(items, list) or not 1 <= len(items) <= 15 or any(not isinstance(item, Mapping) or not isinstance(item.get("url"), str) for item in items):
@@ -168,7 +182,12 @@ class ArkGenerationAdapter:
             payload = {"model": declaration.provider_model_name, "content": content, **provider_params}
             if len(json.dumps(payload).encode("utf-8")) > _MAX_REQUEST_BYTES:
                 raise ValueError("Ark video request is too large")
-            response = await self._api("POST", "/api/v3/contents/generations/tasks", json=payload, submission=True)
+            response = await self._api(
+                "POST",
+                "/api/v3/contents/generations/tasks",
+                json=payload,
+                submission_template="ark.video.generate",
+            )
             body = self._json(response)
             upstream_id = body.get("id")
             if not isinstance(upstream_id, str) or not upstream_id.startswith("cgt-"):
@@ -217,6 +236,20 @@ class ArkGenerationAdapter:
         return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        local_error: SubmissionError | None = None
+        try:
+            return await self._poll(context, upstream_job_id)
+        except SubmissionError:
+            raise
+        except OSError:
+            local_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "LOCAL_STATE_UNAVAILABLE",
+                adapter_template="ark.video.generate" if _CONTENT_TASK_ID.fullmatch(upstream_job_id) else "ark.image.generate",
+            )
+        raise local_error
+
+    async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
         pending = await self._pending(upstream_job_id)
         if pending is not None:
@@ -264,7 +297,14 @@ class ArkGenerationAdapter:
         start, end = interval
         return _FileStream(media, mime, offset=start, length=end - start + 1, head=head)
 
-    async def _api(self, method: str, path: str, *, json: Mapping[str, object] | None = None, submission: bool = False) -> httpx.Response:
+    async def _api(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Mapping[str, object] | None = None,
+        submission_template: str | None = None,
+    ) -> httpx.Response:
         submission_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
@@ -273,8 +313,8 @@ class ArkGenerationAdapter:
                     kwargs["json"] = json
                 response = await client.request(method, path, **kwargs)
         except httpx.HTTPError as error:
-            if submission:
-                submission_error = error_from_transport(error, "ark")
+            if submission_template is not None:
+                submission_error = error_from_transport(error, submission_template)
             elif isinstance(error, httpx.TimeoutException):
                 raise PortalUpstreamError("UPSTREAM_TIMEOUT", retryable=True) from error
             else:
@@ -282,12 +322,12 @@ class ArkGenerationAdapter:
         if submission_error is not None:
             raise submission_error
         if response.status_code in {408, 429} or response.status_code >= 500:
-            if submission:
-                raise error_from_response(response, "ark")
+            if submission_template is not None:
+                raise error_from_response(response, submission_template)
             raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=response.status_code)
         if response.status_code < 200 or response.status_code >= 300:
-            if submission:
-                raise error_from_response(response, "ark")
+            if submission_template is not None:
+                raise error_from_response(response, submission_template)
             raise PortalUpstreamError("REQUEST_REJECTED", retryable=False, status_code=response.status_code)
         return response
 
@@ -340,9 +380,12 @@ class ArkGenerationAdapter:
 
     def _write_index(self, values: Mapping[str, object]) -> None:
         temporary = self._index_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self._index_path)
+        try:
+            temporary.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self._index_path)
+        finally:
+            _safe_unlink(temporary)
 
     @staticmethod
     def _safe_result_url(value: str) -> None:
@@ -357,6 +400,7 @@ class ArkGenerationAdapter:
         if media.is_file() and metadata.is_file():
             mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
             return AssetRef(result_id, "reference", "active", mime)
+        local_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(60), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("GET", url, headers={}) as response:
@@ -373,10 +417,26 @@ class ArkGenerationAdapter:
                                 raise InvalidUpstreamResult("Ark result is too large")
                             destination.write(chunk)
             os.chmod(temporary, 0o600); os.replace(temporary, media)
-            metadata.write_text(json.dumps({"mime": mime}), encoding="utf-8"); os.chmod(metadata, 0o600)
+            metadata_temporary = metadata.with_suffix(".tmp")
+            try:
+                metadata_temporary.write_text(json.dumps({"mime": mime}), encoding="utf-8")
+                os.chmod(metadata_temporary, 0o600)
+                os.replace(metadata_temporary, metadata)
+            finally:
+                _safe_unlink(metadata_temporary)
             return AssetRef(result_id, "reference", "active", mime)
+        except OSError:
+            _safe_unlink(media)
+            _safe_unlink(metadata)
+            local_error = SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "LOCAL_STATE_UNAVAILABLE",
+                adapter_template="ark.image.generate" if kind == "image" else "ark.video.generate",
+            )
         finally:
-            if temporary.exists(): temporary.unlink()
+            _safe_unlink(temporary)
+        if local_error is not None:
+            raise local_error
 
 
 def _range(value: str, size: int) -> tuple[int, int] | None:
@@ -389,6 +449,13 @@ def _range(value: str, size: int) -> tuple[int, int] | None:
     if start >= size: return None
     end = min(int(right), size - 1) if right else size - 1
     return None if end < start else (start, end)
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _missing_stream():

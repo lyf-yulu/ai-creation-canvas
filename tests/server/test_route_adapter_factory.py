@@ -35,13 +35,19 @@ def _contract(
     inputs: tuple[ModelInputPort, ...] | None = None,
     properties: dict[str, object] | None = None,
     mappings: dict[str, str] | None = None,
+    required: list[str] | None = None,
 ) -> OperationContract:
     media = operation.value.split(".", 1)[0]
     return OperationContract(
         operation,
         inputs or (ModelInputPort("prompt", "text", 1, 1),),
         media,
-        {"type": "object", "properties": properties or {}, "additionalProperties": False},
+        {
+            "type": "object",
+            "properties": properties or {},
+            **({"required": required} if required is not None else {}),
+            "additionalProperties": False,
+        },
         mappings or {},
     )
 
@@ -101,25 +107,28 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
         (
             ModelOperation.IMAGE_GENERATE,
             (ModelInputPort("prompt", "text", 1, 1),),
-            {"size": {"type": "string"}},
-            {"size": "size"},
-            {"size": "2048x1024"},
+            {"output_count": {"type": "integer", "minimum": 1, "maximum": 15, "default": 1}},
+            {"output_count": "n"},
+            {"output_count": 2},
             "/api/v3/images/generations",
-            {"model": "ep-provider-2026", "prompt": "make it", "size": "2048x1024", "response_format": "url"},
+            {"model": "ep-provider-2026", "prompt": "make it", "n": 2, "response_format": "url"},
         ),
         (
             ModelOperation.IMAGE_EDIT,
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 14)),
-            {"size": {"type": "string"}},
-            {"size": "size"},
-            {"size": "2K"},
+            {"watermark": {"type": "boolean", "default": False}},
+            {"watermark": "watermark"},
+            {"watermark": False},
             "/api/v3/images/generations",
-            {"model": "ep-provider-2026", "prompt": "make it", "image": ["data:image/png;base64,b25l"], "size": "2K", "response_format": "url"},
+            {"model": "ep-provider-2026", "prompt": "make it", "image": ["data:image/png;base64,b25l"], "watermark": False, "response_format": "url"},
         ),
         (
             ModelOperation.VIDEO_GENERATE,
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 9)),
-            {"ratio": {"type": "string"}, "duration": {"type": "integer"}},
+            {
+                "ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "default": "16:9"},
+                "duration": {"type": "integer", "minimum": 4, "maximum": 15, "default": 5},
+            },
             {"ratio": "ratio", "duration": "duration"},
             {"ratio": "16:9", "duration": 5},
             "/api/v3/contents/generations/tasks",
@@ -163,8 +172,12 @@ def test_route_factory_builds_exact_chiyun_edit_from_trusted_protocol(tmp_path: 
     contract = _contract(
         ModelOperation.IMAGE_EDIT,
         inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
-        properties={"size": {"type": "string"}, "output_count": {"type": "integer"}},
+        properties={
+            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+        },
         mappings={"size": "size", "output_count": "n"},
+        required=["size", "output_count"],
     )
     route = _route(provider_id="chiyun", provider_model_name="gpt-image-2", adapter_type="chiyun_openai_images", contract=contract)
     adapter = factory.build(route, _lease(route.route_id))
@@ -205,8 +218,12 @@ def test_route_factory_rejects_wrong_or_inactive_route_and_untrusted_contracts(t
             contract=_contract(
                 ModelOperation.IMAGE_EDIT,
                 inputs=(ModelInputPort("prompt", "image", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
-                properties={"size": {"type": "string"}, "output_count": {"type": "integer"}},
+                properties={
+                    "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
+                    "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+                },
                 mappings={"size": "size", "output_count": "n"},
+                required=["size", "output_count"],
             ),
         ),
     ]
@@ -256,3 +273,79 @@ def test_provider_protocol_registry_is_copied_and_ark_origin_is_fixed(tmp_path: 
     assert isinstance(factory.build(_route(), _lease("route-a")), ArkGenerationAdapter)
     with pytest.raises(ValueError):
         ProviderProtocol("ark-official", "ark", "https://evil.example")
+
+
+def test_route_factory_rejects_parameter_contracts_that_widen_trusted_templates(tmp_path: Path) -> None:
+    factory = _factory(tmp_path, [])
+    chiyun = _route(
+        provider_id="chiyun",
+        adapter_type="chiyun_openai_images",
+        contract=_contract(
+            ModelOperation.IMAGE_EDIT,
+            inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
+            properties={
+                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
+                "output_count": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            mappings={"size": "size", "output_count": "n"},
+            required=["size", "output_count"],
+        ),
+    )
+    ark_video = _route(contract=_contract(
+        ModelOperation.VIDEO_GENERATE,
+        properties={"duration": {"type": "integer", "minimum": 1, "maximum": 300, "default": 5}},
+        mappings={"duration": "duration"},
+    ))
+    ark_image = _route(contract=_contract(
+        ModelOperation.IMAGE_GENERATE,
+        properties={"output_count": {"type": "integer", "minimum": 0, "maximum": 100, "default": 1}},
+        mappings={"output_count": "n"},
+    ))
+    wrong_default = _route(contract=_contract(
+        ModelOperation.VIDEO_GENERATE,
+        properties={"duration": {"type": "integer", "minimum": 4, "maximum": 30, "default": 6}},
+        mappings={"duration": "duration"},
+    ))
+    widened_enum = _route(contract=_contract(
+        ModelOperation.VIDEO_GENERATE,
+        properties={"ratio": {"type": "string", "enum": ["16:9", "cinema"], "default": "16:9"}},
+        mappings={"ratio": "ratio"},
+    ))
+    missing_required = _route(
+        provider_id="chiyun",
+        adapter_type="chiyun_openai_images",
+        contract=_contract(
+            ModelOperation.IMAGE_EDIT,
+            inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
+            properties={
+                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]},
+                "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+            },
+            mappings={"size": "size", "output_count": "n"},
+        ),
+    )
+    for route in (chiyun, ark_video, ark_image, wrong_default, widened_enum, missing_required):
+        with pytest.raises(ValueError, match="parameter"):
+            factory.build(route, _lease(route.route_id))
+
+
+def test_route_factory_accepts_exact_and_strict_parameter_subsets(tmp_path: Path) -> None:
+    factory = _factory(tmp_path, [])
+    exact = _route(contract=_contract(
+        ModelOperation.VIDEO_GENERATE,
+        properties={
+            "ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "default": "16:9"},
+            "duration": {"type": "integer", "minimum": 4, "maximum": 30, "default": 5},
+        },
+        mappings={"ratio": "ratio", "duration": "duration"},
+    ))
+    subset = _route(route_id="route-subset", contract=_contract(
+        ModelOperation.VIDEO_GENERATE,
+        properties={
+            "ratio": {"type": "string", "enum": ["16:9", "9:16"], "default": "16:9"},
+            "duration": {"type": "integer", "minimum": 5, "maximum": 15, "default": 5},
+        },
+        mappings={"ratio": "ratio", "duration": "duration"},
+    ))
+    assert isinstance(factory.build(exact, _lease(exact.route_id)), ArkGenerationAdapter)
+    assert isinstance(factory.build(subset, _lease(subset.route_id)), ArkGenerationAdapter)

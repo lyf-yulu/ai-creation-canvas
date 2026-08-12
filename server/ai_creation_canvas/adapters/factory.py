@@ -28,8 +28,44 @@ _ARK_IMAGE_TARGETS = frozenset({
 })
 _ARK_VIDEO_TARGETS = frozenset({
     "ratio", "duration", "resolution", "generate_audio", "camera_fixed",
-    "return_last_frame", "watermark",
+    "return_last_frame", "output_format", "watermark",
 })
+_RATIO_VALUES = ("adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
+_ARK_SIZE_RULE = {
+    "type": "string",
+    "default": "2K",
+    "x-ark-size": {
+        "presets": ["1K", "1.5K", "2K", "3K", "4K"],
+        "min_pixels": 921_600,
+        "max_pixels": 16_777_216,
+        "min_ratio": 0.0625,
+        "max_ratio": 16,
+    },
+}
+_ARK_IMAGE_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
+    "size": ("size", _ARK_SIZE_RULE),
+    "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 15, "default": 1}),
+    "watermark": ("watermark", {"type": "boolean", "default": False}),
+    "output_format": ("output_format", {"type": "string", "enum": ["png", "jpeg"], "default": "png"}),
+    "prompt_optimization": ("optimize_prompt_options.mode", {"type": "string", "enum": ["standard", "fast"], "default": "standard"}),
+    "sequence_mode": ("sequential_image_generation", {"type": "string", "enum": ["disabled", "auto"], "default": "disabled"}),
+    "max_images": ("sequential_image_generation_options.max_images", {"type": "integer", "minimum": 1, "maximum": 15, "default": 4}),
+})
+_ARK_VIDEO_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
+    "ratio": ("ratio", {"type": "string", "enum": list(_RATIO_VALUES), "default": "16:9"}),
+    "resolution": ("resolution", {"type": "string", "enum": ["480p", "720p", "1080p", "4k"], "default": "720p"}),
+    "duration": ("duration", {"type": "integer", "minimum": 4, "maximum": 30, "default": 5}),
+    "generate_audio": ("generate_audio", {"type": "boolean", "default": True}),
+    "camera_fixed": ("camera_fixed", {"type": "boolean", "default": False}),
+    "return_last_frame": ("return_last_frame", {"type": "boolean", "default": False}),
+    "output_format": ("output_format", {"type": "string", "enum": ["mp4", "mov"], "default": "mp4"}),
+    "watermark": ("watermark", {"type": "boolean", "default": False}),
+})
+_CHIYUN_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
+    "size": ("size", {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]}),
+    "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 4}),
+})
+_RULE_KEYS = frozenset({"type", "enum", "minimum", "maximum", "default", "x-ark-size", "title", "description", "x-ui-visible-when"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +207,7 @@ class RouteAdapterFactory:
         if len(route.operation_contracts) != 1:
             raise ValueError("route must bind exactly one operation template")
         contract = route.operation_contracts[0]
+        _validate_parameter_contract(route.adapter_type, contract.operation, contract.parameter_schema, contract.parameter_mappings)
         transport = self._transport_factory(protocol) if self._transport_factory is not None else self._transport
         if route.adapter_type == "ark":
             targets = set(contract.parameter_mappings.values())
@@ -276,4 +313,121 @@ def _is_prompt_port(port: object) -> bool:
         and getattr(port, "media_type", None) == "text"
         and getattr(port, "min_items", None) == 1
         and getattr(port, "max_items", None) == 1
+    )
+
+
+def _validate_parameter_contract(
+    adapter_type: str,
+    operation: ModelOperation,
+    schema: Mapping[str, object],
+    mappings: Mapping[str, str],
+) -> None:
+    if adapter_type == "ark" and operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
+        template = _ARK_IMAGE_PARAMETERS
+        required_template = frozenset()
+    elif adapter_type == "ark" and operation is ModelOperation.VIDEO_GENERATE:
+        template = _ARK_VIDEO_PARAMETERS
+        required_template = frozenset()
+    elif adapter_type == "chiyun_openai_images" and operation is ModelOperation.IMAGE_EDIT:
+        template = _CHIYUN_PARAMETERS
+        required_template = frozenset({"size", "output_count"})
+    else:
+        raise ValueError("route parameter template is unsupported")
+    if set(schema) - {"type", "properties", "required", "additionalProperties"}:
+        raise ValueError("route parameter schema is unsupported")
+    properties = schema.get("properties")
+    raw_required = schema.get("required", [])
+    if (
+        schema.get("type") != "object"
+        or schema.get("additionalProperties", False) is not False
+        or not isinstance(properties, Mapping)
+        or not isinstance(raw_required, list)
+        or any(not isinstance(item, str) for item in raw_required)
+    ):
+        raise ValueError("route parameter schema is unsupported")
+    required = frozenset(raw_required)
+    if len(required) != len(raw_required) or not required <= set(properties) or required != required_template:
+        raise ValueError("route parameter required fields are unsupported")
+    if adapter_type == "chiyun_openai_images" and set(properties) != set(template):
+        raise ValueError("Chiyun parameter schema must include its fixed fields")
+    if set(properties) - set(template) or set(mappings) != set(properties):
+        raise ValueError("route parameter names are unsupported")
+    for name, raw_rule in properties.items():
+        if not isinstance(raw_rule, Mapping) or set(raw_rule) - _RULE_KEYS:
+            raise ValueError("route parameter rule is unsupported")
+        provider_target, trusted_rule = template[name]
+        if mappings[name] != provider_target or not _rule_is_subset(raw_rule, trusted_rule):
+            raise ValueError("route parameter contract widens its trusted template")
+
+
+def _rule_is_subset(rule: Mapping[str, object], trusted: Mapping[str, object]) -> bool:
+    kind = rule.get("type")
+    if kind != trusted.get("type"):
+        return False
+    if ("default" in rule) != ("default" in trusted) or rule.get("default") != trusted.get("default"):
+        return False
+    trusted_enum = trusted.get("enum")
+    route_enum = rule.get("enum")
+    if trusted_enum is not None:
+        if (
+            not isinstance(trusted_enum, list)
+            or not isinstance(route_enum, list)
+            or not route_enum
+            or any(item not in trusted_enum for item in route_enum)
+        ):
+            return False
+    elif route_enum is not None and (not isinstance(route_enum, list) or not route_enum):
+        return False
+    if isinstance(route_enum, list) and any(not _matches_kind(item, kind) for item in route_enum):
+        return False
+    if kind in {"string", "boolean"} and ("minimum" in rule or "maximum" in rule):
+        return False
+    if kind != "string" and "x-ark-size" in rule:
+        return False
+    if any(bound in rule and not _number(rule[bound]) for bound in ("minimum", "maximum")):
+        return False
+    for lower in ("minimum",):
+        if lower in trusted and (lower not in rule or not _number(rule[lower]) or rule[lower] < trusted[lower]):
+            return False
+    for upper in ("maximum",):
+        if upper in trusted and (upper not in rule or not _number(rule[upper]) or rule[upper] > trusted[upper]):
+            return False
+    trusted_size = trusted.get("x-ark-size")
+    route_size = rule.get("x-ark-size")
+    if trusted_size is not None:
+        if not isinstance(trusted_size, Mapping) or not isinstance(route_size, Mapping):
+            return False
+        if set(route_size) != {"presets", "min_pixels", "max_pixels", "min_ratio", "max_ratio"}:
+            return False
+        if (
+            not isinstance(route_size["presets"], list)
+            or not route_size["presets"]
+            or not set(route_size["presets"]) <= set(trusted_size["presets"])
+            or route_size["min_pixels"] < trusted_size["min_pixels"]
+            or route_size["max_pixels"] > trusted_size["max_pixels"]
+            or route_size["min_ratio"] < trusted_size["min_ratio"]
+            or route_size["max_ratio"] > trusted_size["max_ratio"]
+        ):
+            return False
+    elif route_size is not None:
+        return False
+    default = rule.get("default")
+    if "default" in rule and isinstance(route_enum, list) and default not in route_enum:
+        return False
+    if "default" in rule and _number(default):
+        if "minimum" in rule and default < rule["minimum"] or "maximum" in rule and default > rule["maximum"]:
+            return False
+    return True
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _matches_kind(value: object, kind: object) -> bool:
+    return (
+        kind == "string" and isinstance(value, str)
+        or kind == "boolean" and isinstance(value, bool)
+        or kind == "integer" and isinstance(value, int) and not isinstance(value, bool)
+        or kind == "number" and _number(value)
     )
