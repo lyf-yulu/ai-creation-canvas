@@ -44,6 +44,15 @@ def test_skill_config_is_bounded_data_only(tmp_path: Path) -> None:
         raise AssertionError("dynamic service fields must be rejected")
 
 
+def test_builtin_skill_catalog_has_pinned_distinct_visual_themes() -> None:
+    config = Path(__file__).parents[2] / "server" / "config" / "prompt-skills.example.json"
+    skills = load_prompt_skills(config, config.parent)
+    assert len(skills) == 6
+    assert len({item.skill_id for item in skills}) == 6
+    assert {item.skill_id for item in skills} >= {"photography-realism", "commercial-product", "cinematic-motion", "character-continuity", "graphic-poster"}
+    assert all(len(item.source_commit) == 40 and item.license == "MIT" for item in skills)
+
+
 def test_catalog_marks_skills_unavailable_without_admin_text_model(tmp_path: Path) -> None:
     service = PromptSkillService(load_prompt_skills(_config(tmp_path / "skills.json"), tmp_path))
     response = _client(tmp_path, service).get("/api/v1/prompt-skills", headers={**signed_headers(), "Cookie": "portal_session=current"})

@@ -35,6 +35,24 @@
       "source_url": "https://github.com/danielmiessler/Fabric",
       "source_commit": "338b89cfe97ab2d12ce30ce8b5449857a841366d",
       "license": "MIT"
+    },
+    {
+      "skill_id": "character-continuity",
+      "title": "角色连续性",
+      "description": "固定角色外观、服装、道具和空间关系，适合连续分镜与多段视频。",
+      "system_instruction": "你是连续分镜提示词编辑器。保持用户原意、角色身份和所有@素材引用不变；明确每个角色稳定的外观、服装、道具、站位和运动方向，并让前后镜头的时间、光线与空间关系连续。不得擅自新增角色或改变素材编号。只输出一段优化后的中文提示词，不解释。",
+      "source_url": "https://github.com/nidhinjs/prompt-master",
+      "source_commit": "d15eabbe5d2122eedc060bae8a771381e9873d1b",
+      "license": "MIT"
+    },
+    {
+      "skill_id": "graphic-poster",
+      "title": "平面海报",
+      "description": "强化视觉层级、排版留白、配色与文字可读性，适合海报和社媒封面。",
+      "system_instruction": "你是平面海报提示词编辑器。保持用户原意、指定文字和所有@素材引用不变；明确画幅、视觉层级、主体位置、文字安全区、留白、配色、字体气质和印刷或屏幕质感。不得改写指定文案、捏造商标或堆叠互相冲突的风格。只输出一段优化后的中文提示词，不解释。",
+      "source_url": "https://github.com/nidhinjs/prompt-master",
+      "source_commit": "d15eabbe5d2122eedc060bae8a771381e9873d1b",
+      "license": "MIT"
     }
   ]
 }

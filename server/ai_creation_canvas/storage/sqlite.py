@@ -1561,6 +1561,24 @@ class CanvasStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def admin_usage_by_user(self) -> tuple[dict[str, object], ...]:
+        """Return bounded, secret-free job counters grouped by the stored owner."""
+        with self._connection() as db:
+            rows = db.execute(
+                """SELECT u.user_id,u.username_normalized,u.display_name,
+                    COUNT(j.id) AS jobs,
+                    COALESCE(SUM(CASE WHEN j.status='succeeded' THEN 1 ELSE 0 END),0) AS succeeded,
+                    COALESCE(SUM(CASE WHEN j.status='failed' THEN 1 ELSE 0 END),0) AS failed,
+                    COALESCE(SUM(CASE WHEN j.status IN ('submitting','queued','running') THEN 1 ELSE 0 END),0) AS active,
+                    COALESCE(SUM(CASE WHEN j.operation IN ('image.generate','image.edit') THEN 1 ELSE 0 END),0) AS image,
+                    COALESCE(SUM(CASE WHEN j.operation='video.generate' THEN 1 ELSE 0 END),0) AS video
+                FROM canvas_users AS u
+                LEFT JOIN canvas_jobs AS j ON j.user_id=u.user_id
+                GROUP BY u.user_id,u.username_normalized,u.display_name
+                ORDER BY jobs DESC,u.username_normalized"""
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def list_assets_for_owner(self, user_id: str, limit: int = 100) -> tuple[dict[str, object], ...]:
         safe_limit = min(max(limit, 1), 100)
         with self._connection() as db:

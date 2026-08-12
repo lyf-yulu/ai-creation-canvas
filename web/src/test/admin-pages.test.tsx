@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { ProductShell } from "@/components/layout/product-shell";
 import AdminModelsPage from "@/pages/admin/models";
+import AdminUsagePage from "@/pages/admin/usage";
 import AdminUsersPage from "@/pages/admin/users";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 
@@ -36,11 +37,26 @@ it("shows administrator destinations only to an administrator", () => {
     const { rerender } = render(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
     expect(screen.getAllByRole("link", { name: "账号管理" })).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "模型派发" })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: "使用统计" })).toHaveLength(2);
 
     useSessionStore.setState({ session: { user_id: "user-1", username: "普通用户", role: "user", must_change_password: false } });
     rerender(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
     expect(screen.queryByRole("link", { name: "账号管理" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "模型派发" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "使用统计" })).not.toBeInTheDocument();
+});
+
+it("shows server-owned per-user image and video usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+        totals: { jobs: 4, succeeded: 2, failed: 1, active: 1, image: 2, video: 2 },
+        users: [{ user_id: "user-1", username: "canvas-user", display_name: "普通用户", jobs: 3, succeeded: 1, failed: 1, active: 1, image: 2, video: 1 }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<AdminUsagePage />);
+
+    expect(await screen.findByRole("heading", { name: "使用统计" })).toBeVisible();
+    expect(screen.getByText("4", { selector: "strong" })).toBeVisible();
+    expect(screen.getByRole("row", { name: /普通用户.*canvas-user.*3.*2.*1.*1.*1/ })).toBeVisible();
 });
 
 it("lets an administrator disable an account without exposing sensitive fields", async () => {

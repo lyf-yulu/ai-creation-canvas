@@ -1,4 +1,4 @@
-import { FolderKanban, Images, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
+import { BarChart3, FolderKanban, Images, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -15,6 +15,7 @@ const releasedNavigation = [
 const adminNavigation = [
     { label: "账号管理", to: "/admin/users", icon: Users },
     { label: "模型派发", to: "/admin/models", icon: SlidersHorizontal },
+    { label: "使用统计", to: "/admin/usage", icon: BarChart3 },
 ] as const;
 
 export function ProductShell({ children }: { children: ReactNode }) {

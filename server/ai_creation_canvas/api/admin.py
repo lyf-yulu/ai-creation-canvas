@@ -76,6 +76,25 @@ async def list_users(request: Request) -> dict[str, object]:
     return {"users": [_safe_user(row, _assigned_model_ids(store, str(row["user_id"]))) for row in store.list_users()]}
 
 
+@router.get("/usage")
+async def usage_summary(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    rows = request.app.state.canvas_store.admin_usage_by_user()
+    users = [
+        {
+            "user_id": row["user_id"],
+            "username": row["username_normalized"],
+            "display_name": row["display_name"],
+            **{name: int(row[name]) for name in ("jobs", "succeeded", "failed", "active", "image", "video")},
+        }
+        for row in rows
+    ]
+    return {
+        "totals": {name: sum(int(row[name]) for row in rows) for name in ("jobs", "succeeded", "failed", "active", "image", "video")},
+        "users": users,
+    }
+
+
 @router.patch("/users/{user_id}")
 async def update_user(user_id: str, body: UserPatch, request: Request) -> dict[str, object]:
     _require_admin(request)
