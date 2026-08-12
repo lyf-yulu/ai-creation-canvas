@@ -65,25 +65,25 @@ Commit: `feat: persist governed model definitions`
 - Test: `tests/contracts/test_chiyun_adapter.py`
 - Test: `tests/server/test_adapter_factory.py`
 
-- [ ] **Step 1: Write RED exact-request tests**
+- [x] **Step 1: Write RED exact-request tests**
 
 Use `httpx.MockTransport` to assert `gpt-image-2` submits exactly one `POST /v1/images/edits`, Bearer authentication, ordered `image[]` multipart parts, model, prompt, `n` and normalized OpenAI size. Assert no reference, video operation, too many/oversized/wrong-MIME assets, redirects, oversized responses, malformed JSON/base64, unsafe result URL and raw upstream error messages are rejected.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/contracts/test_chiyun_adapter.py tests/server/test_adapter_factory.py`
 
 Expected: imports fail because the adapter and factory do not exist.
 
-- [ ] **Step 3: Implement Chiyun adapter**
+- [x] **Step 3: Implement Chiyun adapter**
 
 Implement `GenerationPort` for `image.edit` only. Load owned images through the existing asset loader, enforce declared ordered input limits and bounded aggregate bytes, build multipart server-side, parse either bounded `b64_json` or HTTPS result URLs, download through a fixed-origin/size/MIME-safe downloader, and store opaque local results using the existing result contract.
 
-- [ ] **Step 4: Implement allowlisted factory**
+- [x] **Step 4: Implement allowlisted factory**
 
 Map only `chiyun_openai_images` to the Chiyun class. Resolve `credential_ref` through an injected server-only `CredentialResolver`; never import module names from database values. Cache adapters by `(provider_id, revision)` and close stale clients on replacement.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/contracts/test_chiyun_adapter.py tests/server/test_adapter_factory.py`
 
