@@ -145,6 +145,65 @@ def test_route_must_be_compatible_with_logical_model_contract() -> None:
         validate_route_model(incompatible, logical_model())
 
 
+def test_route_cannot_omit_required_logical_model_input_port(tmp_path) -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "size": {"type": "string", "enum": ["1024x1024"]},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+        },
+        "additionalProperties": False,
+    }
+    mappings = {"size": "size", "output_count": "n"}
+    route_contract = OperationContract(
+        ModelOperation.IMAGE_EDIT,
+        (ModelInputPort("prompt", "text", 1, 1),),
+        "image",
+        schema,
+        mappings,
+    )
+    store = CanvasStore(tmp_path)
+    store.create_logical_model(logical_model())
+
+    with pytest.raises(ValueError, match="required input ports"):
+        store.create_model_route(model_route(operation_contracts=(route_contract,)))
+
+
+def test_route_may_omit_optional_logical_model_input_port(tmp_path) -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "size": {"type": "string", "enum": ["1024x1024"]},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4},
+        },
+        "additionalProperties": False,
+    }
+    mappings = {"size": "size", "output_count": "n"}
+    optional_model_contract = OperationContract(
+        ModelOperation.IMAGE_EDIT,
+        (
+            ModelInputPort("prompt", "text", 1, 1),
+            ModelInputPort("reference_images", "image", 0, 10),
+        ),
+        "image",
+        schema,
+        mappings,
+    )
+    route_contract = OperationContract(
+        ModelOperation.IMAGE_EDIT,
+        (ModelInputPort("prompt", "text", 1, 1),),
+        "image",
+        schema,
+        mappings,
+    )
+    store = CanvasStore(tmp_path)
+    store.create_logical_model(logical_model(operation_contracts=(optional_model_contract,)))
+
+    created = store.create_model_route(model_route(operation_contracts=(route_contract,)))
+
+    assert tuple(port.port_id for port in created.operation_contracts[0].input_ports) == ("prompt",)
+
+
 @pytest.mark.parametrize(
     ("candidate", "message"),
     [
@@ -277,6 +336,14 @@ def test_referenced_route_is_purged_to_non_executable_audit_stub(tmp_path) -> No
     with pytest.raises(ValueError, match="runtime was purged"):
         store.purge_model_route_runtime("nano-banana-t8", expected_revision=2)
 
+    with sqlite3.connect(store.database) as db:
+        db.execute("DELETE FROM canvas_jobs WHERE id='job-1'")
+    assert store.route_references("nano-banana-t8") == ()
+    with pytest.raises(ObjectReferenced, match="audit stub"):
+        store.delete_model_route("nano-banana-t8", expected_revision=2)
+    with pytest.raises(ValueError, match="already exists"):
+        store.create_model_route(model_route())
+
 
 def test_migrated_legacy_route_recognizes_jobs_created_before_route_ids(tmp_path) -> None:
     store = CanvasStore(tmp_path)
@@ -328,3 +395,11 @@ def test_referenced_model_purge_physically_deletes_unreferenced_child_route(tmp_
     assert route is None
     with pytest.raises(ValueError, match="runtime was purged"):
         store.purge_logical_model_runtime("nano-banana-edit", expected_revision=2)
+
+    with sqlite3.connect(store.database) as db:
+        db.execute("DELETE FROM canvas_jobs WHERE id='job-2'")
+    assert store.logical_model_references("nano-banana-edit") == ()
+    with pytest.raises(ObjectReferenced, match="audit stub"):
+        store.delete_logical_model("nano-banana-edit", expected_revision=2)
+    with pytest.raises(ValueError, match="already exists"):
+        store.create_logical_model(logical_model())

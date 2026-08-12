@@ -970,12 +970,14 @@ class CanvasStore:
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
             row = db.execute(
-                "SELECT revision FROM canvas_model_routes WHERE route_id=?", (route_id,)
+                "SELECT revision,runtime_purged FROM canvas_model_routes WHERE route_id=?", (route_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(route_id)
             if int(row["revision"]) != expected_revision:
                 raise RevisionConflict("model route revision conflict")
+            if bool(row["runtime_purged"]):
+                raise ObjectReferenced("historical model route audit stub cannot be deleted")
             references = self._route_references_in(db, route_id)
             if references:
                 raise ObjectReferenced("model route is referenced: " + ", ".join(references))
@@ -993,12 +995,14 @@ class CanvasStore:
         self._require_revision(expected_revision)
         with self._connection(immediate=True) as db:
             row = db.execute(
-                "SELECT revision FROM canvas_logical_models WHERE model_id=?", (model_id,)
+                "SELECT revision,runtime_purged FROM canvas_logical_models WHERE model_id=?", (model_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(model_id)
             if int(row["revision"]) != expected_revision:
                 raise RevisionConflict("logical model revision conflict")
+            if bool(row["runtime_purged"]):
+                raise ObjectReferenced("historical logical model audit stub cannot be deleted")
             references = self._logical_model_references_in(db, model_id)
             if references:
                 raise ObjectReferenced("logical model is referenced: " + ", ".join(references))

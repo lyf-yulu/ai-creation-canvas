@@ -301,6 +301,10 @@ def validate_route_model(route: ModelRouteDefinition, model: LogicalModelDefinit
         if model_contract is None or route_contract.output_media_type != model_contract.output_media_type:
             raise ValueError("route contract is incompatible with logical model")
         model_ports = {port.port_id: port for port in model_contract.input_ports}
+        route_ports = {port.port_id: port for port in route_contract.input_ports}
+        required_ports = {port.port_id for port in model_contract.input_ports if port.min_items > 0}
+        if not required_ports <= set(route_ports):
+            raise ValueError("route contract omits required input ports")
         for port in route_contract.input_ports:
             public_port = model_ports.get(port.port_id)
             if (
