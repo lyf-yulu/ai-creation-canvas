@@ -77,6 +77,11 @@ describe("compileGraphJob", () => {
         expect(Object.isFrozen(result.inputs.reference_images)).toBe(true);
     });
 
+    it("accepts a public model catalog that intentionally omits provider mappings", () => {
+        const publicModel = { ...model, parameter_mappings: {} };
+        expect(compileGraphJob(nodes, connections, "model", publicModel).params).toEqual({ label: "", count: 0, enabled: false });
+    });
+
     it("blocks missing prompt, unknown parameters and exact input limit violations", () => {
         expect(() => compileGraphJob(nodes, connections.slice(1), "model", model)).toThrowError(CompileJobError);
         const tooMany = structuredClone(nodes);

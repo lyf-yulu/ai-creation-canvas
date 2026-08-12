@@ -55,7 +55,8 @@ export function compileGraphJob(nodes: readonly CanvasNodeData[], connections: r
 
     const controls = parameterControls(model.parameter_schema);
     const declared = new Map(controls.map((control) => [control.name, control]));
-    if (Object.keys(graph.parameters).some((name) => !declared.has(name) || model.parameter_mappings && !(name in model.parameter_mappings))) throw new CompileJobError("模型节点包含不支持的参数。");
+    const publicMappings = model.parameter_mappings && Object.keys(model.parameter_mappings).length ? model.parameter_mappings : null;
+    if (Object.keys(graph.parameters).some((name) => !declared.has(name) || publicMappings && !(name in publicMappings))) throw new CompileJobError("模型节点包含不支持的参数。");
     if (controls.some((control) => !validateParameter(control, graph.parameters[control.name]))) throw new CompileJobError("请填写有效的模型参数。");
     const params = Object.freeze(Object.fromEntries(controls.filter((control) => graph.parameters[control.name] !== undefined).map((control) => [control.name, graph.parameters[control.name]])));
     const operation = graph.operation === "image.generate" && inputs.reference_images?.length && model.operations.includes("image.edit") ? "image.edit" : graph.operation as JobRequest["operation"];
