@@ -248,27 +248,27 @@ git commit -m "feat: lease compatible model route keys"
 - Produces: `classify_submission_error(error: Exception, adapter_type: str) -> SubmissionDisposition`.
 - Consumes: Task 3 `CredentialLease.secret`; adapter lifetime cannot outlive the lease/submission call.
 
-- [ ] **Step 1: Write RED allowlist and exact-request tests**
+- [x] **Step 1: Write RED allowlist and exact-request tests**
 
 Cover current verified Ark image/video templates and Chiyun/OpenAI Images edit template. Assert image routes cannot build video adapters, a route cannot override Base URL/header/mapping outside its template, and the lease secret appears only in the outbound Authorization value.
 
-- [ ] **Step 2: Write RED retry classification tests**
+- [x] **Step 2: Write RED retry classification tests**
 
 For every enabled adapter template, classify DNS/connect-before-send, explicit 429, explicit 5xx with provider task ID, 401/403, invalid model/parameter, content moderation and read timeout after request bytes are sent. Assert only `NOT_SUBMITTED` and explicit `TEMPORARY_UNAVAILABLE` with provider confirmation can try another key; read timeout is `SUBMISSION_UNKNOWN`.
 
-- [ ] **Step 3: Run RED tests**
+- [x] **Step 3: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_route_adapter_factory.py tests/contracts/test_route_retry_contracts.py`
 
-- [ ] **Step 4: Refactor factory to consume route and lease**
+- [x] **Step 4: Refactor factory to consume route and lease**
 
 Remove provider-wide adapter caching for managed routes because it pins a secret. Cache only immutable protocol metadata keyed by `(route_id, route_revision)`; construct or bind a short-lived authenticated client for each submission lease. Keep polling/results bound to the immutable route snapshot without retaining the API key where the provider result contract does not require it.
 
-- [ ] **Step 5: Implement explicit retry dispositions**
+- [x] **Step 5: Implement explicit retry dispositions**
 
 Adapters raise a typed submission exception carrying disposition, retryable flag and a safe error code. Raw provider bodies remain inaccessible to API responses and logs.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_route_adapter_factory.py tests/contracts/test_route_retry_contracts.py tests/contracts/test_chiyun_adapter.py tests/contracts/test_ark_adapter.py`
 
