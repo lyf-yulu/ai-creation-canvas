@@ -28,6 +28,7 @@ requests/
 node_modules/
 .bun/
 .cache/
+.firecrawl/
 dist/
 build/
 web/dist/
