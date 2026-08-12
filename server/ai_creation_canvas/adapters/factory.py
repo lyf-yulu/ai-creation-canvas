@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import re
 from typing import Callable, Mapping, Protocol
 
 import httpx
@@ -20,6 +22,18 @@ class MappingCredentialResolver:
 
     def resolve(self, reference: str) -> str:
         value = self._values.get(reference)
+        if not isinstance(value, str) or len(value.strip()) < 8:
+            raise ValueError("credential reference is unavailable")
+        return value.strip()
+
+
+class EnvironmentCredentialResolver:
+    """Resolve deployment-owned references without ever persisting the secret."""
+    def resolve(self, reference: str) -> str:
+        if not isinstance(reference, str) or not reference:
+            raise ValueError("credential reference is unavailable")
+        name = "AICC_CREDENTIAL_" + re.sub(r"[^A-Za-z0-9]", "_", reference).upper()
+        value = os.environ.get(name)
         if not isinstance(value, str) or len(value.strip()) < 8:
             raise ValueError("credential reference is unavailable")
         return value.strip()

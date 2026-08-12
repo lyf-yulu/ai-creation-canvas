@@ -306,7 +306,9 @@ class CanvasStore:
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-                error_code TEXT, result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                error_code TEXT, result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0,
+                model_id TEXT, model_revision INTEGER, provider_id TEXT, adapter_type TEXT, submission_json TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
         marker = db.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()
@@ -347,7 +349,7 @@ class CanvasStore:
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("submission_json", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
@@ -536,6 +538,22 @@ class CanvasStore:
         with self._connection() as db:
             row = db.execute("SELECT * FROM canvas_models WHERE model_id=?", (model_id,)).fetchone()
         return GovernedModelDefinition.from_record(dict(row)) if row is not None else None
+
+    def update_model_definition(self, definition, *, expected_revision: int, actor_user_id: str):
+        from ai_creation_canvas.model_registry import GovernedModelDefinition
+        if not isinstance(definition, GovernedModelDefinition) or type(expected_revision) is not int or expected_revision < 1 or definition.revision != expected_revision:
+            raise ValueError("model revision conflict")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_models SET provider_id=?,provider_model_name=?,display_name=?,introduction=?,modality=?,operation_contracts_json=?,enabled=?,revision=revision+1,updated_at=? WHERE model_id=? AND revision=?",
+                (definition.provider_id, definition.provider_model_name, definition.display_name, definition.introduction, definition.modality.value, definition.contracts_json(), int(definition.enabled), _now(), definition.model_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("model revision conflict")
+            self._audit(db, actor_user_id=actor_user_id, action="model.update", target_type="model", target_id=definition.model_id)
+            row = db.execute("SELECT * FROM canvas_models WHERE model_id=?", (definition.model_id,)).fetchone()
+        assert row is not None
+        return GovernedModelDefinition.from_record(dict(row))
 
     def list_model_definitions(self, *, enabled_only: bool = False):
         from ai_creation_canvas.model_registry import GovernedModelDefinition
@@ -799,7 +817,7 @@ class CanvasStore:
             db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
             return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None) -> Reservation:
         now = _now()
         token = os.urandom(16).hex()
         lease_until = self._clock() + lease_seconds
@@ -814,7 +832,7 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, now, now))
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)

@@ -101,25 +101,25 @@ Commit: `feat: add governed Chiyun image adapter`
 - Test: `tests/server/test_dynamic_model_catalog.py`
 - Test: `tests/server/test_jobs_dynamic_models.py`
 
-- [ ] **Step 1: Write RED catalog and authorization tests**
+- [x] **Step 1: Write RED catalog and authorization tests**
 
 Cover admin visibility, user grant/revoke, disabled provider/model, unhealthy credential, image model absent from video operations, direct API operation mismatch, stale browser catalog after revoke, and duplicate model IDs across static/persisted sources. Assert public JSON excludes base URL, credential reference, provider model name and internal mappings.
 
-- [ ] **Step 2: Write RED immutable submission tests**
+- [x] **Step 2: Write RED immutable submission tests**
 
 Assert a job persists model revision, provider ID, adapter type, operation and canonical parameter/input snapshot before execution. Updating a model afterward must not change the stored submission. Same user/key/same snapshot returns one job; same key/different snapshot returns 409.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_dynamic_model_catalog.py tests/server/test_jobs_dynamic_models.py`
 
 Expected: persisted models are absent and job snapshot columns/methods do not exist.
 
-- [ ] **Step 4: Implement catalog merge and snapshot persistence**
+- [x] **Step 4: Implement catalog merge and snapshot persistence**
 
 Add a persisted-model catalog backed by `CanvasStore` and `AdapterFactory`, then wrap it with existing assignment filtering. Extend `canvas_jobs` additively with bounded canonical `submission_json`, `model_id`, `model_revision`, `provider_id` and `adapter_type`. Resolve permissions again on every POST before reservation; fetch result/poll adapters from the persisted snapshot service binding.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_dynamic_model_catalog.py tests/server/test_jobs_dynamic_models.py tests/server/test_jobs_api.py`
 

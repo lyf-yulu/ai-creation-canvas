@@ -206,7 +206,18 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         cursor += len(asset_ids)
     if model.requires_asset_kind is not None and not upstream_asset_ids:
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
-    reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
+    binding_resolver = getattr(request.app.state.model_catalog, "model_binding", None)
+    binding = binding_resolver(domain_request.model_id) if callable(binding_resolver) else None
+    submission_json = json.dumps({"operation": domain_request.operation.value, "model_id": domain_request.model_id, "prompt": domain_request.prompt, "params": dict(domain_request.params), "inputs": {key: list(value) for key, value in domain_request.inputs.items()}}, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    reservation = store.reserve_job(
+        user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id,
+        operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key,
+        request_hash=_hash(payload), model_id=domain_request.model_id,
+        model_revision=binding.model.revision if binding is not None else None,
+        provider_id=binding.provider.provider_id if binding is not None else None,
+        adapter_type=binding.provider.adapter_type if binding is not None else None,
+        submission_json=submission_json if binding is not None else None,
+    )
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
     if not reservation.created:

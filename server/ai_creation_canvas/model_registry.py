@@ -169,11 +169,11 @@ class GovernedModelDefinition:
         object.__setattr__(self, "modality", modality)
         object.__setattr__(self, "operation_contracts", contracts)
 
-    def model_spec(self, service_id: str, operation: ModelOperation | str | None = None) -> ModelSpec:
+    def model_spec(self, service_id: str, operation: ModelOperation | str | None = None, *, include_internal_mappings: bool = False) -> ModelSpec:
         contract = self.operation_contracts[0] if operation is None and len(self.operation_contracts) == 1 else next((item for item in self.operation_contracts if item.operation == operation), None)
         if contract is None:
             raise ValueError("an explicit operation is required")
-        return ModelSpec(self.model_id, service_id, self.display_name, (contract.operation,), tuple(port.media_type for port in contract.input_ports), contract.parameter_schema, None, contract.input_ports, contract.parameter_mappings)
+        return ModelSpec(self.model_id, service_id, self.display_name, (contract.operation,), tuple(port.media_type for port in contract.input_ports), contract.parameter_schema, None, contract.input_ports, contract.parameter_mappings if include_internal_mappings else {})
 
     def public_projection(self) -> dict[str, object]:
         return {

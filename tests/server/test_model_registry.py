@@ -98,7 +98,8 @@ def test_model_definition_records_one_isolated_image_edit_contract() -> None:
 
     assert spec.operations == (ModelOperation.IMAGE_EDIT,)
     assert [port.port_id for port in spec.input_ports] == ["prompt", "reference_images"]
-    assert spec.parameter_mappings == {"size": "size", "output_count": "n"}
+    assert spec.parameter_mappings == {}
+    assert model.operation_contracts[0].parameter_mappings == {"size": "size", "output_count": "n"}
     projection = model.public_projection()
     assert projection["modality"] == "image"
     assert projection["operations"] == ["image.edit"]

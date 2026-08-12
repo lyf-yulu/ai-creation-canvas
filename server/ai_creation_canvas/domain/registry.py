@@ -26,6 +26,16 @@ class AdapterRegistry:
             "generation",
         )
 
+    def replace_generation(self, adapter: GenerationPort) -> None:
+        """Replace one trusted service binding after validating the same port contract."""
+        service_id = self._read_attribute(adapter, "service_id", "generation")
+        if isinstance(service_id, str):
+            self._generation.pop(service_id, None)
+        self.register_generation(adapter)
+
+    def unregister_generation(self, service_id: str) -> None:
+        self._generation.pop(service_id, None)
+
     def register_asset(self, adapter: AssetPort) -> None:
         self._register(self._assets, adapter, (("upload", 2), ("get", 2)), "asset")
 

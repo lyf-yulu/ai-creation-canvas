@@ -20,7 +20,8 @@ from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, P
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.adapters.demo import DemoGenerationAdapter
-from ai_creation_canvas.adapters.ark import build_ark_adapters
+from ai_creation_canvas.adapters.ark import build_ark_adapters, _local_asset_loader
+from ai_creation_canvas.adapters.factory import AdapterFactory, EnvironmentCredentialResolver
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
 from ai_creation_canvas.api.assets import router as assets_router
@@ -33,7 +34,7 @@ from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.catalog import AssignedModelCatalog
+from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
@@ -108,7 +109,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if registry is None:
@@ -123,6 +124,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         assert settings.ark_models_config_path is not None and settings.ark_models_config_root is not None
         for adapter in build_ark_adapters(api_key=api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
             registry.register_generation(adapter)
+    store = canvas_store or CanvasStore(settings.data_dir)
     if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
@@ -134,8 +136,10 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                 else:
                     registry.register_generation(PortalJobsAdapter(declaration, client))
         model_catalog = ModelCatalog(registry)
+        factory = adapter_factory or AdapterFactory(data_dir=settings.data_dir, credential_resolver=EnvironmentCredentialResolver(), asset_loader=_local_asset_loader(Path(settings.data_dir)))
+        model_catalog = GovernedModelCatalog(model_catalog, store, registry, factory)
     app.state.adapter_registry = registry
-    app.state.canvas_store = canvas_store or CanvasStore(settings.data_dir)
+    app.state.canvas_store = store
     app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.settings = settings
     if prompt_skill_service is None:
