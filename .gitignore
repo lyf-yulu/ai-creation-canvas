@@ -35,6 +35,7 @@ web/tsconfig.tsbuildinfo
 coverage/
 .vitest-attachments/
 web/src/test/__screenshots__/
+web/src/test/**/__screenshots__/
 .pytest_cache/
 __pycache__/
 *.py[cod]
