@@ -44,6 +44,13 @@ class AdapterFactory:
         self._data_dir, self._credential_resolver, self._asset_loader, self._transport = Path(data_dir), credential_resolver, asset_loader, transport
         self._cache: dict[tuple[str, int, tuple[tuple[str, int], ...]], object] = {}
 
+    def credential_available(self, provider: ProviderDefinition) -> bool:
+        try:
+            self._credential_resolver.resolve(provider.credential_ref)
+        except ValueError:
+            return False
+        return True
+
     def build(self, provider: ProviderDefinition, models: tuple[GovernedModelDefinition, ...]):
         if not models or any(model.provider_id != provider.provider_id for model in models):
             raise ValueError("provider model binding is invalid")

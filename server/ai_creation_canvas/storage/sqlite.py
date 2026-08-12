@@ -585,6 +585,28 @@ class CanvasStore:
             rows = db.execute("SELECT model_id FROM canvas_model_access WHERE user_id=? AND revoked_at IS NULL ORDER BY model_id", (user_id,)).fetchall()
         return tuple(str(row["model_id"]) for row in rows)
 
+    def replace_governed_model_access(self, user_id: str, model_ids: tuple[str, ...], *, actor_user_id: str) -> tuple[str, ...]:
+        if len(model_ids) > 128 or len(model_ids) != len(set(model_ids)):
+            raise ValueError("model access is invalid")
+        with self._connection(immediate=True) as db:
+            if db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is None:
+                raise KeyError(user_id)
+            if model_ids:
+                placeholders = ",".join("?" for _ in model_ids)
+                found = {str(row[0]) for row in db.execute(f"SELECT model_id FROM canvas_models WHERE model_id IN ({placeholders})", model_ids)}
+                if found != set(model_ids):
+                    raise KeyError("model")
+            current = {str(row[0]) for row in db.execute("SELECT model_id FROM canvas_model_access WHERE user_id=? AND revoked_at IS NULL", (user_id,))}
+            desired = set(model_ids)
+            now = _now()
+            for model_id in sorted(desired - current):
+                db.execute("INSERT INTO canvas_model_access(user_id,model_id,granted_by,granted_at,revoked_at) VALUES (?,?,?,?,NULL) ON CONFLICT(user_id,model_id) DO UPDATE SET granted_by=excluded.granted_by,granted_at=excluded.granted_at,revoked_at=NULL", (user_id, model_id, actor_user_id, now))
+                self._audit(db, actor_user_id=actor_user_id, action="model_access.grant", target_type="user_model", target_id=f"{user_id}:{model_id}")
+            for model_id in sorted(current - desired):
+                db.execute("UPDATE canvas_model_access SET revoked_at=? WHERE user_id=? AND model_id=?", (now, user_id, model_id))
+                self._audit(db, actor_user_id=actor_user_id, action="model_access.revoke", target_type="user_model", target_id=f"{user_id}:{model_id}")
+        return tuple(model_id for model_id in model_ids)
+
     def admin_audit_events(self) -> tuple[dict[str, object], ...]:
         with self._connection() as db:
             rows = db.execute("SELECT * FROM canvas_admin_audit ORDER BY event_id").fetchall()

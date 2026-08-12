@@ -38,6 +38,7 @@ from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalo
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
+from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
 from ai_creation_canvas.coordination import LocalExecutionCoordinator, RedisExecutionCoordinator
@@ -141,9 +142,11 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         model_catalog = ModelCatalog(registry)
         factory = adapter_factory or AdapterFactory(data_dir=settings.data_dir, credential_resolver=EnvironmentCredentialResolver(), asset_loader=_local_asset_loader(Path(settings.data_dir)))
         model_catalog = GovernedModelCatalog(model_catalog, store, registry, factory)
+        adapter_factory = factory
     app.state.adapter_registry = registry
     app.state.canvas_store = store
     app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
+    app.state.adapter_factory = adapter_factory
     app.state.settings = settings
     if prompt_skill_service is None:
         import os
@@ -217,6 +220,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                         settings.portal_internal_token,
                         max_age_seconds=settings.signature_ttl_seconds,
                     )
+                if request.url.path.startswith("/api/v1/admin") and request.state.portal_user.role is not PortalRole.ADMIN:
+                    raise problem(request, "API_NOT_FOUND", "The requested API resource was not found.", status=404)
             response = await call_next(request)
         except DomainError as error:
             response = _error_response(error, request.state.request_id)

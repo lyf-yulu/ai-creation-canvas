@@ -73,6 +73,12 @@ class ProviderDefinition:
     def public_projection(self) -> dict[str, object]:
         return {"provider_id": self.provider_id, "display_name": self.display_name, "enabled": self.enabled, "revision": self.revision}
 
+    def admin_projection(self, *, credential_available: bool) -> dict[str, object]:
+        return {
+            **self.public_projection(), "adapter_type": self.adapter_type, "base_url": self.base_url,
+            "credential_ref": self.credential_ref, "credential_available": credential_available,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class OperationContract:

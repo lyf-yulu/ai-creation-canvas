@@ -174,25 +174,25 @@ Commit: `feat: coordinate generation execution with Redis`
 - Test: `tests/server/test_admin_model_registry.py`
 - Test: `web/src/test/admin-model-registry.test.tsx`
 
-- [ ] **Step 1: Write RED admin API tests**
+- [x] **Step 1: Write RED admin API tests**
 
 Cover admin-only create/update/enable provider and model, adapter allowlist, safe public response, optimistic revision conflict, audit events, credential health without secret disclosure, model access grant/revoke and ordinary-user 404 behavior.
 
-- [ ] **Step 2: Write RED React tests**
+- [x] **Step 2: Write RED React tests**
 
 Cover Provider form, operation template selection, `gpt-image-2` model creation, safe validation errors, enabled state, user assignment/revocation and confirmation that no Key/Base URL/internal mapping input is offered to ordinary users.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_admin_model_registry.py && npm test --prefix web -- --run src/test/admin-model-registry.test.tsx`
 
 Expected: new endpoints and controls are absent.
 
-- [ ] **Step 4: Implement minimal admin workflow**
+- [x] **Step 4: Implement minimal admin workflow**
 
 Add strict Pydantic request objects with `extra=forbid`. Use operation templates registered by the server rather than accepting arbitrary mappings. Add React sections for provider health, model creation/editing and existing user assignment. Keep credential configuration deployment-owned: administrator selects an existing credential reference name but never reads the secret value.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run the Step 3 command plus `npm run typecheck --prefix web`.
 
