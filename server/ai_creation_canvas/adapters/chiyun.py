@@ -15,6 +15,7 @@ import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelOperation, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.adapters.retry import SubmissionError, SubmissionDisposition, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ProviderDefinition
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 
@@ -87,6 +88,18 @@ class ChiyunGenerationAdapter:
         return tuple(self._models[model_id].model_spec(self.service_id) for model_id in self.model_ids)
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
+        typed_error: SubmissionError | None = None
+        try:
+            return await self._submit(context, request)
+        except SubmissionError:
+            raise
+        except InvalidUpstreamResult:
+            typed_error = UnknownSubmissionResult()
+        except ValueError as error:
+            typed_error = local_rejection(error)
+        raise typed_error
+
+    async def _submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
         del context
         model = self._models.get(request.model_id)
         if model is None or request.operation is not ModelOperation.IMAGE_EDIT or request.asset_ids or set(request.inputs) != {"reference_images"}:
@@ -157,22 +170,32 @@ class ChiyunGenerationAdapter:
         return _FileStream(path, "image/png", offset=start, length=end - start + 1, head=head)
 
     async def _post(self, data: Mapping[str, str], files: list[tuple[str, tuple[str, bytes, str]]]) -> Mapping[str, object]:
+        submission_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(base_url=self._provider.base_url, transport=self._transport, timeout=httpx.Timeout(180, connect=10), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", "/v1/images/edits", headers={"Authorization": f"Bearer {self._api_key}"}, data=data, files=files) as response:
-                    if response.status_code in {408, 429} or response.status_code >= 500:
-                        raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=response.status_code)
                     if not 200 <= response.status_code < 300:
-                        raise PortalUpstreamError("REQUEST_REJECTED", retryable=False, status_code=response.status_code)
+                        error_body = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(error_body) + len(chunk) > 8 * 1024:
+                                error_body.clear()
+                                break
+                            error_body.extend(chunk)
+                        safe_response = httpx.Response(response.status_code, content=bytes(error_body))
+                        raise error_from_response(safe_response, "chiyun_openai_images")
                     raw = bytearray()
                     async for chunk in response.aiter_bytes():
                         if len(raw) + len(chunk) > _MAX_RESPONSE:
                             raise InvalidUpstreamResult("Chiyun response is too large")
                         raw.extend(chunk)
-        except (PortalUpstreamError, InvalidUpstreamResult):
+        except (SubmissionError, InvalidUpstreamResult):
             raise
-        except (httpx.HTTPError, OSError) as error:
-            raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error
+        except httpx.HTTPError as error:
+            submission_error = error_from_transport(error, "chiyun_openai_images")
+        except OSError:
+            submission_error = SubmissionError(SubmissionDisposition.SUBMISSION_UNKNOWN, "SUBMISSION_UNKNOWN")
+        if submission_error is not None:
+            raise submission_error
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeError) as error:

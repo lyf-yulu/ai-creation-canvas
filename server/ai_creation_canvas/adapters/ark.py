@@ -24,6 +24,7 @@ import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.adapters.retry import SubmissionError, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.parameter_schema import validate_parameter_schema, validate_parameter_values
 
 
@@ -53,8 +54,13 @@ class ArkModelDeclaration:
     parameter_schema: Mapping[str, object]
     input_ports: tuple[ModelInputPort, ...] = (ModelInputPort("prompt", "text", 1, 1),)
     parameter_mappings: Mapping[str, str] = field(default_factory=dict)
+    provider_model_name: str | None = None
 
     def __post_init__(self) -> None:
+        provider_model_name = self.model_id if self.provider_model_name is None else self.provider_model_name
+        if not isinstance(provider_model_name, str) or not provider_model_name or len(provider_model_name) > 128:
+            raise ValueError("Ark provider model name is invalid")
+        object.__setattr__(self, "provider_model_name", provider_model_name)
         schema_properties = self.parameter_schema.get("properties") if isinstance(self.parameter_schema, Mapping) else None
         if not isinstance(schema_properties, Mapping) or set(self.parameter_mappings) != set(schema_properties):
             raise ValueError("every Ark parameter requires an explicit provider mapping")
@@ -126,6 +132,18 @@ class ArkGenerationAdapter:
         )
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
+        typed_error: SubmissionError | None = None
+        try:
+            return await self._submit(context, request)
+        except SubmissionError:
+            raise
+        except InvalidUpstreamResult:
+            typed_error = UnknownSubmissionResult()
+        except ValueError as error:
+            typed_error = local_rejection(error)
+        raise typed_error
+
+    async def _submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
         del context
         declaration = self._models.get(request.model_id)
         if declaration is None or request.operation not in tuple(ModelOperation(value) for value in declaration.operations) or request.asset_ids:
@@ -136,8 +154,8 @@ class ArkGenerationAdapter:
             references = self._image_references(declaration, request)
             if request.operation is ModelOperation.IMAGE_EDIT and not references or request.operation is ModelOperation.IMAGE_GENERATE and references:
                 raise ValueError("Ark image operation does not match its inputs")
-            payload = {"model": request.model_id, "prompt": request.prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
-            response = await self._api("POST", "/api/v3/images/generations", json=payload)
+            payload = {"model": declaration.provider_model_name, "prompt": request.prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
+            response = await self._api("POST", "/api/v3/images/generations", json=payload, submission=True)
             data = self._json(response)
             items = data.get("data")
             if not isinstance(items, list) or not 1 <= len(items) <= 15 or any(not isinstance(item, Mapping) or not isinstance(item.get("url"), str) for item in items):
@@ -147,10 +165,10 @@ class ArkGenerationAdapter:
             return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED), datetime.now(UTC))
         if request.operation is ModelOperation.VIDEO_GENERATE:
             content = self._video_content(declaration, request)
-            payload = {"model": request.model_id, "content": content, **provider_params}
+            payload = {"model": declaration.provider_model_name, "content": content, **provider_params}
             if len(json.dumps(payload).encode("utf-8")) > _MAX_REQUEST_BYTES:
                 raise ValueError("Ark video request is too large")
-            response = await self._api("POST", "/api/v3/contents/generations/tasks", json=payload)
+            response = await self._api("POST", "/api/v3/contents/generations/tasks", json=payload, submission=True)
             body = self._json(response)
             upstream_id = body.get("id")
             if not isinstance(upstream_id, str) or not upstream_id.startswith("cgt-"):
@@ -246,20 +264,30 @@ class ArkGenerationAdapter:
         start, end = interval
         return _FileStream(media, mime, offset=start, length=end - start + 1, head=head)
 
-    async def _api(self, method: str, path: str, *, json: Mapping[str, object] | None = None) -> httpx.Response:
+    async def _api(self, method: str, path: str, *, json: Mapping[str, object] | None = None, submission: bool = False) -> httpx.Response:
+        submission_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
                 kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}}
                 if json is not None:
                     kwargs["json"] = json
                 response = await client.request(method, path, **kwargs)
-        except httpx.TimeoutException as error:
-            raise PortalUpstreamError("UPSTREAM_TIMEOUT", retryable=True) from error
         except httpx.HTTPError as error:
-            raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error
+            if submission:
+                submission_error = error_from_transport(error, "ark")
+            elif isinstance(error, httpx.TimeoutException):
+                raise PortalUpstreamError("UPSTREAM_TIMEOUT", retryable=True) from error
+            else:
+                raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error
+        if submission_error is not None:
+            raise submission_error
         if response.status_code in {408, 429} or response.status_code >= 500:
+            if submission:
+                raise error_from_response(response, "ark")
             raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=response.status_code)
         if response.status_code < 200 or response.status_code >= 300:
+            if submission:
+                raise error_from_response(response, "ark")
             raise PortalUpstreamError("REQUEST_REJECTED", retryable=False, status_code=response.status_code)
         return response
 
