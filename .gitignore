@@ -11,6 +11,7 @@ secrets/
 # Runtime and user data
 /.local-data/
 /.paid-acceptance/
+/.acceptance-*/
 state/
 outputs/
 archives/

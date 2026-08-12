@@ -14,6 +14,7 @@
 | Slice 1 本地产品 | 双角色、模型派发、项目持久化、离线任务、结果 Range | `tests/integration/test_slice1_product.py` + 本地浏览器冒烟 |
 | 多模型与提示词 Skill | 8 个 Ark 模型目录、差异化图片参数、4 类 Skill 预览/应用 | 合同测试 + Chromium 页面验收 + `9001` 隔离实例 |
 | 管理员模型对象与 Chiyun | Provider/模型创建、权限派发、严格图片操作、并发同键一次提交、结果 Range、撤权与跨用户隔离 | 真实 FastAPI/SQLite + 受控 Chiyun HTTP 模拟 + React/Chromium |
+| 模型中心路由 | 逻辑模型、官方/T8 gemini 兼容线路、T8 cc 负例、Redis 协议租约、429 换 Key、幂等、unknown、结果 Range、生命周期与窄屏 | `tests/integration/test_model_centric_routing.py` + Chromium `canvas-responsive.browser.test.tsx` |
 
 记录只保存命令、测试计数、退出状态、临时测试 ID、错误码和版本提交。不保存提示词、Cookie、密钥、资产内容、真实结果 URL 或原始请求/响应。
 
@@ -74,3 +75,16 @@ npm run verify:release --prefix web
 `tests/integration/test_chiyun_model_registry.py` 使用全新 SQLite 数据、真实 FastAPI 路由、本地并发协调器和受控 Chiyun HTTP 模拟。它必须证明管理员创建 Provider/模型并授权后，普通用户上传的参考图片会按顺序进入唯一一次 `image.edit` multipart 请求；两个并发的相同幂等键返回同一个任务且只产生一个提供方请求。随后还要验证任务轮询、结果 GET/HEAD/Range、管理员对普通用户任务和结果的 404 隐藏，以及撤权后新提交在接触提供方前被拒绝。
 
 这个验收实例是离线的：使用占位凭据和本地固定 PNG，不连接 Chiyun，也不产生费用。真实 Chiyun Key、提供方错误格式、计费和区域网络仍需管理员单独批准的一次性小额验收；在此之前不得把离线结果描述成真实模型调用成功。
+
+## 模型中心路由离线验收
+
+后端验收使用真实 FastAPI、真实 SQLite 文件和生产 `RedisExecutionCoordinator`，Redis 服务器由协议级内存 fake 执行同一 Lua 合同；没有打开 Redis 网络端口。Provider 使用 `httpx.MockTransport`，因此所有官方/T8 响应均为确定性模拟，外部调用和付费调用均为零。
+
+```bash
+PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_model_centric_routing.py
+npm run test:browser --prefix web -- --run src/test/browser/canvas-responsive.browser.test.tsx
+```
+
+后端验证管理员经 API 创建 Nano Banana 逻辑模型、官方与 T8 `gemini` 线路，并拒绝 T8 `cc` 负例；上传两张有序参考图；相同用户、相同幂等键并发提交只形成一个平台任务；明确 429 可在同池换 Key，官方池耗尽后才进入兼容 T8 `gemini`，模糊响应只形成一次调用并进入 `submission_unknown`。还验证不可变路由快照、普通目录不泄露线路/池、撤权、跨用户隐藏，以及结果 GET/HEAD/单段 Range。
+
+Chromium 验收宽度为桌面 1280 px、窄屏 415 px 和 240 px。桌面流程通过真实 React 管理界面创建并编辑逻辑模型、添加两条线路、读取安全池容量、派发普通用户、归档/恢复、展示引用删除阻塞，再切换到普通用户画布创建对应模型节点。两档窄屏检查页面无横向溢出且主要操作按钮保持可见。

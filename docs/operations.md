@@ -30,7 +30,25 @@ bash scripts/run-real-media-local.sh
 
 当前真实能力边界：Seedream Pro 最多 10 张有序参考图；Seedream Lite/4.5/4.0 最多 14 张。支持模型可声明最多 15 张组图结果，尺寸、格式、水印和提示词优化模式按具体版本显示。Seedance 各版本分别声明时长、分辨率与参考素材上限。参考视频必须先成为提供方认可的公网 URL 或 `asset://` 素材，并需要额外管理员素材上传能力，因此当前保持关闭。Ark 只允许取消仍在排队的任务，运行中的任务不支持取消。
 
-## 管理员模型对象与 Chiyun GPT Image 2
+## 逻辑模型、调用线路与分组凭据池
+
+用户权限和画布节点只绑定“逻辑模型”。一个逻辑模型可挂接多条官方或第三方线路；线路绑定确切的 Provider、模型族和凭据池。用户不选择线路或 Key。管理员页面只展示池 ID、Provider、分组、允许模型族和容量摘要，不提供 Key、任意 Base URL、参数映射脚本或动态适配器输入。
+
+真实凭据必须放在仓库外的管理员受限 YAML。可从 `server/config/credential-pools.example.yaml` 了解结构，但不要直接在示例文件中填真实值。部署文件必须是普通文件、不得是符号链接、位于 `--credential-pools-root` 内，并设置为仅服务账号可读：
+
+```bash
+chmod 0600 /受控配置目录/credential-pools.yaml
+```
+
+启动时同时传入 `--credential-pools /受控配置目录/credential-pools.yaml` 与 `--credential-pools-root /受控配置目录`。生产受管线路还必须配置 Redis 和独立的 `AICC_CREDENTIAL_HMAC_KEY`；Redis 只保存 HMAC 不透明标识、租约、计数和过期时间，不保存 Key、池名、分组、用户 ID、提示词或媒体。配置重载只有在整个新文件解析、权限和分组校验全部通过后才原子替换；失败时继续使用上一份有效快照并告警，不使用半份配置。
+
+同一逻辑模型的轮询候选必须精确满足线路绑定的 `(provider, group, family)`。例如 T8Star `gemini` 池可与 Nano Banana 线路并列官方池参与调度；T8Star `cc` 池即使属于同一供应商也不能进入该任务。明确 429 且确认未创建上游任务时可以在同池换 Key，池耗尽后才尝试下一条兼容线路。发送后响应不明会进入 `submission_unknown`，禁止自动换 Key 或跨线路重发，避免重复计费。
+
+对象生命周期为“启用/停用 → 归档/恢复 → 条件删除”。有任务、授权、线路或画布引用时直接删除返回安全的引用类别计数；需要清理时保留最小审计存根并销毁可执行运行配置。撤回用户权限或从受限配置移除池会立即阻止新任务，既有任务仍按不可变快照读取状态和结果。
+
+回滚顺序：先停用受影响的逻辑模型或线路，再恢复上一发布包和上一份已验证凭据池配置，最后确认 Redis 与 SQLite 健康。不得回滚或手工删除 SQLite 数据文件。当前 Redis 是跨进程提交租约，不是持久队列；进程崩溃后的任务接管、多区域 durable worker/Redis Streams 仍是后续边界。
+
+## 旧版管理员模型对象与 Chiyun GPT Image 2
 
 管理员页面可以创建受控 Provider 和模型对象，再把模型使用权分配给普通用户。Provider 保存显示名、固定适配器类型、HTTPS 服务地址和部署系统中的凭据引用名；模型保存提供方模型名、用途说明、固定操作模板、启用状态和版本。数据库和浏览器都不保存真实 Key，普通用户只会看到获授权模型的名称、介绍、操作、输入端口和安全参数。
 
@@ -74,6 +92,8 @@ PYTHONPATH=server python -m ai_creation_canvas \
   --portal-internal-token "由部署系统注入" \
   --portal-base-url "https://受信-portal.example" \
   --services-config server/config/services.example.json \
+  --credential-pools /受控配置目录/credential-pools.yaml \
+  --credential-pools-root /受控配置目录 \
   --max-image-upload-mib 10 \
   --max-video-upload-mib 64 \
   --max-audio-upload-mib 32 \
@@ -114,3 +134,5 @@ Portal 薄代理补丁必须先在隔离测试副本中审查：验证挂载路�
 - API 返回 401：检查 Portal 签名身份是否由受信边界注入，不要在浏览器伪造用户字段。
 - 资产返回 403，或任务/结果返回 404：确认使用同一用户；任务和结果会隐藏跨用户资源是否存在。
 - 模型不可用：检查服务端数据目录中的受控服务声明和模型能力，不在浏览器增加自定义 URL 或脚本。
+- 受管模型无健康线路：核对逻辑模型/线路均启用，凭据池的 Provider、分组和 family 精确匹配，并确认 Redis 可用；不要跨分组借 Key。
+- 任务显示 `submission_unknown`：不要手工换 Key 或重复提交；使用相同幂等键查询原任务，等待提供方恢复查询或管理员处置。

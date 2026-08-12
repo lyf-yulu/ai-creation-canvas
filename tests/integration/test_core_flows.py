@@ -191,6 +191,15 @@ def test_release_build_is_node_free_at_runtime_and_excludes_sensitive_files(tmp_
     completed = subprocess.run(["bash", str(script), str(release)], cwd=tmp_path, text=True, capture_output=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert (release / "manifest.sha256").is_file()
+    manifest_check = subprocess.run(
+        ["shasum", "-a", "256", "-c", "manifest.sha256"],
+        cwd=release,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert manifest_check.returncode == 0, manifest_check.stderr
+    assert ".ai-creation-canvas-release-marker" not in (release / "manifest.sha256").read_text(encoding="utf-8")
     services = release / "server" / "config" / "services.example.json"
     assert services.is_file()
     checked = subprocess.run(
