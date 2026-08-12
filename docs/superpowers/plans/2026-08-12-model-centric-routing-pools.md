@@ -344,27 +344,27 @@ git commit -m "feat: route jobs by logical model"
 - Produces: `/api/v1/admin/credential-pools` safe summaries.
 - Consumes: Tasks 1–5 store and compatibility APIs.
 
-- [ ] **Step 1: Write RED safe projection and ordinary-user isolation tests**
+- [x] **Step 1: Write RED safe projection and ordinary-user isolation tests**
 
 Assert administrator responses include pool ID, provider, group, families, total/available/busy/circuit counts and revision digest, but no key IDs/secrets. Ordinary users receive 404 for every admin route, even with invalid request bodies.
 
-- [ ] **Step 2: Write RED edit/version/lifecycle tests**
+- [x] **Step 2: Write RED edit/version/lifecycle tests**
 
 Cover create/edit, stale revision 409, disable, archive, restore, unused delete 204, referenced delete 409 with safe reference categories, historical purge, Provider-with-routes deletion rejection, and audit action sequence.
 
-- [ ] **Step 3: Write RED contract compatibility tests**
+- [x] **Step 3: Write RED contract compatibility tests**
 
 Attempt to attach T8 `cc` to Nano Banana, attach video operation to an image model, map an unsupported parameter and use an unknown adapter. Each must return safe 400 before writing.
 
-- [ ] **Step 4: Run RED tests**
+- [x] **Step 4: Run RED tests**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_admin_logical_models.py tests/server/test_admin_model_routes.py tests/server/test_admin_model_lifecycle.py`
 
-- [ ] **Step 5: Implement strict APIs**
+- [x] **Step 5: Implement strict APIs**
 
 Use Pydantic strict request types with `extra="forbid"`. Separate create/update bodies; update always requires `revision`. Lifecycle endpoints are explicit POST actions (`disable`, `archive`, `restore`) plus conditional DELETE; do not overload a free-form status field.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_admin_logical_models.py tests/server/test_admin_model_routes.py tests/server/test_admin_model_lifecycle.py tests/server/test_admin_api.py`
 
