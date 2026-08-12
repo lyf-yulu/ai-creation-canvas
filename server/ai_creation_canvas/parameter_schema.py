@@ -27,7 +27,7 @@ def validate_parameter_schema(schema: Mapping[str, object]) -> None:
         presets = extension["presets"]
         numeric = (extension["min_pixels"], extension["max_pixels"], extension["min_ratio"], extension["max_ratio"])
         if (
-            not isinstance(presets, list)
+            not isinstance(presets, (list, tuple))
             or not presets
             or len(presets) > 16
             or any(not isinstance(item, str) or not item or len(item) > 16 for item in presets)

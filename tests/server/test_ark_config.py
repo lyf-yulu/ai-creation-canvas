@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 from ai_creation_canvas.adapters.ark import load_ark_model_declarations
+from ai_creation_canvas.api.jobs import _validate_parameters
 from ai_creation_canvas.__main__ import create_local_app
 from ai_creation_canvas.config import Settings
+from ai_creation_canvas.domain.models import ModelSpec
 
 
 def test_ark_model_declarations_are_data_only_and_reject_secret_or_url_fields(tmp_path) -> None:
@@ -59,6 +61,25 @@ def test_example_seedream_4_declares_only_confirmed_single_image_request_paramet
     assert "count" not in image.parameter_schema["properties"]
     assert "count" not in image.parameter_mappings
     assert "n" not in image.parameter_mappings.values()
+
+
+def test_frozen_seedream_size_constraint_accepts_presets_and_safe_dimensions() -> None:
+    config = Path(__file__).parents[2] / "server" / "config" / "ark-models.example.json"
+    declaration = {item.model_id: item for item in load_ark_model_declarations(config, config.parent)}["doubao-seedream-4-0-250828"]
+    model = ModelSpec(
+        declaration.model_id,
+        declaration.service_id,
+        declaration.display_name,
+        declaration.operations,
+        ("text",),
+        declaration.parameter_schema,
+        None,
+        declaration.input_ports,
+        declaration.parameter_mappings,
+    )
+
+    assert _validate_parameters(model, {"size": "1K"}) is None
+    assert _validate_parameters(model, {"size": "1024x1024"}) is None
 
 
 def test_example_catalog_declares_current_official_ark_model_matrix() -> None:
