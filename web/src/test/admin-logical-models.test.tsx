@@ -32,15 +32,23 @@ it("edits the selected logical model with its revision and ignores a late prior 
     expect(screen.getByLabelText("模型显示名")).toHaveValue("Seedance");
 });
 
-it("offers separated image and video templates without text or audio operations", () => {
+it("offers exactly two capability templates and separates the concrete model protocol", () => {
     render(<ModelEditor model={null} onSave={vi.fn()} onSaved={vi.fn()} />);
-    const template = screen.getByLabelText("能力模板");
-    expect(template).toHaveTextContent("图像生成");
-    expect(template).toHaveTextContent("多参考图编辑");
-    expect(template).toHaveTextContent("视频生成");
-    expect(template).not.toHaveTextContent(/文本|音频/);
-    fireEvent.change(template, { target: { value: "chiyun_image_edit" } });
+    const capability = screen.getByLabelText("能力模板");
+    expect(capability.querySelectorAll("option")).toHaveLength(2);
+    expect(capability).toHaveTextContent("多参生图");
+    expect(capability).toHaveTextContent("多参生视频");
+    expect(capability).not.toHaveTextContent(/Ark|Chiyun|T8Star/);
+    const protocol = screen.getByLabelText("模型类型");
+    expect(protocol).toHaveTextContent("Seedream");
+    expect(protocol).toHaveTextContent("Banana");
+    expect(protocol).toHaveTextContent("GPT-Image2");
+    fireEvent.change(protocol, { target: { value: "banana" } });
     expect(screen.getByText("image.edit")).toBeVisible();
+    fireEvent.change(capability, { target: { value: "multi_video" } });
+    expect(screen.getByLabelText("模型类型").querySelectorAll("option")).toHaveLength(1);
+    expect(screen.getByLabelText("模型类型")).toHaveTextContent("Seedance");
+    expect(screen.getByText("video.generate")).toBeVisible();
 });
 
 it("does not publish a pending save result or error after unmount", async () => {

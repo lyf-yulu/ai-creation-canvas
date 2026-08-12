@@ -25,7 +25,7 @@ it("creates a logical model without requesting legacy Provider credentials", asy
     fireEvent.change(screen.getByLabelText("模型 ID"), { target: { value: "banana" } });
     fireEvent.change(screen.getByLabelText("模型显示名"), { target: { value: "Nano Banana" } });
     fireEvent.change(screen.getByLabelText("模型介绍"), { target: { value: "多参考图编辑" } });
-    fireEvent.change(screen.getByLabelText("能力模板"), { target: { value: "chiyun_image_edit" } });
+    fireEvent.change(screen.getByLabelText("模型类型"), { target: { value: "banana" } });
     fireEvent.click(screen.getByRole("button", { name: "保存模型" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6)); // create response selects the model and loads its routes

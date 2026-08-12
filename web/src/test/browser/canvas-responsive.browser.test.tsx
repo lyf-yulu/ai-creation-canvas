@@ -261,7 +261,8 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     await page.getByLabelText("模型 ID").fill("nano-banana");
     await page.getByLabelText("模型显示名").fill("Nano Banana");
     await page.getByLabelText("模型介绍").fill("Offline multi-reference image model");
-    await page.getByLabelText("能力模板").selectOptions("chiyun_image_edit");
+    await page.getByLabelText("能力模板").selectOptions("multi_image");
+    await page.getByLabelText("模型类型").selectOptions("banana");
     await page.getByRole("button", { name: "保存模型" }).click();
     await expect.element(page.getByText("Nano Banana", { exact: true }).first()).toBeVisible();
     const createCall = state.calls.find((item) => item.method === "POST" && item.url.endsWith("/logical-models"));
@@ -275,7 +276,7 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
 
     const addRoute = async (routeId: string, provider: string, pool: string) => {
         await page.getByRole("button", { name: "新建线路" }).click();
-        await page.getByLabelText("线路模板").selectOptions("chiyun_image_edit");
+        await page.getByLabelText("线路模板").selectOptions("banana");
         await page.getByLabelText("线路 ID").fill(routeId);
         await page.getByLabelText("Provider").selectOptions(provider);
         await page.getByLabelText("供应商模型名").fill("gemini-image-offline");

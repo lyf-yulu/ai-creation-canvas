@@ -1,7 +1,13 @@
 import type { AdminLogicalModel, AdminOperationContract } from "@/api/admin";
 
 const prompt = { port_id: "prompt", media_type: "text" as const, min_items: 1, max_items: 1 };
-const objectSchema = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, ...(required.length ? { required } : {}), additionalProperties: false });
+const objectSchema = (properties: Record<string, unknown>, required: string[] = [], profile?: ModelProfileId) => ({
+    type: "object",
+    ...(profile ? { "x-aicc-profile": profile } : {}),
+    properties,
+    ...(required.length ? { required } : {}),
+    additionalProperties: false,
+});
 const size = { type: "string", default: "2K", "x-ark-size": { presets: ["1K", "1.5K", "2K", "3K", "4K"], min_pixels: 921600, max_pixels: 16777216, min_ratio: 0.0625, max_ratio: 16 } };
 
 const arkImageProperties = {
@@ -27,37 +33,73 @@ const videoProperties = {
 };
 const videoMappings = Object.fromEntries(Object.keys(videoProperties).map((key) => [key, key]));
 
-export type TemplateId = "ark_image_generate" | "ark_image_edit" | "chiyun_image_edit" | "ark_video_generate";
-export type AdminTemplate = { id: TemplateId; label: string; modality: "image" | "video"; adapter_type: "ark" | "chiyun_openai_images"; familyHint: string; contract: AdminOperationContract };
+export type CapabilityId = "multi_image" | "multi_video";
+export type ModelProfileId = "seedream" | "banana" | "gpt_image2" | "seedance";
+export type TemplateId = ModelProfileId;
+export type AdminTemplate = {
+    id: ModelProfileId;
+    capability: CapabilityId;
+    label: string;
+    routeLabel: string;
+    modality: "image" | "video";
+    adapter_type: "ark" | "chiyun_openai_images";
+    familyHint: string;
+    contract: AdminOperationContract;
+};
+
+export const CAPABILITY_TEMPLATES = [
+    { id: "multi_image" as const, label: "多参生图" },
+    { id: "multi_video" as const, label: "多参生视频" },
+] as const;
 
 export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
-    { id: "ark_image_generate", label: "图像生成 · Ark", modality: "image", adapter_type: "ark", familyHint: "seedream", contract: { operation: "image.generate", input_ports: [prompt], output_media_type: "image", parameter_schema: objectSchema(arkImageProperties), parameter_mappings: arkImageMappings } },
-    { id: "ark_image_edit", label: "多参考图编辑 · Ark", modality: "image", adapter_type: "ark", familyHint: "seedream", contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 14 }], output_media_type: "image", parameter_schema: objectSchema(arkImageProperties), parameter_mappings: arkImageMappings } },
-    { id: "chiyun_image_edit", label: "多参考图编辑 · Chiyun / OpenAI Images", modality: "image", adapter_type: "chiyun_openai_images", familyHint: "nano-banana", contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"]), parameter_mappings: { size: "size", output_count: "n" } } },
-    { id: "ark_video_generate", label: "视频生成 · Ark", modality: "video", adapter_type: "ark", familyHint: "seedance", contract: { operation: "video.generate", input_ports: [prompt, { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 }, { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 }], output_media_type: "video", parameter_schema: objectSchema(videoProperties), parameter_mappings: videoMappings } },
+    {
+        id: "seedream", capability: "multi_image", label: "Seedream（Ark 官方）", routeLabel: "Seedream · Ark 官方",
+        modality: "image", adapter_type: "ark", familyHint: "seedream",
+        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 14 }], output_media_type: "image", parameter_schema: objectSchema(arkImageProperties, [], "seedream"), parameter_mappings: arkImageMappings },
+    },
+    {
+        id: "banana", capability: "multi_image", label: "Banana（Chiyun / T8Star）", routeLabel: "Banana · Chiyun 兼容",
+        modality: "image", adapter_type: "chiyun_openai_images", familyHint: "nano-banana",
+        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "banana"), parameter_mappings: { size: "size", output_count: "n" } },
+    },
+    {
+        id: "gpt_image2", capability: "multi_image", label: "GPT-Image2（Chiyun）", routeLabel: "GPT-Image2 · Chiyun",
+        modality: "image", adapter_type: "chiyun_openai_images", familyHint: "gpt-image",
+        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "gpt_image2"), parameter_mappings: { size: "size", output_count: "n" } },
+    },
+    {
+        id: "seedance", capability: "multi_video", label: "Seedance（Ark 官方）", routeLabel: "Seedance · Ark 官方",
+        modality: "video", adapter_type: "ark", familyHint: "seedance",
+        contract: { operation: "video.generate", input_ports: [prompt, { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 }, { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 }], output_media_type: "video", parameter_schema: objectSchema(videoProperties, [], "seedance"), parameter_mappings: videoMappings },
+    },
 ];
 
+const profileFromContract = (contract: AdminOperationContract | undefined): ModelProfileId | null => {
+    const marker = contract?.parameter_schema?.["x-aicc-profile"];
+    return typeof marker === "string" && ADMIN_MODEL_TEMPLATES.some((item) => item.id === marker) ? marker as ModelProfileId : null;
+};
+
 export const templateForModel = (model: AdminLogicalModel | null): AdminTemplate => {
-    if (!model?.operation_contracts?.[0]) return ADMIN_MODEL_TEMPLATES[0];
-    const contract = model.operation_contracts[0];
-    if (contract.operation === "video.generate") return ADMIN_MODEL_TEMPLATES[3];
-    if (contract.operation === "image.generate") return ADMIN_MODEL_TEMPLATES[0];
-    return Object.prototype.hasOwnProperty.call((contract.parameter_schema.properties || {}) as object, "output_count") ? ADMIN_MODEL_TEMPLATES[2] : ADMIN_MODEL_TEMPLATES[1];
+    const contract = model?.operation_contracts?.[0];
+    const marked = profileFromContract(contract);
+    if (marked) return ADMIN_MODEL_TEMPLATES.find((item) => item.id === marked)!;
+    if (contract?.operation === "video.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedance")!;
+    if (contract?.operation === "image.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedream")!;
+    if (Object.prototype.hasOwnProperty.call((contract?.parameter_schema.properties || {}) as object, "output_count")) return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "banana")!;
+    return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedream")!;
 };
 
-export const routeTemplatesForModel = (model: AdminLogicalModel) => {
-    const operation = model.operation_contracts?.[0]?.operation;
-    const publicProperties = (model.operation_contracts?.[0]?.parameter_schema.properties || {}) as Record<string, unknown>;
-    return ADMIN_MODEL_TEMPLATES.filter((item) => {
-        if (item.contract.operation !== operation) return false;
-        if (item.adapter_type !== "chiyun_openai_images") return true;
-        const trusted = (item.contract.parameter_schema.properties || {}) as Record<string, unknown>;
-        return Object.entries(trusted).every(([name, rule]) => JSON.stringify(publicProperties[name]) === JSON.stringify(rule));
-    });
-};
+export const routeTemplatesForModel = (model: AdminLogicalModel) => [templateForModel(model)];
 
-export const templateForRoute = (route: { adapter_type?: string; operation_contracts?: AdminOperationContract[] } | null) =>
-    ADMIN_MODEL_TEMPLATES.find((item) => item.adapter_type === route?.adapter_type && item.contract.operation === route?.operation_contracts?.[0]?.operation);
+export const templateForRoute = (route: { adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] } | null) => {
+    if (!route) return undefined;
+    if (route.adapter_type === "ark" && route.operation_contracts?.[0]?.operation === "video.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedance");
+    if (route.adapter_type === "ark") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedream");
+    if (route.adapter_type === "chiyun_openai_images" && route.family === "gpt-image") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "gpt_image2");
+    if (route.adapter_type === "chiyun_openai_images") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "banana");
+    return undefined;
+};
 
 export const routeContractForModel = (template: AdminTemplate, model: AdminLogicalModel): AdminOperationContract => {
     const publicContract = model.operation_contracts?.find((item) => item.operation === template.contract.operation);
