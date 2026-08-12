@@ -282,8 +282,16 @@ def run_paid_graph(user: ApiSession, admin: ApiSession, model_ids: list[str], em
 
 def _probe_file(value: str) -> None:
     path = Path(os.environ["AICC_ACCEPTANCE_SIGNAL_PROBE_FILE"])
-    path.write_text(value, encoding="ascii")
-    path.chmod(0o600)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("x", encoding="ascii") as handle:
+            os.chmod(temporary, 0o600)
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _probe_signal_before_key() -> None:

@@ -30,6 +30,18 @@ bash scripts/run-real-media-local.sh
 
 当前真实能力边界：Seedream Pro 最多 10 张有序参考图；Seedream Lite/4.5/4.0 最多 14 张。支持模型可声明最多 15 张组图结果，尺寸、格式、水印和提示词优化模式按具体版本显示。Seedance 各版本分别声明时长、分辨率与参考素材上限。参考视频必须先成为提供方认可的公网 URL 或 `asset://` 素材，并需要额外管理员素材上传能力，因此当前保持关闭。Ark 只允许取消仍在排队的任务，运行中的任务不支持取消。
 
+## 管理员模型对象与 Chiyun GPT Image 2
+
+管理员页面可以创建受控 Provider 和模型对象，再把模型使用权分配给普通用户。Provider 保存显示名、固定适配器类型、HTTPS 服务地址和部署系统中的凭据引用名；模型保存提供方模型名、用途说明、固定操作模板、启用状态和版本。数据库和浏览器都不保存真实 Key，普通用户只会看到获授权模型的名称、介绍、操作、输入端口和安全参数。
+
+当前首个动态模板是 `chiyun_gpt_image_edit_v1`，只允许 `image.edit`，最多 10 张有序参考图，参数仅为尺寸和 1–4 张输出数量。它不会被列入视频节点，也不接受管理员上传脚本、任意参数映射或远程插件。服务端从 `credential_ref` 解析环境变量：例如 `chiyun-primary` 对应 `AICC_CREDENTIAL_CHIYUN_PRIMARY`。部署系统负责注入变量，管理页面只能显示该引用是否可用，不能读取值。
+
+生产环境只要启用了数据库中的受控模型，就必须配置 `--redis-url`。Redis 当前保存带过期时间的匿名执行许可，用于限制全站、每 Provider 和每用户的提交并发；提示词、请求体、媒体、Cookie 和 Key 不进入 Redis。SQLite 仍是幂等键、任务快照、授权和审计的最终依据。默认生成并发为全站 8、每 Provider 4、每用户 2，可按容量在 1–32 内调整。
+
+当前 Redis 边界是“跨进程执行许可”，不是持久化后台任务队列：HTTP 请求在完成 SQL 预留后提交一次提供方请求。对于当前 1–2 人轻量测试足够，但多副本生产若要求进程崩溃后自动接管尚未提交的任务，仍需增加 Redis Streams/等价持久队列和独立 worker；不能把现有许可计数误认为完整消息队列。
+
+模型更新采用乐观版本号，已创建任务会保留创建时的模型版本、Provider、适配器和规范化请求快照；撤回用户权限后，新任务会被拒绝，既有任务归属不会改变。回滚时先禁用模型或 Provider，再恢复上一发布包；不要直接删除 SQLite 数据文件，也不要把凭据引用改成真实 Key。
+
 如遗失本地测试密码，可停止本地服务后执行：
 
 ```bash
@@ -66,6 +78,7 @@ PYTHONPATH=server python -m ai_creation_canvas \
   --max-video-upload-mib 64 \
   --max-audio-upload-mib 32 \
   --upload-concurrency 4 \
+  --redis-url "redis://受控-redis:6379/0" \
   --user-asset-quota-mib 2048 \
   --total-asset-quota-mib 10240 \
   --static-dir web/dist

@@ -10,6 +10,27 @@ import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); clearStorageScope(); setScopedStoreFactoryForTest(); useCanvasStore.setState({ projects: [], projectSyncMetadata: {}, syncNotice: null, hydrated: true }); });
 
+it("creates an image edit node when the assigned catalog has no image generate model", async () => {
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const projectId = useCanvasStore.getState().createProject("Canvas");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ models: [{
+        model_id: "chiyun-gpt-image-2", service_id: "chiyun", display_name: "GPT Image 2",
+        operations: ["image.edit"], input_media: ["text", "image"],
+        input_ports: [
+            { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
+            { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 },
+        ],
+        parameter_mappings: {}, parameter_schema: {},
+    }] }), { headers: { "content-type": "application/json" } })));
+    render(<MemoryRouter initialEntries={[`/canvas/${projectId}`]}><Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes></MemoryRouter>);
+
+    const addImage = await screen.findByRole("button", { name: "图片生成" });
+    expect(addImage).toBeEnabled();
+    fireEvent.click(addImage);
+    const model = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.graph?.role === "model");
+    expect(model?.metadata?.graph).toMatchObject({ modelId: "chiyun-gpt-image-2", operation: "image.edit" });
+});
+
 it("submits canvas image generation through jobs and writes its result node", async () => {
     await setStorageScope({ environment: "test", userId: "u-a" });
     const projectId = useCanvasStore.getState().createProject("Canvas");

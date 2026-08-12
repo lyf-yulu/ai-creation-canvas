@@ -58,6 +58,16 @@ export default function CanvasProjectPage() {
     const syncNotice = useCanvasStore((state) => state.syncNotice);
     const loadError = useCanvasStore((state) => state.loadError);
     const readOnly = Boolean(loadError?.readOnly);
+    const imageCreateOperation = useMemo<ModelOperation | null>(() => {
+        if (models.some((model) => model.operations.includes("image.generate"))) return "image.generate";
+        if (models.some((model) => model.operations.includes("image.edit"))) return "image.edit";
+        return null;
+    }, [models]);
+    const videoCreateOperation = useMemo<ModelOperation | null>(() => {
+        if (models.some((model) => model.operations.includes("video.generate"))) return "video.generate";
+        if (models.some((model) => model.operations.includes("video.image_to_video"))) return "video.image_to_video";
+        return null;
+    }, [models]);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const viewport = normalizeViewport(project?.viewport);
     const measuredNodeMap = useMemo(
@@ -636,13 +646,15 @@ export default function CanvasProjectPage() {
     const createNodeFromContextMenu = useCallback((kind: CanvasCreationKind) => {
         if (contextMenu?.type !== "canvas") return;
         const position = contextMenu.worldPosition;
+        let created = true;
         if (kind === "prompt") addPromptNode(position);
         else if (kind === "image" || kind === "video" || kind === "audio") addMediaCollectionNode(kind, position);
-        else if (kind === "image-model") addModelNode("image.generate", position);
-        else addModelNode("video.generate", position);
+        else if (kind === "image-model" && imageCreateOperation) addModelNode(imageCreateOperation, position);
+        else if (kind === "video-model" && videoCreateOperation) addModelNode(videoCreateOperation, position);
+        else created = false;
         setContextMenu(null);
-        setCanvasCommandMessage("节点已创建在右键位置。");
-    }, [addMediaCollectionNode, addModelNode, addPromptNode, contextMenu]);
+        setCanvasCommandMessage(created ? "节点已创建在右键位置。" : "没有已授权的对应模型。");
+    }, [addMediaCollectionNode, addModelNode, addPromptNode, contextMenu, imageCreateOperation, videoCreateOperation]);
 
     const openNodeContextMenu = useCallback(
         (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
@@ -742,17 +754,17 @@ export default function CanvasProjectPage() {
                                 参考音频节点
                             </button>
                             <button
-                                disabled={readOnly || !models.some((model) => model.operations.includes("image.generate"))}
+                                disabled={readOnly || imageCreateOperation === null}
                                 type="button"
-                                onClick={() => addModelNode("image.generate")}
+                                onClick={() => imageCreateOperation && addModelNode(imageCreateOperation)}
                                 className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 图片生成
                             </button>
                             <button
-                                disabled={readOnly || !models.some((model) => model.operations.includes("video.generate"))}
+                                disabled={readOnly || videoCreateOperation === null}
                                 type="button"
-                                onClick={() => addModelNode("video.generate")}
+                                onClick={() => videoCreateOperation && addModelNode(videoCreateOperation)}
                                 className="flex items-center gap-2 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-left text-xs hover:border-[#4fbd70] disabled:cursor-not-allowed disabled:opacity-50 lg:w-full lg:py-2.5"
                             >
                                 视频生成

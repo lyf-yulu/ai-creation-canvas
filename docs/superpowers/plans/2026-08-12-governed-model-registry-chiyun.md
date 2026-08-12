@@ -208,7 +208,7 @@ Commit: `feat: administer providers models and access`
 - Modify: `docs/verification.md`
 - Create: `docs/superpowers/reports/2026-08-12-chiyun-model-registry-report.md`
 
-- [ ] **Step 1: Write and run an isolated integration test**
+- [x] **Step 1: Write and run an isolated integration test**
 
 Build a real FastAPI app with SQLite, local coordinator, mock Chiyun transport and owned PNG assets. Exercise administrator Provider/model creation, user grant, `/models`, `image.edit`, exact multipart, result GET/HEAD/Range, revoke, rejected second submission, cross-user 404 and same-key concurrency.
 
@@ -216,7 +216,7 @@ Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_chiyun_mode
 
 Expected: pass without network or credentials.
 
-- [ ] **Step 2: Run full gates**
+- [x] **Step 2: Run full gates**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q`
 
@@ -230,11 +230,11 @@ Run: `git diff --check`
 
 Expected: all pass; production audit reports zero high vulnerabilities.
 
-- [ ] **Step 3: Start an isolated user acceptance instance**
+- [x] **Step 3: Start an isolated user acceptance instance**
 
 Use a fresh Git-ignored data directory and a new non-production port; do not touch 8997 or 9001. Configure a mock credential resolver and mock Chiyun transport. Verify administrator create/grant/revoke and ordinary user ordered-reference generation in Chromium, then leave the login page open for user acceptance.
 
-- [ ] **Step 4: Document operational boundaries and commit**
+- [x] **Step 4: Document operational boundaries and commit**
 
 Document production Redis requirement, credential references, adapter allowlist, concurrency defaults, health checks, rollback and the fact that the acceptance instance is offline. Record tests and deferred real paid call without storing credentials, prompts or provider payloads.
 
