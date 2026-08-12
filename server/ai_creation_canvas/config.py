@@ -111,6 +111,10 @@ class Settings:
     upload_concurrency: int = 4
     user_asset_quota_bytes: int = 2 * 1024 * 1024 * 1024
     total_asset_quota_bytes: int = 10 * 1024 * 1024 * 1024
+    redis_url: str | None = None
+    generation_global_concurrency: int = 8
+    generation_provider_concurrency: int = 4
+    generation_user_concurrency: int = 2
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -165,6 +169,16 @@ class Settings:
                 raise ValueError(f"{field_name} must be a positive bounded integer")
         if self.total_asset_quota_bytes < self.user_asset_quota_bytes:
             raise ValueError("total asset quota must not be smaller than user asset quota")
+        if self.redis_url is not None:
+            parsed_redis = urlsplit(self.redis_url)
+            if parsed_redis.scheme not in {"redis", "rediss"} or not parsed_redis.hostname or parsed_redis.fragment:
+                raise ValueError("redis_url must use redis:// or rediss://")
+        for field_name in ("generation_global_concurrency", "generation_provider_concurrency", "generation_user_concurrency"):
+            value = getattr(self, field_name)
+            if type(value) is not int or not 1 <= value <= 32:
+                raise ValueError(f"{field_name} must be between 1 and 32")
+        if self.generation_provider_concurrency > self.generation_global_concurrency or self.generation_user_concurrency > self.generation_global_concurrency:
+            raise ValueError("generation concurrency hierarchy is invalid")
         if self.enable_ark_adapter:
             if self.ark_models_config_path is None or self.ark_models_config_root is None:
                 raise ValueError("Ark adapter requires an explicit administrator configuration")

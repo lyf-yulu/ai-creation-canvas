@@ -40,6 +40,7 @@ from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
+from ai_creation_canvas.coordination import LocalExecutionCoordinator, RedisExecutionCoordinator
 
 
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -109,7 +110,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if registry is None:
@@ -125,6 +126,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         for adapter in build_ark_adapters(api_key=api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
             registry.register_generation(adapter)
     store = canvas_store or CanvasStore(settings.data_dir)
+    if settings.environment == "production" and store.list_model_definitions() and settings.redis_url is None:
+        raise ValueError("Redis is required for governed production models")
     if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
@@ -151,6 +154,21 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             api_key=os.environ.get("ARK_API_KEY") if settings.prompt_skill_model_id else None,
         )
     app.state.prompt_skill_service = prompt_skill_service
+    if execution_coordinator is None:
+        if settings.redis_url is not None:
+            from redis.asyncio import Redis
+            execution_coordinator = RedisExecutionCoordinator(
+                Redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=3, socket_connect_timeout=3),
+                namespace="aicc", global_limit=settings.generation_global_concurrency,
+                provider_limit=settings.generation_provider_concurrency, user_limit=settings.generation_user_concurrency,
+            )
+        else:
+            execution_coordinator = LocalExecutionCoordinator(
+                global_limit=settings.generation_global_concurrency,
+                provider_limit=settings.generation_provider_concurrency,
+                user_limit=settings.generation_user_concurrency,
+            )
+    app.state.execution_coordinator = execution_coordinator
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"

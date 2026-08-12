@@ -78,7 +78,7 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, prompt_skill_model: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origin = f"http://127.0.0.1:{port}"
     settings = Settings(
         environment="development",
@@ -92,6 +92,7 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_i
         ark_models_config_path=ark_models_config,
         ark_models_config_root=ark_models_config.parent if ark_models_config is not None else None,
         prompt_skill_model_id=prompt_skill_model,
+        redis_url=redis_url,
         max_image_upload_bytes=max_image_upload_bytes,
         max_video_upload_bytes=max_video_upload_bytes,
         max_audio_upload_bytes=max_audio_upload_bytes,
@@ -144,9 +145,10 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--open", action="store_true", dest="open_browser")
     parser.add_argument("--ark-models", type=Path, help="administrator-owned Ark model declarations; requires ARK_API_KEY")
     parser.add_argument("--prompt-skill-model", help="administrator-owned Ark text endpoint used by built-in prompt skills")
+    parser.add_argument("--redis-url", help="optional Redis coordination URL; governed production models require Redis")
     _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"
@@ -168,6 +170,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--allow-loopback-http", action="store_true")
     parser.add_argument("--check-config", action="store_true", help="validate the declaration file without serving HTTP")
     parser.add_argument("--prompt-skill-model", help="administrator-owned Ark text endpoint used by built-in prompt skills")
+    parser.add_argument("--redis-url", help="Redis coordination URL for governed production models")
     _add_upload_limit_arguments(parser)
     return parser.parse_args()
 
@@ -199,6 +202,7 @@ def main() -> None:
         user_asset_quota_bytes=args.user_asset_quota_bytes,
         total_asset_quota_bytes=args.total_asset_quota_bytes,
         prompt_skill_model_id=args.prompt_skill_model,
+        redis_url=args.redis_url,
     )
     app = create_app(settings, static_dir=args.static_dir)
     if args.check_config:

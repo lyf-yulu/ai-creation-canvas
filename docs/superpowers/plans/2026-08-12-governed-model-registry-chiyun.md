@@ -139,25 +139,25 @@ Commit: `feat: resolve jobs from governed model snapshots`
 - Test: `tests/server/test_coordination.py`
 - Test: `tests/server/test_config.py`
 
-- [ ] **Step 1: Write RED coordinator tests**
+- [x] **Step 1: Write RED coordinator tests**
 
 Define tests for bounded in-process permits and a Redis client fake covering atomic acquire/release, expiry, provider/user/global scopes, permission-cache invalidation and Redis payloads containing only opaque IDs. Verify release after cancellation and exceptions. Verify production Settings rejects missing Redis URL and startup ping failure; development explicitly uses local coordinator.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_coordination.py tests/server/test_config.py`
 
 Expected: coordinator types and Redis settings do not exist.
 
-- [ ] **Step 3: Implement coordinator port and Redis implementation**
+- [x] **Step 3: Implement coordinator port and Redis implementation**
 
 Pin `redis==8.0.1`. Implement `ExecutionCoordinator.acquire(job_id, user_id, provider_id, model_id)` as an async context manager. Local mode uses ordered bounded semaphores. Redis mode uses an atomic Lua script with TTL-backed global/provider/user counters and an owner token, plus compare-and-delete release. Keys contain hashed stable IDs; values never contain prompts, media, credentials or request bodies.
 
-- [ ] **Step 4: Integrate execution permits**
+- [x] **Step 4: Integrate execution permits**
 
 Acquire after SQL reservation and immediately before provider submission; always release in `finally`. SQL reservation remains the idempotency authority. Redis failure in production returns retryable service-unavailable without marking a second provider submission; development local coordinator remains bounded.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 Run: `PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_coordination.py tests/server/test_config.py tests/server/test_jobs_dynamic_models.py`
 

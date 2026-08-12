@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import JobRequest, JobStatus, ModelSpec
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 
 router = APIRouter(prefix="/api/v1")
@@ -224,14 +225,21 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         return _response(reservation.job, request)
     try:
         adapter = selected_adapter
-        submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
-        if callable(submit_with_cookie):
-            upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs)
-            upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
-        else:
-            upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
+        async with request.app.state.execution_coordinator.acquire(str(reservation.job["id"]), context.user.user_id, str(binding.provider.provider_id if binding is not None else model.service_id), domain_request.model_id):
+            submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
+            if callable(submit_with_cookie):
+                upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs)
+                upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
+            else:
+                upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
         item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
         return _response(item, request)
+    except ExecutionCapacityExceeded:
+        store.fail_reservation(str(reservation.job["id"]), "TASK_CAPACITY", str(reservation.job["submission_token"]))
+        raise problem(request, "CAPACITY_EXCEEDED", "The generation service is busy.", status=429, retryable=True) from None
+    except CoordinationUnavailable:
+        store.fail_reservation(str(reservation.job["id"]), "COORDINATION_UNAVAILABLE", str(reservation.job["submission_token"]))
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True) from None
     except PortalUpstreamError as error:
         if error.retryable:
             store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
