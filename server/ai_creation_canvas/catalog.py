@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
-from typing import Protocol, runtime_checkable
+from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from ai_creation_canvas.adapters.portal.catalog import CatalogResult
 from ai_creation_canvas.domain.models import ModelSpec, PortalRole, RequestContext
@@ -12,6 +12,119 @@ from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ProviderDefinition
 from ai_creation_canvas.adapters.factory import AdapterFactory
+from ai_creation_canvas.credential_pools import CredentialPool
+from ai_creation_canvas.model_routing import LogicalModelDefinition, validate_route_model, validate_route_pool
+from ai_creation_canvas.routing import RouteSelector
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ManagedRoutingRuntime:
+    """Explicit app-owned boundary for managed logical-model routing."""
+
+    store: CanvasStore
+    pool_snapshot: Callable[[], Mapping[str, CredentialPool]]
+    selector: RouteSelector
+    coordinator: object
+    adapter_factory: object
+
+    def __post_init__(self) -> None:
+        if not callable(self.pool_snapshot) or not isinstance(self.selector, RouteSelector):
+            raise ValueError("managed routing runtime is invalid")
+
+    def __repr__(self) -> str:
+        return "ManagedRoutingRuntime()"
+
+    def is_managed(self, model_id: str) -> bool:
+        return self.store.logical_model(model_id) is not None
+
+    def logical_model(self, model_id: str) -> LogicalModelDefinition | None:
+        model = self.store.logical_model(model_id)
+        return model if isinstance(model, LogicalModelDefinition) else None
+
+    def pools(self) -> Mapping[str, CredentialPool]:
+        pools = self.pool_snapshot()
+        if not isinstance(pools, Mapping):
+            raise ValueError("credential pool snapshot is unavailable")
+        return pools
+
+    def has_healthy_route(self, model: LogicalModelDefinition) -> bool:
+        pools = self.pools()
+        for route in self.store.list_model_routes(model_id=model.model_id, include_archived=False):
+            pool = pools.get(route.credential_pool_ref)
+            if not route.enabled or not isinstance(pool, CredentialPool) or not pool.keys:
+                continue
+            try:
+                validate_route_model(route, model)
+                validate_route_pool(route, pool)
+            except ValueError:
+                continue
+            return True
+        return False
+
+
+def _logical_model_spec(model: LogicalModelDefinition) -> ModelSpec:
+    contracts = model.operation_contracts
+    first = contracts[0]
+    if any(
+        contract.input_ports != first.input_ports
+        or dict(contract.parameter_schema) != dict(first.parameter_schema)
+        for contract in contracts[1:]
+    ):
+        raise ValueError("logical model public contract is unavailable")
+    return ModelSpec(
+        model.model_id,
+        model.model_id,
+        model.display_name,
+        tuple(contract.operation for contract in contracts),
+        tuple(dict.fromkeys(port.media_type for port in first.input_ports)),
+        first.parameter_schema,
+        None,
+        first.input_ports,
+        {},
+    )
+
+
+class LogicalModelCatalog:
+    """Overlay managed logical models without exposing their routes or credentials."""
+
+    def __init__(self, base: ModelCatalogPort, store: CanvasStore, runtime: ManagedRoutingRuntime) -> None:
+        if not isinstance(base, ModelCatalogPort) or runtime.store is not store:
+            raise ValueError("logical model catalog dependencies are invalid")
+        self._base, self._store, self._runtime = base, store, runtime
+
+    async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> CatalogResult:
+        base = await self._base.list_models(context, cookie_header=cookie_header)
+        all_logical_ids = {model.model_id for model in self._store.list_logical_models()}
+        models = [item for item in base.models if item.model_id not in all_logical_ids]
+        assigned = None if context.user.role is PortalRole.ADMIN else frozenset(self._store.governed_assigned_models(context.user.user_id))
+        for logical in self._store.list_logical_models(include_archived=False):
+            if assigned is not None and logical.model_id not in assigned:
+                continue
+            if not logical.enabled or not self._runtime.has_healthy_route(logical):
+                continue
+            try:
+                models.append(_logical_model_spec(logical))
+            except ValueError:
+                continue
+        models.sort(key=lambda item: item.model_id)
+        return CatalogResult(tuple(models), base.diagnostics)
+
+    async def resolve_model(self, context: RequestContext, model_id: str, *, cookie_header: str | None = None) -> ModelSpec:
+        logical = self._runtime.logical_model(model_id)
+        if logical is not None:
+            if context.user.role is not PortalRole.ADMIN and model_id not in self._store.governed_assigned_models(context.user.user_id):
+                raise ValueError("model is unavailable")
+            if not logical.enabled or logical.archived_at is not None or not self._runtime.has_healthy_route(logical):
+                raise ValueError("model is unavailable")
+            try:
+                return _logical_model_spec(logical)
+            except ValueError:
+                raise ValueError("model is unavailable") from None
+        return await self._base.resolve_model(context, model_id, cookie_header=cookie_header)
+
+    def model_binding(self, model_id: str):
+        resolver = getattr(self._base, "model_binding", None)
+        return resolver(model_id) if callable(resolver) else None
 
 
 @runtime_checkable

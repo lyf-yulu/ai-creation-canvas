@@ -306,6 +306,53 @@ class RouteAdapterFactory:
             )
         raise ValueError("route adapter is not allowlisted")
 
+    def build_result_reader(self, route: ModelRouteDefinition):
+        """Build a secret-free reader for files already materialized locally."""
+        if not isinstance(route, ModelRouteDefinition) or route.adapter_type not in {"ark", "chiyun_openai_images"}:
+            raise ValueError("managed result reader is unavailable")
+        return _LocalRouteResultReader(self._data_dir, route.adapter_type)
+
+
+class _LocalRouteResultReader:
+    requires_portal_cookie = False
+
+    def __init__(self, data_dir: Path, adapter_type: str) -> None:
+        self._data_dir, self._adapter_type = data_dir, adapter_type
+
+    def __repr__(self) -> str:
+        return f"LocalRouteResultReader(adapter_type={self._adapter_type!r})"
+
+    async def open_result(self, context, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
+        del context, cookie_header
+        if self._adapter_type == "chiyun_openai_images":
+            from ai_creation_canvas.adapters.chiyun import _FileStream, _RESULT_ID, _MAX_RESULT, _empty_stream, _range
+            path = self._data_dir / "chiyun-results" / result_id
+            if _RESULT_ID.fullmatch(result_id) is None or path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= _MAX_RESULT:
+                return _empty_stream(404)
+            if range_header is None:
+                return _FileStream(path, "image/png", head=head)
+            interval = _range(range_header, path.stat().st_size)
+            if interval is None:
+                return _empty_stream(416, size=path.stat().st_size)
+            start, end = interval
+            return _FileStream(path, "image/png", offset=start, length=end - start + 1, head=head)
+        from ai_creation_canvas.adapters.ark import _FileStream, _RESULT_ID, _missing_stream, _range, _range_missing_stream
+        result_root = self._data_dir / "ark-results"
+        media, metadata = result_root / result_id, result_root / f"{result_id}.json"
+        if _RESULT_ID.fullmatch(result_id) is None or media.is_symlink() or metadata.is_symlink() or not media.is_file() or not metadata.is_file():
+            return _missing_stream()
+        try:
+            mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return _missing_stream()
+        if range_header is None:
+            return _FileStream(media, mime, head=head)
+        interval = _range(range_header, media.stat().st_size)
+        if interval is None:
+            return _range_missing_stream(media.stat().st_size)
+        start, end = interval
+        return _FileStream(media, mime, offset=start, length=end - start + 1, head=head)
+
 
 def _is_prompt_port(port: object) -> bool:
     return (

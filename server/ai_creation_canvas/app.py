@@ -21,7 +21,7 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.adapters.demo import DemoGenerationAdapter
 from ai_creation_canvas.adapters.ark import build_ark_adapters, _local_asset_loader
-from ai_creation_canvas.adapters.factory import AdapterFactory, EnvironmentCredentialResolver
+from ai_creation_canvas.adapters.factory import AdapterFactory, EnvironmentCredentialResolver, ProviderProtocol, RouteAdapterFactory
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
 from ai_creation_canvas.api.assets import router as assets_router
@@ -34,7 +34,7 @@ from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog
+from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog, LogicalModelCatalog, ManagedRoutingRuntime
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
@@ -42,6 +42,8 @@ from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
 from ai_creation_canvas.coordination import LocalExecutionCoordinator, RedisExecutionCoordinator
+from ai_creation_canvas.credential_pools import CredentialPoolLoader
+from ai_creation_canvas.routing import RouteSelector
 
 
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -111,7 +113,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if registry is None:
@@ -127,8 +129,11 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         for adapter in build_ark_adapters(api_key=api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
             registry.register_generation(adapter)
     store = canvas_store or CanvasStore(settings.data_dir)
-    if settings.environment == "production" and store.list_model_definitions() and settings.redis_url is None:
+    active_managed_routes = tuple(route for route in store.list_model_routes(include_archived=False) if route.enabled)
+    if settings.environment == "production" and (store.list_model_definitions() or active_managed_routes) and settings.redis_url is None:
         raise ValueError("Redis is required for governed production models")
+    if settings.environment == "production" and active_managed_routes and settings.credential_pools_path is None:
+        raise ValueError("credential pool configuration is required for managed production routes")
     if model_catalog is None:
         if settings.services_config_path is not None:
             declarations = load_service_declarations(settings.services_config_path, settings.services_config_root)
@@ -145,7 +150,6 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         adapter_factory = factory
     app.state.adapter_registry = registry
     app.state.canvas_store = store
-    app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.adapter_factory = adapter_factory
     app.state.settings = settings
     if prompt_skill_service is None:
@@ -159,11 +163,15 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.prompt_skill_service = prompt_skill_service
     if execution_coordinator is None:
         if settings.redis_url is not None:
+            import os
+            hmac_text = os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "")
+            hmac_key = hmac_text.encode("utf-8") if len(hmac_text.encode("utf-8")) >= 32 else None
             from redis.asyncio import Redis
             execution_coordinator = RedisExecutionCoordinator(
                 Redis.from_url(settings.redis_url, decode_responses=True, socket_timeout=3, socket_connect_timeout=3),
                 namespace="aicc", global_limit=settings.generation_global_concurrency,
                 provider_limit=settings.generation_provider_concurrency, user_limit=settings.generation_user_concurrency,
+                credential_hmac_key=hmac_key,
             )
         else:
             execution_coordinator = LocalExecutionCoordinator(
@@ -172,6 +180,47 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                 user_limit=settings.generation_user_concurrency,
             )
     app.state.execution_coordinator = execution_coordinator
+    if managed_routing_runtime is None and settings.credential_pools_path is not None:
+        import os
+        if settings.environment == "production" and len(os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "").encode("utf-8")) < 32:
+            raise ValueError("a server-only credential HMAC key is required for managed production routes")
+        loader = CredentialPoolLoader(Path(settings.credential_pools_path), production=settings.environment == "production")
+        snapshot = loader.load()
+        providers = {
+            provider.provider_id: ProviderProtocol(provider.provider_id, provider.adapter_type, provider.base_url)
+            for provider in store.list_provider_definitions()
+            if provider.enabled and provider.adapter_type in {"ark", "chiyun_openai_images"}
+        }
+        if any(
+            route.provider_id not in providers
+            or providers[route.provider_id].adapter_type != route.adapter_type
+            for route in active_managed_routes
+        ):
+            raise ValueError("a trusted provider protocol is required for every managed route")
+        pool_map = snapshot.as_mapping()
+        from ai_creation_canvas.model_routing import validate_route_pool
+        for route in active_managed_routes:
+            pool = pool_map.get(route.credential_pool_ref)
+            if pool is None:
+                raise ValueError("a compatible credential pool is required for every managed route")
+            try:
+                validate_route_pool(route, pool)
+            except ValueError:
+                raise ValueError("a compatible credential pool is required for every managed route") from None
+        route_factory = RouteAdapterFactory(
+            data_dir=settings.data_dir,
+            asset_loader=_local_asset_loader(Path(settings.data_dir)),
+            provider_protocols=providers,
+        )
+        managed_routing_runtime = ManagedRoutingRuntime(
+            store, snapshot.as_mapping, RouteSelector(), execution_coordinator, route_factory,
+        )
+    if managed_routing_runtime is not None:
+        if managed_routing_runtime.store is not store:
+            raise ValueError("managed routing runtime store does not match the app store")
+        model_catalog = LogicalModelCatalog(model_catalog, store, managed_routing_runtime)
+    app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
+    app.state.managed_routing_runtime = managed_routing_runtime
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"

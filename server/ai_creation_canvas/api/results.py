@@ -5,7 +5,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response, StreamingResponse
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.errors import DomainError
-from ai_creation_canvas.api.jobs import _result_ids
+from ai_creation_canvas.api.jobs import _result_ids, _route_from_snapshot
 
 router = APIRouter(prefix="/api/v1")
 _MAX = 64 * 1024 * 1024
@@ -96,7 +96,16 @@ async def get_result(job_id: str, request: Request, result_index: int | None = N
     index = 0 if result_index is None else result_index
     if item is None or item["status"] != "succeeded" or index < 0 or index >= len(results) or not item.get("upstream_job_id"):
         raise problem(request, "RESULT_UNAVAILABLE", "The generation result is unavailable.", status=404)
-    adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+    if item.get("logical_model_id") is not None:
+        runtime = getattr(request.app.state, "managed_routing_runtime", None)
+        if runtime is None:
+            raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404)
+        try:
+            adapter = runtime.adapter_factory.build_result_reader(_route_from_snapshot(item.get("route_snapshot_json")))
+        except ValueError:
+            raise problem(request, "RESULT_EXPIRED", "The generation result has expired.", status=404) from None
+    else:
+        adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
     if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     open_result = getattr(adapter, "open_result", None)

@@ -24,6 +24,8 @@ class ExecutionCoordinator(Protocol):
 
     def acquire_credential(self, job_id: str, user_id: str, candidate: RouteCandidate): ...
 
+    def fingerprint_secret(self, secret: str) -> str: ...
+
 
 @dataclass(frozen=True, slots=True, repr=False)
 class CredentialLease:
@@ -38,7 +40,7 @@ class CredentialLease:
         return (
             "CredentialLease("
             f"route_id={self.route_id!r}, pool_id={self.pool_id!r}, "
-            f"key_id={self.key_id!r}, key_fingerprint={self.key_fingerprint!r})"
+            "credential_bound=True)"
         )
 
 
@@ -125,6 +127,11 @@ class LocalExecutionCoordinator:
                 _decrement(self._routes, route.route_id)
                 _decrement(self._pools, pool.pool_id)
                 _decrement(self._keys, (pool.pool_id, selected.key_id))
+
+    def fingerprint_secret(self, secret: str) -> str:
+        if not isinstance(secret, str) or not secret:
+            raise ValueError("credential secret is invalid")
+        return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
 _ACQUIRE = """
@@ -318,6 +325,11 @@ class RedisExecutionCoordinator:
         assert self._credential_hmac_key is not None
         payload = b"\0".join(part.encode("utf-8") for part in parts)
         return hmac.new(self._credential_hmac_key, payload, hashlib.sha256).hexdigest()
+
+    def fingerprint_secret(self, secret: str) -> str:
+        if not isinstance(secret, str) or not secret or self._credential_hmac_key is None:
+            raise CoordinationUnavailable("credential fingerprinting is unavailable")
+        return self._credential_opaque("fingerprint", secret)
 
 
 def _limits(*values: int) -> None:

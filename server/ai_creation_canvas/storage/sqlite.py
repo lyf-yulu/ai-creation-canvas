@@ -384,12 +384,27 @@ class CanvasStore:
                 "INSERT INTO canvas_meta(key,value) VALUES (?,?)",
                 (_MODEL_ROUTING_MIGRATION_MARKER, "1"),
             )
+        # Model access spans local and externally authenticated users and now
+        # targets logical models. Keep IDs as data and enforce existence in the
+        # store methods instead of retaining legacy foreign keys to canvas_models.
+        access_foreign_keys = db.execute("PRAGMA foreign_key_list(canvas_model_access)").fetchall()
+        if access_foreign_keys:
+            db.execute("ALTER TABLE canvas_model_access RENAME TO canvas_model_access_legacy")
+            db.execute("""CREATE TABLE canvas_model_access (
+                    user_id TEXT NOT NULL, model_id TEXT NOT NULL,
+                    granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT,
+                    PRIMARY KEY(user_id, model_id)
+                )""")
+            db.execute("INSERT INTO canvas_model_access SELECT user_id,model_id,granted_by,granted_at,revoked_at FROM canvas_model_access_legacy")
+            db.execute("DROP TABLE canvas_model_access_legacy")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_jobs (
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
                 error_code TEXT, result_id TEXT, result_ids_json TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0,
                 model_id TEXT, model_revision INTEGER, provider_id TEXT, adapter_type TEXT, route_id TEXT, submission_json TEXT,
+                logical_model_id TEXT, logical_model_revision INTEGER, route_revision INTEGER,
+                pool_revision_digest TEXT, key_fingerprint TEXT, submission_state TEXT, route_snapshot_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
@@ -431,7 +446,7 @@ class CanvasStore:
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT"), ("logical_model_id", "TEXT"), ("logical_model_revision", "INTEGER"), ("route_revision", "INTEGER"), ("pool_revision_digest", "TEXT"), ("key_fingerprint", "TEXT"), ("submission_state", "TEXT"), ("route_snapshot_json", "TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
@@ -1188,7 +1203,10 @@ class CanvasStore:
 
     def grant_model_access(self, user_id: str, model_id: str, *, actor_user_id: str) -> None:
         with self._connection(immediate=True) as db:
-            if db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is None or db.execute("SELECT 1 FROM canvas_models WHERE model_id=?", (model_id,)).fetchone() is None:
+            model_exists = db.execute("SELECT 1 FROM canvas_models WHERE model_id=?", (model_id,)).fetchone() is not None or db.execute("SELECT 1 FROM canvas_logical_models WHERE model_id=? AND runtime_purged=0", (model_id,)).fetchone() is not None
+            local_user = db.execute("SELECT 1 FROM canvas_users WHERE user_id=?", (user_id,)).fetchone() is not None
+            logical_model = db.execute("SELECT 1 FROM canvas_logical_models WHERE model_id=? AND runtime_purged=0", (model_id,)).fetchone() is not None
+            if not model_exists or (not local_user and not logical_model):
                 raise KeyError((user_id, model_id))
             now = _now()
             db.execute(
@@ -1463,7 +1481,7 @@ class CanvasStore:
             db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
             return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None, logical_model_id: str | None = None, logical_model_revision: int | None = None) -> Reservation:
         now = _now()
         token = os.urandom(16).hex()
         lease_until = self._clock() + lease_seconds
@@ -1478,18 +1496,56 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, now, now))
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,logical_model_id,logical_model_revision,submission_state,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, logical_model_id, logical_model_revision, "reserved" if logical_model_id is not None else None, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)
 
-    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str, token: str | None = None) -> dict[str, object]:
+    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str, token: str | None = None, *, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token:
                 return dict(row)
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, _now(), job_id))
+            encoded = json.dumps(list(result_ids), separators=(",", ":")) if result_ids else None
+            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, result_ids_json=COALESCE(?,result_ids_json), submission_state=CASE WHEN submission_state IS NULL THEN NULL ELSE 'submitted' END, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, encoded, _now(), job_id))
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def record_routing_snapshot(self, job_id: str, token: str, *, logical_model_id: str, logical_model_revision: int, route_id: str, route_revision: int, pool_revision_digest: str, key_fingerprint: str, route_snapshot_json: str) -> dict[str, object]:
+        if not all(isinstance(value, str) and value for value in (logical_model_id, route_id, pool_revision_digest, key_fingerprint, route_snapshot_json)):
+            raise ValueError("routing snapshot is invalid")
+        if len(route_snapshot_json.encode("utf-8")) > 64 * 1024 or "secret" in route_snapshot_json.lower() or "key_id" in route_snapshot_json.lower():
+            raise ValueError("routing snapshot is unsafe")
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] != token or row["status"] != "submitting" or row["submission_state"] != "reserved":
+                return dict(row)
+            db.execute(
+                "UPDATE canvas_jobs SET logical_model_id=?,logical_model_revision=?,route_id=?,route_revision=?,pool_revision_digest=?,key_fingerprint=?,route_snapshot_json=?,updated_at=? WHERE id=?",
+                (logical_model_id, logical_model_revision, route_id, route_revision, pool_revision_digest, key_fingerprint, route_snapshot_json, _now(), job_id),
+            )
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def mark_submission_unknown(self, job_id: str, token: str, error_code: str = "SUBMISSION_UNKNOWN") -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] != token:
+                return dict(row)
+            db.execute("UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',error_code=?,submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (error_code, _now(), job_id))
+            return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def mark_submission_rejected(self, job_id: str, token: str, error_code: str = "REQUEST_REJECTED") -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] != token:
+                return dict(row)
+            db.execute("UPDATE canvas_jobs SET status='failed',submission_state='rejected',error_code=?,submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (error_code, _now(), job_id))
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:

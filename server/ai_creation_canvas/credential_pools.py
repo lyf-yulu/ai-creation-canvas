@@ -64,6 +64,10 @@ class CredentialPoolSnapshot:
     def get(self, pool_id: str) -> CredentialPool | None:
         return self._pools.get(pool_id)
 
+    def as_mapping(self) -> Mapping[str, CredentialPool]:
+        """Return the immutable server-only pool map; callers must not serialize it."""
+        return self._pools
+
     def safe_summaries(self) -> tuple[dict[str, object], ...]:
         return tuple(
             {

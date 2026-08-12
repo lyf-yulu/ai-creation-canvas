@@ -6,6 +6,8 @@ import hashlib
 import json
 import secrets
 import re
+from dataclasses import replace
+from contextlib import asynccontextmanager
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
@@ -13,9 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.domain.models import JobRequest, JobStatus, ModelSpec
-from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import DomainError, InvalidUpstreamResult, PortalUpstreamError
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.parameter_schema import validate_parameter_values
+from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, classify_submission_error
+from ai_creation_canvas.credential_pools import CredentialPool
+from ai_creation_canvas.model_registry import OperationContract
+from ai_creation_canvas.model_routing import ModelRouteDefinition
+from ai_creation_canvas.routing import RouteCandidate
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -113,18 +120,168 @@ def _response(item: dict[str, object], request: Request) -> dict[str, object]:
     return body
 
 
-async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
-    if item["status"] in {"succeeded", "failed", "submitting"} or not item.get("upstream_job_id"):
-        return item
-    adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
-    if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
-        raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+def _route_snapshot(route: ModelRouteDefinition) -> str:
+    body = {
+        "route_id": route.route_id,
+        "model_id": route.model_id,
+        "provider_id": route.provider_id,
+        "provider_model_name": route.provider_model_name,
+        "adapter_type": route.adapter_type,
+        "credential_pool_ref": route.credential_pool_ref,
+        "family": route.family,
+        "operation_contracts": [contract.to_dict() for contract in route.operation_contracts],
+        "priority": route.priority,
+        "max_concurrency": route.max_concurrency,
+        "enabled": route.enabled,
+        "archived_at": route.archived_at,
+        "revision": route.revision,
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+
+
+def _route_from_snapshot(value: object) -> ModelRouteDefinition:
+    if not isinstance(value, str) or len(value.encode("utf-8")) > 64 * 1024:
+        raise ValueError("managed route snapshot is invalid")
     try:
-        poll_with_cookie = getattr(adapter, "poll_with_cookie", None)
-        if callable(poll_with_cookie):
-            state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
+        body = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("managed route snapshot is invalid") from None
+    expected = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision"}
+    if not isinstance(body, dict) or set(body) != expected or not isinstance(body["operation_contracts"], list):
+        raise ValueError("managed route snapshot is invalid")
+    try:
+        contracts = tuple(OperationContract.from_dict(item) for item in body["operation_contracts"] if isinstance(item, dict))
+        if len(contracts) != len(body["operation_contracts"]):
+            raise ValueError
+        return ModelRouteDefinition(
+            route_id=body["route_id"], model_id=body["model_id"], provider_id=body["provider_id"],
+            provider_model_name=body["provider_model_name"], adapter_type=body["adapter_type"],
+            credential_pool_ref=body["credential_pool_ref"], family=body["family"],
+            operation_contracts=contracts, priority=body["priority"], max_concurrency=body["max_concurrency"],
+            enabled=body["enabled"], archived_at=body["archived_at"], revision=body["revision"],
+        )
+    except (TypeError, ValueError, KeyError):
+        raise ValueError("managed route snapshot is invalid") from None
+
+
+def _adapter_template(route: ModelRouteDefinition, operation: str) -> str:
+    return f"{route.adapter_type}.{operation}"
+
+
+async def _submit_managed(request: Request, context, domain_request: JobRequest, reservation, upstream_asset_ids: list[str], upstream_inputs: dict[str, tuple[str, ...]]) -> dict[str, object]:
+    runtime = request.app.state.managed_routing_runtime
+    store = request.app.state.canvas_store
+    model = runtime.logical_model(domain_request.model_id)
+    token = str(reservation.job["submission_token"])
+    if model is None or not model.enabled or model.archived_at is not None:
+        store.mark_submission_rejected(str(reservation.job["id"]), token, "MODEL_UNAVAILABLE")
+        raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
+    input_facts: dict[str, tuple[str, ...]] = {"prompt": ("text",)}
+    contract = next((item for item in model.operation_contracts if item.operation is domain_request.operation), None)
+    if contract is not None:
+        ports = {port.port_id: port for port in contract.input_ports}
+        for port_id, values in domain_request.inputs.items():
+            port = ports.get(port_id)
+            if port is not None:
+                input_facts[port_id] = (port.media_type,) * len(values)
+    pools = runtime.pools()
+    candidates = runtime.selector.candidates(
+        model, domain_request.operation, domain_request.params, input_facts,
+        store.list_model_routes(model_id=model.model_id, include_archived=False), pools,
+    )
+    if not candidates:
+        store.mark_submission_rejected(str(reservation.job["id"]), token, "MODEL_UNAVAILABLE")
+        raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
+    upstream_request = JobRequest(
+        domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key,
+        domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs,
+    )
+    had_capacity = False
+    for original in candidates:
+        remaining = tuple(original.pool.keys)
+        while remaining:
+            candidate = RouteCandidate(original.route, replace(original.pool, keys=remaining))
+            lease = None
+            try:
+                async with runtime.coordinator.acquire_credential(str(reservation.job["id"]), context.user.user_id, candidate) as acquired:
+                    lease = acquired
+                    snapshot = _route_snapshot(candidate.route)
+                    store.record_routing_snapshot(
+                        str(reservation.job["id"]), token,
+                        logical_model_id=model.model_id, logical_model_revision=model.revision,
+                        route_id=candidate.route.route_id, route_revision=candidate.route.revision,
+                        pool_revision_digest=original.pool.revision_digest,
+                        key_fingerprint=lease.key_fingerprint, route_snapshot_json=snapshot,
+                    )
+                    adapter = runtime.adapter_factory.build(candidate.route, lease)
+                    upstream = await adapter.submit(context, upstream_request)
+                result_ids = tuple(result.asset_id for result in upstream.state.results)
+                return store.mark_submitted(
+                    str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value,
+                    token, result_ids=result_ids or None,
+                )
+            except ExecutionCapacityExceeded:
+                break
+            except CoordinationUnavailable:
+                break
+            except asyncio.CancelledError:
+                store.mark_submission_unknown(str(reservation.job["id"]), token)
+                raise
+            except Exception as error:
+                had_capacity = True
+                disposition = classify_submission_error(error, _adapter_template(candidate.route, domain_request.operation.value))
+                if isinstance(error, SubmissionError) and error.disposition is SubmissionDisposition.ACCEPTED and error.provider_task_id:
+                    return store.mark_submitted(str(reservation.job["id"]), error.provider_task_id, "queued", token)
+                if disposition in {SubmissionDisposition.NOT_SUBMITTED, SubmissionDisposition.TEMPORARY_UNAVAILABLE} and lease is not None:
+                    remaining = tuple(key for key in remaining if key.key_id != lease.key_id)
+                    continue
+                if disposition is SubmissionDisposition.REJECTED:
+                    store.mark_submission_rejected(str(reservation.job["id"]), token)
+                    raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
+                item = store.mark_submission_unknown(str(reservation.job["id"]), token)
+                return item
+    store.fail_reservation(str(reservation.job["id"]), "TASK_CAPACITY" if not had_capacity else "UPSTREAM_UNAVAILABLE", token)
+    if had_capacity:
+        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True)
+    raise problem(request, "CAPACITY_EXCEEDED", "The generation service is busy.", status=429, retryable=True)
+
+
+@asynccontextmanager
+async def _managed_adapter(request: Request, context, item: Mapping[str, object]):
+    runtime = request.app.state.managed_routing_runtime
+    route = _route_from_snapshot(item.get("route_snapshot_json"))
+    expected = item.get("key_fingerprint")
+    if not isinstance(expected, str) or not expected:
+        raise ValueError("managed credential snapshot is unavailable")
+    pool = runtime.pools().get(route.credential_pool_ref)
+    if not isinstance(pool, CredentialPool):
+        raise CoordinationUnavailable("managed credential pool is unavailable")
+    matches = tuple(key for key in pool.keys if runtime.coordinator.fingerprint_secret(key.secret) == expected)
+    if len(matches) != 1:
+        raise CoordinationUnavailable("managed credential is unavailable")
+    candidate = RouteCandidate(route, replace(pool, keys=matches))
+    async with runtime.coordinator.acquire_credential(str(item["id"]), context.user.user_id, candidate) as lease:
+        if lease.key_fingerprint != expected:
+            raise CoordinationUnavailable("managed credential changed")
+        yield runtime.adapter_factory.build(route, lease)
+
+
+async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
+    if item["status"] in {"succeeded", "failed", "submitting", "submission_unknown"} or not item.get("upstream_job_id"):
+        return item
+    try:
+        if item.get("logical_model_id") is not None:
+            async with _managed_adapter(request, context, item) as adapter:
+                state = await adapter.poll(context, str(item["upstream_job_id"]))
         else:
-            state = await adapter.poll(context, str(item["upstream_job_id"]))
+            adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+            if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+                raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+            poll_with_cookie = getattr(adapter, "poll_with_cookie", None)
+            if callable(poll_with_cookie):
+                state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
+            else:
+                state = await adapter.poll(context, str(item["upstream_job_id"]))
         result_ids = tuple(result.asset_id for result in state.results)
         if state.status.value == "succeeded":
             if not result_ids or len(result_ids) > 15 or any(not _RESULT_ID.fullmatch(result_id) for result_id in result_ids):
@@ -134,6 +291,8 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
         return request.app.state.canvas_store.fail_invalid_upstream_result(
             str(item["id"]), "INVALID_UPSTREAM_RESULT"
         )
+    except DomainError:
+        raise
     except Exception:
         # A transient poll error is not an upstream terminal state.
         return item
@@ -156,9 +315,11 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         _validate_parameters(model, payload.params)
     except (TypeError, ValueError):
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
-    selected_adapter = request.app.state.adapter_registry.generation(model.service_id)
-    reusable_result_services = getattr(selected_adapter, "reusable_result_services", frozenset({model.service_id}))
-    if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
+    runtime = getattr(request.app.state, "managed_routing_runtime", None)
+    managed = runtime is not None and runtime.is_managed(domain_request.model_id)
+    selected_adapter = None if managed else request.app.state.adapter_registry.generation(model.service_id)
+    reusable_result_services = frozenset({model.service_id}) if managed else getattr(selected_adapter, "reusable_result_services", frozenset({model.service_id}))
+    if selected_adapter is not None and getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
     store = request.app.state.canvas_store
     upstream_asset_ids: list[str] = []
@@ -218,11 +379,18 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         provider_id=binding.provider.provider_id if binding is not None else None,
         adapter_type=binding.provider.adapter_type if binding is not None else None,
         submission_json=submission_json if binding is not None else None,
+        logical_model_id=domain_request.model_id if managed else None,
+        logical_model_revision=runtime.logical_model(domain_request.model_id).revision if managed else None,
     )
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
     if not reservation.created:
         return _response(reservation.job, request)
+    if managed:
+        return _response(
+            await _submit_managed(request, context, domain_request, reservation, upstream_asset_ids, upstream_inputs),
+            request,
+        )
     try:
         adapter = selected_adapter
         async with request.app.state.execution_coordinator.acquire(str(reservation.job["id"]), context.user.user_id, str(binding.provider.provider_id if binding is not None else model.service_id), domain_request.model_id):
@@ -281,16 +449,25 @@ async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "JOB_NOT_CANCELLABLE", "A running provider task cannot be cancelled.", status=409)
     if item["status"] != "queued" or not item.get("upstream_job_id"):
         raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
-    adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
-    cancel = getattr(adapter, "cancel", None)
-    if not callable(cancel):
-        raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
     try:
-        await cancel(context, str(item["upstream_job_id"]))
+        if item.get("logical_model_id") is not None:
+            async with _managed_adapter(request, context, item) as adapter:
+                cancel = getattr(adapter, "cancel", None)
+                if not callable(cancel):
+                    raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
+                await cancel(context, str(item["upstream_job_id"]))
+        else:
+            adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
+            cancel = getattr(adapter, "cancel", None)
+            if not callable(cancel):
+                raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
+            await cancel(context, str(item["upstream_job_id"]))
     except PortalUpstreamError as error:
         if not error.retryable:
             raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409) from None
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True) from None
+    except DomainError:
+        raise
     except Exception:
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True) from None
     return _response(store.mark_cancelled(job_id), request)
