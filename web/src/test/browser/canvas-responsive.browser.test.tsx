@@ -297,8 +297,8 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     await expect.element(page.getByLabelText("Chiyun 优先级")).toHaveValue(9);
     const routeUpdates = state.calls.filter((item) => item.method === "PUT" && item.url.endsWith("/routes/nano-banana-chiyun"));
     expect(routeUpdates).toHaveLength(2);
-    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_id: "chiyun-banana", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
-    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_id: "chiyun-banana", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_id: "chiyun-banana", provider_model_name: "banana2-ssvip", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_id: "chiyun-banana", provider_model_name: "banana2-ssvip", priority: 9, max_concurrency: 3 });
 
     await page.getByLabelText("启用 Chiyun").click();
     await expect.element(page.getByLabelText("启用 Chiyun")).toBeChecked();

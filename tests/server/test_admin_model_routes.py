@@ -169,7 +169,7 @@ def test_route_write_rejects_each_tampered_preset_identity_field(tmp_path) -> No
     ).status_code == 201
     cases = {
         "provider_id": "unknown",
-        "provider_model_name": "gemini-2.5-flash-image-preview",
+        "provider_model_name": "gemini-2.5-flash-image",
         "adapter_type": "ark",
         "family": "gpt-image",
     }

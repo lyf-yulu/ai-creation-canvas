@@ -35,7 +35,7 @@ def _chiyun_gemini() -> dict[str, object]:
     return {
         "adapter_type": "chiyun_gemini_images",
         "family": "nano-banana",
-        "provider_model_name": "gemini-2.5-flash-image",
+        "provider_model_name": "banana2-ssvip",
         "contract": {
             "operation": "image.edit",
             "input_ports": [_PROMPT, _REFERENCE],

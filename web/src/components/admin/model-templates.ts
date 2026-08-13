@@ -162,7 +162,7 @@ const callingPreset = (id: string, label: string, providerId: string, providerMo
 };
 
 const CALLING_PRESETS: Record<ModelProfileId, readonly AdminCallingPreset[]> = {
-    banana: [callingPreset("chiyun", "Chiyun", "chiyun-banana", "gemini-2.5-flash-image", "banana", "nano-banana")],
+    banana: [callingPreset("chiyun", "Chiyun", "chiyun-banana", "banana2-ssvip", "banana", "nano-banana")],
     gpt_image2: [callingPreset("chiyun", "Chiyun", "chiyun-gpt-image2", "gpt-image-2", "gpt_image2", "gpt-image")],
     seedream: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedream-5-0-pro-260628", "seedream", "seedream")],
     seedance: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedance-2-5-260628", "seedance", "seedance")],

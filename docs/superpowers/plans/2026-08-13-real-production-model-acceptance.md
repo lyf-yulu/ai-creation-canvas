@@ -196,7 +196,7 @@ Expected: failures because Banana and GPT-Image2 currently share one adapter/pro
 
 - [ ] **Step 3: Define exact code-owned profiles**
 
-Change `_chiyun` into two constructors. Banana uses operation `image.edit`, ports `prompt` and ordered `reference_images`, adapter `chiyun_gemini_images`, model `gemini-2.5-flash-image`, and visible parameters `aspect_ratio` plus `image_size` mapped to Gemini `generationConfig.imageConfig`. GPT-Image2 keeps adapter `chiyun_openai_images`, model `gpt-image-2`, multipart `image[]`, and parameters `size` plus `output_count -> n`.
+Change `_chiyun` into two constructors. Banana uses operation `image.edit`, ports `prompt` and ordered `reference_images`, adapter `chiyun_gemini_images`, Chiyun group model `banana2-ssvip`, and visible parameters `aspect_ratio` plus `image_size` mapped to Gemini `generationConfig.imageConfig`. GPT-Image2 keeps adapter `chiyun_openai_images`, model `gpt-image-2`, multipart `image[]`, and parameters `size` plus `output_count -> n`.
 
 Add `chiyun_gemini_images` to strict adapter-type allowlists and API types. Add these exact origins:
 
@@ -260,7 +260,7 @@ Create a mocked transport test with two reference assets and assert one request:
 
 ```python
 assert request.method == "POST"
-assert request.url.path == "/v1beta/models/gemini-2.5-flash-image:generateContent"
+assert request.url.path == "/v1beta/models/banana2-ssvip:generateContent"
 assert request.headers["authorization"] == "Bearer test-only-secret"
 body = json.loads(request.content)
 parts = body["contents"][0]["parts"]

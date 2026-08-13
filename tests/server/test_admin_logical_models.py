@@ -47,7 +47,7 @@ def route_body(route_id: str = "banana-t8", *, model_id: str = "banana", video: 
         "route_id": route_id,
         "model_id": model_id,
         "provider_id": "ark" if video else "chiyun-banana",
-        "provider_model_name": "doubao-seedance-2-5-260628" if video else "gemini-2.5-flash-image",
+        "provider_model_name": "doubao-seedance-2-5-260628" if video else "banana2-ssvip",
         "adapter_type": "ark" if video else "chiyun_gemini_images",
         "credential_pool_ref": "seedance-official" if video else "t8-gemini",
         "family": "seedance" if video else "nano-banana",

@@ -60,6 +60,7 @@ def test_chiyun_banana_and_gpt_image2_use_separate_protocols_and_provider_ids() 
     gpt = presets[("gpt_image2", "chiyun")]
 
     assert banana.provider_id == "chiyun-banana"
+    assert banana.provider_model_name == "banana2-ssvip"
     assert banana.adapter_type == "chiyun_gemini_images"
     assert banana.family == "nano-banana"
     assert gpt.provider_id == "chiyun-gpt-image2"
@@ -94,7 +95,7 @@ def test_every_internal_route_field_must_match_one_exact_preset() -> None:
     tampered_contract = OperationContract.from_dict(body)
     tampered = (
         replace(route, provider_id="unknown"),
-        replace(route, provider_model_name="gemini-2.5-flash-image-preview"),
+        replace(route, provider_model_name="gemini-2.5-flash-image"),
         replace(route, adapter_type="ark"),
         replace(route, family="gpt-image"),
         replace(route, operation_contracts=(tampered_contract,)),

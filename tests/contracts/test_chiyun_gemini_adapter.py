@@ -25,7 +25,7 @@ def provider() -> ProviderDefinition:
 
 def model() -> GovernedModelDefinition:
     return GovernedModelDefinition(
-        "banana", "chiyun-banana", "gemini-2.5-flash-image", "Banana", "Gemini image edit", ModelModality.IMAGE,
+        "banana", "chiyun-banana", "banana2-ssvip", "Banana", "Gemini image edit", ModelModality.IMAGE,
         (OperationContract(
             ModelOperation.IMAGE_EDIT,
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
@@ -69,7 +69,7 @@ def test_gemini_submits_ordered_inline_images_and_materializes_result(tmp_path: 
     asyncio.run(scenario())
     request = requests[0]
     assert request.method == "POST"
-    assert request.url.path == "/v1beta/models/gemini-2.5-flash-image:generateContent"
+    assert request.url.path == "/v1beta/models/banana2-ssvip:generateContent"
     assert request.headers["authorization"] == "Bearer test-only-secret"
     body = __import__("json").loads(request.content)
     parts = body["contents"][0]["parts"]
