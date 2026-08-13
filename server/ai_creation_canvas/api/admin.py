@@ -19,6 +19,12 @@ class UserPatch(BaseModel):
     enabled: bool
 
 
+class UsageRates(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    video_price_fen: int = Field(ge=0, le=1_000_000_000)
+    image_price_fen: int = Field(ge=0, le=1_000_000_000)
+
+
 class ModelAssignments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     model_ids: list[str] = Field(max_length=128)
@@ -50,6 +56,27 @@ def _safe_user(row: dict[str, object], model_ids: tuple[str, ...]) -> dict[str, 
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+@router.get("/usage")
+async def all_usage(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    return {"users": request.app.state.canvas_store.usage_for_all_users()}
+
+
+@router.get("/usage/rates")
+async def get_usage_rates(request: Request) -> dict[str, int]:
+    _require_admin(request)
+    return request.app.state.canvas_store.usage_rates()
+
+
+@router.put("/usage/rates")
+async def update_usage_rates(body: UsageRates, request: Request) -> dict[str, int]:
+    _require_admin(request)
+    return request.app.state.canvas_store.set_usage_rates(
+        video_price_fen=body.video_price_fen,
+        image_price_fen=body.image_price_fen,
+    )
 
 
 @router.get("/users")

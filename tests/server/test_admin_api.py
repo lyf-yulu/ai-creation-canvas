@@ -43,3 +43,13 @@ def test_admin_can_disable_user_and_revoke_their_session(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["enabled"] is False
     assert user.get("/api/v1/session").status_code == 401
+
+
+def test_only_admin_can_read_and_change_usage_rates(tmp_path):
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, accounts
+    assert user.get("/api/v1/admin/usage").status_code == 404
+    assert user.put("/api/v1/admin/usage/rates", headers=user_headers, json={"video_price_fen": 1, "image_price_fen": 2}).status_code == 404
+    response = admin.put("/api/v1/admin/usage/rates", headers=admin_headers, json={"video_price_fen": 25, "image_price_fen": 120})
+    assert response.status_code == 200
+    assert response.json() == {"video_price_fen": 25, "image_price_fen": 120}

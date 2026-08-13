@@ -6,7 +6,7 @@ import hashlib
 import json
 import secrets
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -62,6 +62,36 @@ def _hash(payload: Submission) -> str:
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def _billing_quantities(
+    operation: object,
+    params: Mapping[str, object],
+    parameter_schema: Mapping[str, object],
+) -> tuple[int, int]:
+    if operation in {"image.generate", "image.edit"}:
+        return 0, 1
+    if operation not in {"video.generate", "video.image_to_video"}:
+        return 0, 0
+    duration = params.get("duration")
+    properties = parameter_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return 0, 0
+    duration_schema = properties.get("duration")
+    if not isinstance(duration_schema, Mapping) or duration_schema.get("type") != "integer":
+        return 0, 0
+    minimum = duration_schema.get("minimum")
+    maximum = duration_schema.get("maximum")
+    if (
+        type(duration) is not int
+        or type(minimum) is not int
+        or type(maximum) is not int
+        or minimum > maximum
+        or duration < minimum
+        or duration > maximum
+    ):
+        return 0, 0
+    return duration, 0
+
+
 def _response(item: dict[str, object], request: Request) -> dict[str, object]:
     body: dict[str, object] = {"id": item["id"], "status": item["status"]}
     if item["status"] == "succeeded":
@@ -111,6 +141,11 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400) from None
     if domain_request.operation not in model.operations:
         raise problem(request, "MODEL_UNAVAILABLE", "The selected model is unavailable.", status=400)
+    video_seconds, image_count = _billing_quantities(
+        domain_request.operation,
+        domain_request.params,
+        model.parameter_schema,
+    )
     selected_adapter = request.app.state.adapter_registry.generation(model.service_id)
     if getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
@@ -132,7 +167,16 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             upstream_asset_ids.append(asset_id)
     if model.requires_asset_kind is not None and not upstream_asset_ids:
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
-    reservation = store.reserve_job(user_id=context.user.user_id, job_id=secrets.token_urlsafe(18), service_id=model.service_id, operation=domain_request.operation.value, idempotency_key=domain_request.idempotency_key, request_hash=_hash(payload))
+    reservation = store.reserve_job(
+        user_id=context.user.user_id,
+        job_id=secrets.token_urlsafe(18),
+        service_id=model.service_id,
+        operation=domain_request.operation.value,
+        idempotency_key=domain_request.idempotency_key,
+        request_hash=_hash(payload),
+        video_seconds=video_seconds,
+        image_count=image_count,
+    )
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
     if not reservation.created:

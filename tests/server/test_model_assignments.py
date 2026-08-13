@@ -22,6 +22,18 @@ class AssignmentAdapter:
         return (
             ModelSpec("visible-model", self.service_id, "可见模型", ("image.generate",), ("text",), {}),
             ModelSpec("hidden-model", self.service_id, "隐藏模型", ("image.generate",), ("text",), {}),
+            ModelSpec(
+                "duration-model",
+                self.service_id,
+                "时长模型",
+                ("video.generate",),
+                ("text",),
+                {
+                    "type": "object",
+                    "properties": {"duration": {"type": "integer", "minimum": 5, "maximum": 5}},
+                    "additionalProperties": False,
+                },
+            ),
         )
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
@@ -33,7 +45,7 @@ class AssignmentAdapter:
         return JobState(upstream_job_id, "queued")
 
 
-def local_clients(tmp_path):
+def local_clients(tmp_path, *, user_model_ids: tuple[str, ...] = ("visible-model",)):
     registry = AdapterRegistry()
     registry.register_generation(AssignmentAdapter())
     settings = Settings(
@@ -45,7 +57,7 @@ def local_clients(tmp_path):
         allowed_origins=(ORIGIN,),
     )
     app = create_app(settings, static_dir=tmp_path / "dist", registry=registry, model_catalog=ModelCatalog(registry))
-    accounts = app.state.local_auth.bootstrap_accounts(("visible-model",))
+    accounts = app.state.local_auth.bootstrap_accounts(user_model_ids)
     admin = TestClient(app, base_url=ORIGIN)
     user = TestClient(app, base_url=ORIGIN)
     admin_login = admin.post("/api/v1/auth/login", json={"username": accounts.admin_username, "password": accounts.admin_password}).json()
@@ -65,14 +77,20 @@ def local_clients(tmp_path):
     return app, accounts, admin, user, admin_headers, user_headers
 
 
-def job_payload(model_id: str) -> dict[str, object]:
+def job_payload(
+    model_id: str,
+    *,
+    operation: str = "image.generate",
+    params: dict[str, object] | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, object]:
     return {
-        "operation": "image.generate",
+        "operation": operation,
         "model_id": model_id,
         "prompt": "test prompt",
-        "params": {},
+        "params": params or {},
         "asset_ids": [],
-        "idempotency_key": f"key-{model_id}",
+        "idempotency_key": idempotency_key or f"key-{model_id}",
     }
 
 
@@ -110,3 +128,38 @@ def test_normal_user_cannot_call_admin_api(tmp_path) -> None:
 
     assert user.get("/api/v1/admin/users").status_code == 404
     assert user.patch("/api/v1/admin/users/anything", headers=user_headers, json={"enabled": False}).status_code == 404
+
+
+def test_video_duration_uses_only_declared_integer_billing_quantity(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(
+        tmp_path, user_model_ids=("visible-model", "duration-model")
+    )
+    del admin, admin_headers
+    assert accounts.user is not None
+
+    charged = user.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        json=job_payload(
+            "duration-model",
+            operation="video.generate",
+            params={"duration": 5},
+            idempotency_key="duration-present",
+        ),
+    )
+    unmetered = user.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        json=job_payload(
+            "duration-model",
+            operation="video.generate",
+            idempotency_key="duration-absent",
+        ),
+    )
+
+    assert charged.status_code == unmetered.status_code == 201
+    charged_job, charged_forbidden = app.state.canvas_store.job_for_owner(charged.json()["id"], accounts.user.user_id)
+    unmetered_job, unmetered_forbidden = app.state.canvas_store.job_for_owner(unmetered.json()["id"], accounts.user.user_id)
+    assert charged_forbidden is unmetered_forbidden is False
+    assert charged_job is not None and charged_job["video_seconds"] == 5
+    assert unmetered_job is not None and unmetered_job["video_seconds"] == 0

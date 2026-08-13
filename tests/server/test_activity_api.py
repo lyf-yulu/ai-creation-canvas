@@ -65,3 +65,40 @@ def test_activity_list_is_capped_at_one_hundred(tmp_path) -> None:
 
     assert response.status_code == 200
     assert len(response.json()["assets"]) == 100
+
+
+def test_usage_lists_only_current_owner_charged_jobs(tmp_path) -> None:
+    store = CanvasStore(tmp_path / "data")
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        static_dir=tmp_path / "missing-static",
+        canvas_store=store,
+    )
+    client = TestClient(app)
+    first = store.reserve_job(
+        user_id="user-a",
+        job_id="job-a",
+        service_id="demo",
+        operation="image.generate",
+        idempotency_key="key-a",
+        request_hash="hash-a",
+        image_count=1,
+    )
+    second = store.reserve_job(
+        user_id="user-b",
+        job_id="job-b",
+        service_id="demo",
+        operation="image.generate",
+        idempotency_key="key-b",
+        request_hash="hash-b",
+        image_count=1,
+    )
+    store.mark_submitted("job-a", "upstream-a", "succeeded", str(first.job["submission_token"]))
+    store.mark_submitted("job-b", "upstream-b", "succeeded", str(second.job["submission_token"]))
+
+    response = client.get("/api/v1/usage", headers=identity("user-a"))
+
+    assert response.status_code == 200
+    assert len(response.json()["jobs"]) == 1
+    assert "request_hash" not in response.text
+    assert "user-b" not in response.text

@@ -28,6 +28,7 @@ from ai_creation_canvas.api.results import router as results_router
 from ai_creation_canvas.api.auth import router as auth_router
 from ai_creation_canvas.api.activity import router as activity_router
 from ai_creation_canvas.api.admin import router as admin_router
+from ai_creation_canvas.api.usage import router as usage_router
 from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
@@ -223,6 +224,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.include_router(auth_router)
     app.include_router(activity_router)
     app.include_router(admin_router)
+    app.include_router(usage_router)
     app.include_router(projects_router)
     app.include_router(session_router)
     app.include_router(models_router)
