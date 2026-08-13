@@ -85,10 +85,10 @@ function installAdminApi({ startEmpty = false } = {}) {
             return json({
                 pools: [
                     {
-                        pool_id: "banana-official",
-                        provider_id: "google-images",
+                        pool_id: "banana-chiyun",
+                        provider_id: "chiyun",
                         adapter_type: "chiyun_openai_images",
-                        group: "official",
+                        group: "banana",
                         allowed_families: ["nano-banana"],
                         revision_digest: "a".repeat(64),
                         key_count: 2,
@@ -274,51 +274,37 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     await expect.element(page.getByLabelText("模型显示名")).toHaveValue("Nano Banana Offline");
     expect(state.calls.find((item) => item.method === "PUT" && item.url.endsWith("/logical-models/nano-banana"))?.body).toMatchObject({ revision: 1, display_name: "Nano Banana Offline" });
 
-    const addRoute = async (routeId: string, provider: string, pool: string) => {
-        await page.getByRole("button", { name: "新建线路" }).click();
-        await page.getByLabelText("线路模板").selectOptions("banana");
-        await page.getByLabelText("线路 ID").fill(routeId);
-        await page.getByLabelText("Provider").selectOptions(provider);
-        await page.getByLabelText("供应商模型名").fill("gemini-image-offline");
-        await page.getByLabelText("凭据池", { exact: true }).selectOptions(pool);
-        await page.getByRole("button", { name: "保存线路" }).click();
-        await expect.element(page.getByRole("button", { name: new RegExp(routeId) })).toBeVisible();
+    const addRoute = async (provider: "Chiyun" | "T8Star", pool: string) => {
+        await page.getByLabelText(`${provider} 凭据池`).selectOptions(pool);
+        await page.getByRole("button", { name: `保存 ${provider} 设置` }).click();
+        await expect.element(page.getByLabelText(`启用 ${provider}`)).toBeVisible();
     };
-    await addRoute("official-route", "google-images", "banana-official");
-    await addRoute("gemini-route", "t8star", "banana-t8-gemini");
-    expect(state.routes().map((route) => route.credential_pool_ref)).toEqual(["banana-official", "banana-t8-gemini"]);
+    await addRoute("Chiyun", "banana-chiyun");
+    await addRoute("T8Star", "banana-t8-gemini");
+    expect(state.routes().map((route) => route.credential_pool_ref)).toEqual(["banana-chiyun", "banana-t8-gemini"]);
     expect(document.body.textContent).toContain("可用 2");
     expect(document.body.textContent).not.toMatch(/offline-fixture-secret|api key|base url/i);
+    for (const label of ["线路 ID", "线路模板", "Provider", "模型族", "供应商模型名"]) await expect.element(page.getByText(label, { exact: true })).not.toBeInTheDocument();
 
-    await page.getByRole("button", { name: /official-route/ }).click();
-    await page.getByLabelText("供应商模型名").fill("gemini-image-offline-v2");
-    await page.getByLabelText("优先级").fill("9");
-    await page.getByLabelText("最大并发").fill("3");
-    await page.getByRole("button", { name: "保存线路" }).click();
+    await page.getByLabelText("Chiyun 优先级").fill("9");
+    await page.getByLabelText("Chiyun 最大并发").fill("3");
+    await page.getByRole("button", { name: "保存 Chiyun 设置" }).click();
     await expect.element(page.getByRole("alert")).toHaveTextContent("配置已变化，请重新加载");
     await page.getByRole("button", { name: "重新加载" }).click();
-    await expect.element(page.getByLabelText("优先级")).toHaveValue(100);
-    await page.getByLabelText("供应商模型名").fill("gemini-image-offline-v2");
-    await page.getByLabelText("优先级").fill("9");
-    await page.getByLabelText("最大并发").fill("3");
-    await page.getByRole("button", { name: "保存线路" }).click();
-    await expect.element(page.getByLabelText("优先级")).toHaveValue(9);
-    const routeUpdates = state.calls.filter((item) => item.method === "PUT" && item.url.endsWith("/routes/official-route"));
+    await expect.element(page.getByLabelText("Chiyun 优先级")).toHaveValue(100);
+    await page.getByLabelText("Chiyun 优先级").fill("9");
+    await page.getByLabelText("Chiyun 最大并发").fill("3");
+    await page.getByRole("button", { name: "保存 Chiyun 设置" }).click();
+    await expect.element(page.getByLabelText("Chiyun 优先级")).toHaveValue(9);
+    const routeUpdates = state.calls.filter((item) => item.method === "PUT" && item.url.endsWith("/routes/nano-banana-chiyun"));
     expect(routeUpdates).toHaveLength(2);
-    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_model_name: "gemini-image-offline-v2", priority: 9, max_concurrency: 3 });
-    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_model_name: "gemini-image-offline-v2", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_id: "chiyun", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_id: "chiyun", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
 
-    await page.getByRole("button", { name: "启用" }).last().click();
-    await expect.element(page.getByRole("button", { name: "停用" }).last()).toBeVisible();
-    await page.getByRole("button", { name: "停用" }).last().click();
-    await expect.element(page.getByRole("button", { name: "启用" }).last()).toBeVisible();
-    await page.getByRole("button", { name: "归档" }).last().click();
-    await expect.element(page.getByRole("button", { name: /official-route/ })).not.toBeInTheDocument();
-    await page.getByRole("checkbox", { name: "显示已归档" }).click();
-    await expect.element(page.getByRole("button", { name: /official-route/ })).toBeVisible();
-    await page.getByRole("button", { name: /official-route/ }).click();
-    await page.getByRole("button", { name: "恢复" }).last().click();
-    await expect.element(page.getByRole("button", { name: "启用" }).last()).toBeVisible();
+    await page.getByLabelText("启用 Chiyun").click();
+    await expect.element(page.getByLabelText("启用 Chiyun")).toBeChecked();
+    await page.getByLabelText("启用 Chiyun").click();
+    await expect.element(page.getByLabelText("启用 Chiyun")).not.toBeChecked();
 
     await page.getByLabelText("选择账号").selectOptions("ordinary-user");
     await page.getByLabelText("Nano Banana Offline").click();
@@ -327,7 +313,8 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     expect(state.assignment()).toEqual(["nano-banana"]);
 
     await page.getByRole("button", { name: "归档" }).first().click();
-    await expect.element(page.getByRole("list", { name: "逻辑模型列表" })).toHaveTextContent("已归档");
+    await expect.element(page.getByRole("list", { name: "逻辑模型列表" })).not.toHaveTextContent("Nano Banana Offline");
+    await page.getByRole("checkbox", { name: "显示已归档" }).click();
     await expect.element(page.getByText("Nano Banana Offline", { exact: true }).first()).toBeVisible();
     await page.getByText("Nano Banana Offline", { exact: true }).first().click();
     await page.getByRole("button", { name: "恢复" }).first().click();
@@ -380,18 +367,17 @@ it.each([415, 240])("keeps every administrator action reachable without page ove
     await expect.element(page.getByRole("heading", { name: "模型与调用线路" })).toBeVisible();
     await frame();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
-    for (const name of ["保存模型", "新建线路", "保存派发", "归档", "删除"]) {
+    for (const name of ["保存模型", "保存 Chiyun 设置", "保存派发", "归档", "删除"]) {
         const button = page.getByRole("button", { name }).first();
         await expect.element(button).toBeVisible();
         const rect = (await button.element()).getBoundingClientRect();
         expect(rect.left).toBeGreaterThanOrEqual(0);
         expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
     }
-    await page.getByRole("button", { name: "新建线路" }).click();
     await frame();
-    await expect.element(page.getByRole("button", { name: "保存线路" })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "保存 Chiyun 设置" })).toBeVisible();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
-    const saveRect = (await page.getByRole("button", { name: "保存线路" }).element()).getBoundingClientRect();
+    const saveRect = (await page.getByRole("button", { name: "保存 Chiyun 设置" }).element()).getBoundingClientRect();
     expect(saveRect.left).toBeGreaterThanOrEqual(0);
     expect(saveRect.right).toBeLessThanOrEqual(window.innerWidth);
 });

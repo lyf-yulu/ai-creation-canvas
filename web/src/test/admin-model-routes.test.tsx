@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { ModelRouteEditor } from "@/components/admin/model-route-editor";
+import { ModelCallSettings } from "@/components/admin/model-call-settings";
+import { callingPresetsForModel, routeMatchesCallingPreset } from "@/components/admin/model-templates";
 import type { AdminCredentialPool, AdminLogicalModel, AdminModelRoute } from "@/api/admin";
 
 afterEach(() => {
@@ -9,43 +10,55 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
-const model: AdminLogicalModel = {
-    model_id: "banana",
-    display_name: "Nano Banana",
-    introduction: "Edit",
-    modality: "image",
+const bananaContract = {
+    operation: "image.edit" as const,
+    input_ports: [
+        { port_id: "prompt", media_type: "text" as const, min_items: 1, max_items: 1 },
+        { port_id: "reference_images", media_type: "image" as const, min_items: 1, max_items: 10 },
+    ],
+    output_media_type: "image" as const,
+    parameter_schema: {
+        type: "object",
+        "x-aicc-profile": "banana",
+        properties: {
+            size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" },
+            output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },
+        },
+        required: ["size", "output_count"],
+        additionalProperties: false,
+    },
+    parameter_mappings: { size: "size", output_count: "n" },
+};
+
+const model = (profile: "banana" | "gpt_image2" | "seedream" | "seedance" = "banana"): AdminLogicalModel => ({
+    model_id: profile === "gpt_image2" ? "gpt-image2" : profile,
+    display_name: profile,
+    introduction: "managed model",
+    modality: profile === "seedance" ? "video" : "image",
     operation_contracts: [
         {
-            operation: "image.edit",
-            input_ports: [
-                { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
-                { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 },
-            ],
-            output_media_type: "image",
-            parameter_schema: {
-                type: "object",
-                "x-aicc-profile": "banana",
-                properties: { size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" }, output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 } },
-                required: ["size", "output_count"],
-                additionalProperties: false,
-            },
-            parameter_mappings: { size: "size", output_count: "n" },
+            ...bananaContract,
+            operation: profile === "seedance" ? "video.generate" : "image.edit",
+            output_media_type: profile === "seedance" ? "video" : "image",
+            parameter_schema: { ...bananaContract.parameter_schema, "x-aicc-profile": profile, properties: profile === "banana" || profile === "gpt_image2" ? bananaContract.parameter_schema.properties : {} },
+            parameter_mappings: profile === "banana" || profile === "gpt_image2" ? bananaContract.parameter_mappings : {},
         },
     ],
     enabled: true,
     archived_at: null,
     revision: 1,
-};
+});
+
 const pools: AdminCredentialPool[] = [
     {
-        pool_id: "t8-gemini",
-        provider_id: "t8star",
+        pool_id: "chiyun-banana",
+        provider_id: "chiyun",
         adapter_type: "chiyun_openai_images",
-        group: "gemini",
+        group: "banana",
         allowed_families: ["nano-banana"],
         revision_digest: "a".repeat(64),
         key_count: 2,
-        total_capacity: 4,
+        total_capacity: 2,
         capacity_status: "available",
         available_count: 2,
         busy_count: 0,
@@ -53,11 +66,11 @@ const pools: AdminCredentialPool[] = [
         circuit_open_count: null,
     },
     {
-        pool_id: "t8-cc",
+        pool_id: "t8-gemini",
         provider_id: "t8star",
         adapter_type: "chiyun_openai_images",
-        group: "cc",
-        allowed_families: ["claude"],
+        group: "gemini",
+        allowed_families: ["nano-banana"],
         revision_digest: "b".repeat(64),
         key_count: 1,
         total_capacity: 1,
@@ -68,17 +81,17 @@ const pools: AdminCredentialPool[] = [
         circuit_open_count: null,
     },
     {
-        pool_id: "ark-image",
-        provider_id: "ark",
-        adapter_type: "ark",
-        group: "official",
-        allowed_families: ["seedream"],
+        pool_id: "t8-cc",
+        provider_id: "t8star",
+        adapter_type: "chiyun_openai_images",
+        group: "cc",
+        allowed_families: ["claude"],
         revision_digest: "c".repeat(64),
         key_count: 1,
-        total_capacity: 2,
-        capacity_status: "unavailable",
-        available_count: null,
-        busy_count: null,
+        total_capacity: 1,
+        capacity_status: "available",
+        available_count: 1,
+        busy_count: 0,
         circuit_status: "unsupported",
         circuit_open_count: null,
     },
@@ -98,12 +111,27 @@ const pools: AdminCredentialPool[] = [
         circuit_open_count: null,
     },
     {
+        pool_id: "ark-image",
+        provider_id: "ark",
+        adapter_type: "ark",
+        group: "official",
+        allowed_families: ["seedream"],
+        revision_digest: "e".repeat(64),
+        key_count: 1,
+        total_capacity: 1,
+        capacity_status: "available",
+        available_count: 1,
+        busy_count: 0,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
+    {
         pool_id: "ark-video",
         provider_id: "ark",
         adapter_type: "ark",
         group: "official",
         allowed_families: ["seedance"],
-        revision_digest: "e".repeat(64),
+        revision_digest: "f".repeat(64),
         key_count: 1,
         total_capacity: 1,
         capacity_status: "available",
@@ -114,201 +142,95 @@ const pools: AdminCredentialPool[] = [
     },
 ];
 
-it("keeps Banana routes inside Chiyun-compatible nano-banana pools", () => {
-    render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板").querySelectorAll("option")).toHaveLength(1);
-    expect(screen.getByLabelText("线路模板")).toHaveTextContent("Banana");
-    expect(screen.getByLabelText("Provider")).toHaveTextContent("t8star");
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent(/ark|chiyun/);
-    expect(screen.getByLabelText("模型族")).toHaveTextContent("nano-banana");
+const renderSettings = (logicalModel = model(), routes: AdminModelRoute[] = [], save = vi.fn()) => render(<ModelCallSettings model={logicalModel} routes={routes} pools={pools} onCreate={save} onUpdate={save} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
+
+it("shows only the trusted calling cards for each logical model", () => {
+    const view = renderSettings();
+    expect(screen.getByRole("heading", { name: "Chiyun" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "T8Star" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Ark 官方" })).toBeNull();
+
+    view.rerender(<ModelCallSettings model={model("gpt_image2")} routes={[]} pools={pools} onCreate={vi.fn()} onUpdate={vi.fn()} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Chiyun" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "T8Star" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Ark 官方" })).toBeNull();
+
+    view.rerender(<ModelCallSettings model={model("seedream")} routes={[]} pools={pools} onCreate={vi.fn()} onUpdate={vi.fn()} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Ark 官方" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Chiyun" })).toBeNull();
+
+    view.rerender(<ModelCallSettings model={model("seedance")} routes={[]} pools={pools} onCreate={vi.fn()} onUpdate={vi.fn()} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "Ark 官方" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "T8Star" })).toBeNull();
 });
 
-it("maps Seedream, GPT-Image2 and Seedance to only their compatible provider pools", () => {
-    const seedream = { ...model, model_id: "seedream", operation_contracts: [{ ...model.operation_contracts![0], parameter_schema: { type: "object", "x-aicc-profile": "seedream", properties: {}, additionalProperties: false }, parameter_mappings: {} }] };
-    const view = render(<ModelRouteEditor model={seedream} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveTextContent("Seedream · Ark 官方");
-    expect(screen.getByLabelText("Provider")).toHaveTextContent("ark");
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent(/t8star|chiyun/);
-
-    const gpt = { ...model, model_id: "gpt-image2", operation_contracts: [{ ...model.operation_contracts![0], parameter_schema: { ...model.operation_contracts![0].parameter_schema, "x-aicc-profile": "gpt_image2" } }] };
-    view.rerender(<ModelRouteEditor model={gpt} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveTextContent("GPT-Image2 · Chiyun");
-    expect(screen.getByLabelText("Provider")).toHaveTextContent("chiyun");
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent(/t8star|ark/);
-
-    const seedance: AdminLogicalModel = {
-        ...model,
-        model_id: "seedance",
-        modality: "video",
-        operation_contracts: [
-            {
-                operation: "video.generate",
-                input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }],
-                output_media_type: "video",
-                parameter_schema: { type: "object", "x-aicc-profile": "seedance", properties: {}, additionalProperties: false },
-                parameter_mappings: {},
-            },
-        ],
-    };
-    view.rerender(<ModelRouteEditor model={seedance} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveTextContent("Seedance · Ark 官方");
-    expect(screen.getByLabelText("Provider")).toHaveTextContent("ark");
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent(/t8star|chiyun/);
+it("keeps route identity and contracts out of editable controls", () => {
+    const { container } = renderSettings();
+    for (const label of ["线路 ID", "线路模板", "Provider", "模型族", "供应商模型名"]) {
+        expect(screen.queryByLabelText(label)).toBeNull();
+        expect(container).not.toHaveTextContent(label);
+    }
+    expect(container).not.toHaveTextContent(/api key|base url|fixture-secret|凭据引用/i);
 });
 
-it("filters pools by exact provider and family and clears an invalid selection", () => {
-    render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("线路模板"), { target: { value: "banana" } });
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
-    const select = screen.getByLabelText("凭据池");
-    expect(select).toHaveTextContent("t8-gemini");
-    expect(select).not.toHaveTextContent("t8-cc");
-    fireEvent.change(select, { target: { value: "t8-gemini" } });
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "ark" } });
-    expect(select).toHaveValue("");
+it("offers only pools that exactly match each preset provider, adapter and family", () => {
+    renderSettings();
+    expect(screen.getByLabelText("Chiyun 凭据池")).toHaveTextContent("chiyun-banana");
+    expect(screen.getByLabelText("Chiyun 凭据池")).not.toHaveTextContent(/t8-gemini|t8-cc/);
+    expect(screen.getByLabelText("T8Star 凭据池")).toHaveTextContent("t8-gemini");
+    expect(screen.getByLabelText("T8Star 凭据池")).not.toHaveTextContent(/chiyun-banana|t8-cc/);
 });
 
-it("hides incompatible providers and explains why an incomplete route cannot be saved", () => {
-    const videoModel: AdminLogicalModel = {
-        ...model,
-        model_id: "seedance",
-        modality: "video",
-        operation_contracts: [
-            {
-                operation: "video.generate",
-                input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }],
-                output_media_type: "video",
-                parameter_schema: { type: "object", properties: {}, additionalProperties: false },
-                parameter_mappings: {},
-            },
-        ],
-    };
-    render(<ModelRouteEditor model={videoModel} route={null} pools={pools.filter((pool) => pool.pool_id !== "ark-video")} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent("t8star");
-    expect(screen.getByLabelText("Provider")).not.toHaveTextContent("ark");
-    expect(screen.getByRole("alert")).toHaveTextContent("尚未配置兼容的视频凭据池");
-    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
+it("saves only administrator choices while compiling trusted preset identity", async () => {
+    const save = vi.fn().mockResolvedValue({ route_id: "banana-chiyun", model_id: "banana", enabled: true, archived_at: null, revision: 1 });
+    renderSettings(model(), [], save);
+    fireEvent.change(screen.getByLabelText("Chiyun 凭据池"), { target: { value: "chiyun-banana" } });
+    fireEvent.change(screen.getByLabelText("Chiyun 优先级"), { target: { value: "9" } });
+    fireEvent.change(screen.getByLabelText("Chiyun 最大并发"), { target: { value: "3" } });
+    fireEvent.click(screen.getByLabelText("启用 Chiyun"));
+    fireEvent.click(screen.getByRole("button", { name: "保存 Chiyun 设置" }));
+
+    expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({
+            route_id: "banana-chiyun",
+            model_id: "banana",
+            provider_id: "chiyun",
+            provider_model_name: "gemini-2.5-flash-image",
+            adapter_type: "chiyun_openai_images",
+            family: "nano-banana",
+            credential_pool_ref: "chiyun-banana",
+            priority: 9,
+            max_concurrency: 3,
+            enabled: true,
+        }),
+    );
+    expect(save.mock.calls[0][0].operation_contracts).toEqual([bananaContract]);
 });
 
-it("keeps save disabled and lists missing required route fields", () => {
-    render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent("线路 ID、Provider、供应商模型名、凭据池");
-});
-
-it("locks the capability family to the trusted route template so cc cannot be selected", () => {
-    render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveTextContent("Banana · Chiyun 兼容");
-    expect(screen.getByLabelText("线路模板")).not.toHaveTextContent("Ark");
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
-    expect(screen.getByLabelText("模型族")).toHaveTextContent("nano-banana");
-    expect(screen.getByLabelText("模型族").tagName).not.toBe("INPUT");
-    expect(screen.getByLabelText("凭据池")).not.toHaveTextContent("t8-cc");
-});
-
-it("renders safe pool counts and never exposes deployment credentials", () => {
-    const { container } = render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByText(/2 把凭据/)).toBeVisible();
-    expect(screen.getByText(/可用 2/)).toBeVisible();
-    expect(container).not.toHaveTextContent(/fixture-secret|key-1|api key|base url|凭据引用/i);
-    expect(container.querySelector('[name="api_key"]')).toBeNull();
-});
-
-it("preserves semantically equal parameter rules when the server returns JSON keys in another order", () => {
-    const reordered: AdminLogicalModel = {
-        ...model,
-        operation_contracts: [
-            {
-                ...model.operation_contracts![0],
-                parameter_schema: {
-                    type: "object",
-                    properties: {
-                        output_count: { default: 1, maximum: 4, minimum: 1, type: "integer" },
-                        size: { default: "auto", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], type: "string" },
-                    },
-                    required: ["size", "output_count"],
-                    additionalProperties: false,
-                },
-            },
-        ],
-    };
-    const save = vi.fn().mockResolvedValue({ route_id: "ordered", model_id: "banana", enabled: false, archived_at: null, revision: 1 });
-    render(<ModelRouteEditor model={reordered} route={null} pools={pools} onSave={save} onSaved={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("线路 ID"), { target: { value: "ordered" } });
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
-    fireEvent.change(screen.getByLabelText("供应商模型名"), { target: { value: "banana" } });
-    fireEvent.change(screen.getByLabelText("凭据池"), { target: { value: "t8-gemini" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
-
-    const contract = save.mock.calls[0][0].operation_contracts[0];
-    expect(Object.keys(contract.parameter_schema.properties)).toEqual(["size", "output_count"]);
-    expect(contract.parameter_mappings).toEqual({ size: "size", output_count: "n" });
-});
-
-it("makes a mismatched historical family visibly read-only instead of submitting a misleading template", () => {
-    const legacy = {
-        route_id: "legacy-cc",
+it("reports duplicate routes for a preset instead of choosing one silently", () => {
+    const routes: AdminModelRoute[] = [1, 2].map((revision) => ({
+        route_id: `banana-chiyun-${revision}`,
         model_id: "banana",
-        provider_id: "t8star",
-        provider_model_name: "legacy",
-        adapter_type: "chiyun_openai_images" as const,
-        credential_pool_ref: "t8-cc",
-        family: "cc",
-        operation_contracts: model.operation_contracts,
-        priority: 1,
-        max_concurrency: 1,
-        enabled: false,
-        archived_at: null,
-        revision: 1,
-    };
-    render(<ModelRouteEditor model={model} route={legacy} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("模型族")).toHaveTextContent("cc");
-    expect(screen.getByRole("alert")).toHaveTextContent("只读");
-    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
-});
-
-it("keeps a cross-model historical route read-only and restores a matching route identity", () => {
-    const arkContract = { ...model.operation_contracts![0], parameter_schema: { type: "object", properties: {}, additionalProperties: false }, parameter_mappings: {} };
-    const ark = {
-        route_id: "ark-edit",
-        model_id: "banana",
-        provider_id: "ark",
-        provider_model_name: "seedream",
-        adapter_type: "ark" as const,
-        credential_pool_ref: "ark-image",
-        family: "seedream",
-        operation_contracts: [arkContract],
-        priority: 1,
-        max_concurrency: 1,
-        enabled: false,
-        archived_at: null,
-        revision: 2,
-    };
-    const { rerender } = render(<ModelRouteEditor model={model} route={ark} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveValue("banana");
-    expect(screen.getByLabelText("线路模板")).toBeDisabled();
-    expect(screen.getByLabelText("模型族")).toHaveTextContent("seedream");
-    expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("只读");
-
-    const chiyun = {
-        ...ark,
-        route_id: "t8-edit",
-        provider_id: "t8star",
-        provider_model_name: "banana",
-        adapter_type: "chiyun_openai_images" as const,
-        credential_pool_ref: "t8-gemini",
+        provider_id: "chiyun",
+        provider_model_name: "gemini-2.5-flash-image",
+        adapter_type: "chiyun_openai_images",
+        credential_pool_ref: "chiyun-banana",
         family: "nano-banana",
-        operation_contracts: model.operation_contracts,
-    };
-    rerender(<ModelRouteEditor model={model} route={chiyun} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
-    expect(screen.getByLabelText("线路模板")).toHaveValue("banana");
-    expect(screen.getByLabelText("线路模板")).toBeDisabled();
-    expect(screen.getByLabelText("模型族")).toHaveTextContent("nano-banana");
-    expect(screen.getByRole("button", { name: "保存线路" })).toBeEnabled();
+        operation_contracts: [bananaContract],
+        priority: 1,
+        max_concurrency: 1,
+        enabled: false,
+        archived_at: null,
+        revision,
+    }));
+    renderSettings(model(), routes);
+    expect(screen.getByRole("alert")).toHaveTextContent("发现 2 条匹配的 Chiyun 线路");
+    expect(screen.queryByLabelText("Chiyun 凭据池")).toBeNull();
+    const preset = callingPresetsForModel(model()).find((item) => item.id === "chiyun")!;
+    expect(routes.filter((route) => routeMatchesCallingPreset(route, preset))).toHaveLength(2);
 });
 
-it("does not publish a pending route save after unmount", async () => {
+it("does not publish a pending preset save after unmount", async () => {
     let resolveSave!: (value: AdminModelRoute) => void;
     const saved = vi.fn();
     const save = vi.fn(
@@ -317,16 +239,12 @@ it("does not publish a pending route save after unmount", async () => {
                 resolveSave = resolve;
             }),
     );
-    const { unmount } = render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={save} onSaved={saved} />);
-    fireEvent.change(screen.getByLabelText("线路模板"), { target: { value: "banana" } });
-    fireEvent.change(screen.getByLabelText("线路 ID"), { target: { value: "pending" } });
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
-    fireEvent.change(screen.getByLabelText("供应商模型名"), { target: { value: "banana" } });
-    fireEvent.change(screen.getByLabelText("凭据池"), { target: { value: "t8-gemini" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
+    const view = render(<ModelCallSettings model={model()} routes={[]} pools={pools} onCreate={save} onUpdate={save} onLifecycle={vi.fn()} onSaved={saved} />);
+    fireEvent.change(screen.getByLabelText("Chiyun 凭据池"), { target: { value: "chiyun-banana" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存 Chiyun 设置" }));
     expect(save).toHaveBeenCalledTimes(1);
-    unmount();
-    resolveSave({ route_id: "pending", model_id: "banana", enabled: false, archived_at: null, revision: 1 });
+    view.unmount();
+    resolveSave({ route_id: "banana-chiyun", model_id: "banana", enabled: false, archived_at: null, revision: 1 });
     await Promise.resolve();
     expect(saved).not.toHaveBeenCalled();
 });

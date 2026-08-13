@@ -47,6 +47,17 @@ export type AdminTemplate = {
     contract: AdminOperationContract;
 };
 
+export type AdminCallingPreset = {
+    id: string;
+    label: string;
+    providerId: string;
+    providerModelName: string;
+    adapterType: AdminTemplate["adapter_type"];
+    family: string;
+    contract: AdminOperationContract;
+    template: AdminTemplate;
+};
+
 export const CAPABILITY_TEMPLATES = [
     { id: "multi_image" as const, label: "多参生图" },
     { id: "multi_video" as const, label: "多参生视频" },
@@ -142,6 +153,28 @@ export const templateForModel = (model: AdminLogicalModel | null): AdminTemplate
 
 export const routeTemplatesForModel = (model: AdminLogicalModel) => [templateForModel(model)];
 
+const template = (id: ModelProfileId) => ADMIN_MODEL_TEMPLATES.find((item) => item.id === id)!;
+const callingPreset = (id: string, label: string, providerId: string, providerModelName: string, templateId: ModelProfileId, family: string): AdminCallingPreset => {
+    const trustedTemplate = template(templateId);
+    return { id, label, providerId, providerModelName, adapterType: trustedTemplate.adapter_type, family, contract: trustedTemplate.contract, template: trustedTemplate };
+};
+
+const CALLING_PRESETS: Record<ModelProfileId, readonly AdminCallingPreset[]> = {
+    banana: [callingPreset("chiyun", "Chiyun", "chiyun", "gemini-2.5-flash-image", "banana", "nano-banana"), callingPreset("t8star", "T8Star", "t8star", "gemini-2.5-flash-image", "banana", "nano-banana")],
+    gpt_image2: [callingPreset("chiyun", "Chiyun", "chiyun", "gpt-image-2", "gpt_image2", "gpt-image")],
+    seedream: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedream-5-0-pro-260628", "seedream", "seedream")],
+    seedance: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedance-2-5-260628", "seedance", "seedance")],
+};
+
+export const callingPresetsForModel = (model: AdminLogicalModel): readonly AdminCallingPreset[] => CALLING_PRESETS[templateForModel(model).id];
+
+export const routeMatchesCallingPreset = (route: { provider_id?: string; provider_model_name?: string; adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] }, preset: AdminCallingPreset) =>
+    route.provider_id === preset.providerId &&
+    route.provider_model_name === preset.providerModelName &&
+    route.adapter_type === preset.adapterType &&
+    route.family === preset.family &&
+    route.operation_contracts?.some((contract) => contract.operation === preset.contract.operation) === true;
+
 export const templateForRoute = (route: { adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] } | null) => {
     if (!route) return undefined;
     if (route.adapter_type === "ark" && route.operation_contracts?.[0]?.operation === "video.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedance");
@@ -182,7 +215,7 @@ export const routeContractForModel = (template: AdminTemplate, model: AdminLogic
     return {
         ...template.contract,
         input_ports,
-        parameter_schema: objectSchema(properties, required),
+        parameter_schema: objectSchema(properties, required, template.id),
         parameter_mappings: Object.fromEntries(Object.entries(template.contract.parameter_mappings).filter(([name]) => name in properties)),
     };
 };
