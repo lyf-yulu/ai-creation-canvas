@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,14 +24,26 @@ from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from scripts.acceptance_real_media import reference_png
 from tests.server.test_route_key_coordination import ScriptRedis
 
 
 ORIGIN = "http://127.0.0.1:46108"
 PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"
-PNG = b"\x89PNG\r\n\x1a\n" + b"offline-model-routing-result" + PNG_END
+PNG = reference_png()
 REFERENCE_ONE = b"\x89PNG\r\n\x1a\n" + b"offline-reference-one" + PNG_END
 REFERENCE_TWO = b"\x89PNG\r\n\x1a\n" + b"offline-reference-two" + PNG_END
+
+
+def assert_decodable_png(content: bytes) -> None:
+    """Assert the provider fixture fulfils the image result wire contract."""
+    assert content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert content[12:16] == b"IHDR"
+    width, height = struct.unpack(">II", content[16:24])
+    assert width > 0 and height > 0
+    assert (width, height) == (64, 64)
+    assert b"IDAT" in content
+    assert content.endswith(PNG_END)
 
 
 def image_contract() -> dict[str, object]:
@@ -302,10 +315,16 @@ def test_model_centric_offline_route_rotation_idempotency_and_owner_isolation(tm
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     assert other.get(f"/api/v1/jobs/{job_id}").status_code == 404
     assert other.get(f"/api/v1/results/{job_id}").status_code == 404
-    assert user.head(f"/api/v1/results/{job_id}").status_code == 200
+    head = user.head(f"/api/v1/results/{job_id}")
+    assert head.status_code == 200
+    assert head.headers["content-type"] == "image/png"
     ranged = user.get(f"/api/v1/results/{job_id}", headers={"Range": "bytes=0-7"})
     assert ranged.status_code == 206 and ranged.content == PNG[:8]
-    assert user.get(f"/api/v1/results/{job_id}").content == PNG
+    full_result = user.get(f"/api/v1/results/{job_id}")
+    assert full_result.status_code == 200
+    assert full_result.headers["content-type"] == "image/png"
+    assert full_result.content == PNG
+    assert_decodable_png(full_result.content)
 
     revoked = admin.put(
         f"/api/v1/admin/users/{environment.accounts.user.user_id}/models",

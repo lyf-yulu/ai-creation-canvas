@@ -17,6 +17,13 @@ type Bounds = Pick<DOMRect, "bottom" | "left" | "right" | "top">;
 
 let root: Root;
 
+const offlineResultUrl = "/api/v1/results/fixture-result-job/0";
+const offlineResultPng = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATUlEQVR42u3PQQkAAAgEsCtp/yheBN/CYAWW7PwmICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHAp64BBPFtd4VMAAAAASUVORK5CYII=";
+
+function pngBytes(encoded: string) {
+    return Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+}
+
 function bounds(selector: string): Bounds {
     const element = document.querySelector(selector);
     expect(element, `missing layout element: ${selector}`).not.toBeNull();
@@ -44,7 +51,11 @@ beforeEach(async () => {
     });
     vi.stubGlobal(
         "fetch",
-        vi.fn(async () => new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } })),
+        vi.fn(async (input: RequestInfo | URL) => {
+            const path = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+            if (path === offlineResultUrl) return new Response(pngBytes(offlineResultPng), { headers: { "content-type": "image/png" } });
+            return new Response(JSON.stringify({ models: [] }), { headers: { "content-type": "application/json" } });
+        }),
     );
     document.body.innerHTML = '<div id="responsive-test-root"></div>';
     root = createRoot(document.getElementById("responsive-test-root")!);
@@ -167,7 +178,11 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     ];
     vi.stubGlobal(
         "fetch",
-        vi.fn(async () => new Response(JSON.stringify({ models }), { headers: { "content-type": "application/json" } })),
+        vi.fn(async (input: RequestInfo | URL) => {
+            const path = typeof input === "string" ? input : input instanceof URL ? input.pathname : input.url;
+            if (path === offlineResultUrl) return new Response(pngBytes(offlineResultPng), { headers: { "content-type": "image/png" } });
+            return new Response(JSON.stringify({ models }), { headers: { "content-type": "application/json" } });
+        }),
     );
     let assetSequence = 0;
     class FixtureUpload extends EventTarget {
@@ -377,15 +392,23 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
         const current = useCanvasStore.getState().openProject(projectId)!;
         const withResult = appendResultNode(
             current.nodes,
-            { id: "fixture-result-job", operation: "image.generate", status: "succeeded", results: [{ url: "/api/v1/results/fixture-result-job/0", asset_id: "job-result.fixture-result-job.0", media_type: "image" }] },
+            { id: "fixture-result-job", operation: "image.generate", status: "succeeded", results: [{ url: offlineResultUrl, asset_id: "job-result.fixture-result-job.0", media_type: "image" }] },
             modelNodes[0],
         );
         useCanvasStore.getState().updateProject(projectId, { nodes: withResult.map((node) => (node.metadata?.sourceJobId === "fixture-result-job" ? { ...node, position: { x: 320, y: 330 } } : node)) });
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
     await expect.element(page.getByRole("img", { name: "生成结果" })).toBeVisible();
+    const preview = await page.getByRole("img", { name: "生成结果" }).element() as HTMLImageElement;
     const download = page.getByRole("link", { name: "下载" });
-    await expect.element(download).toHaveAttribute("href", "/api/v1/results/fixture-result-job/0");
+    await expect.element(download).toHaveAttribute("href", offlineResultUrl);
+    const downloadResponse = await fetch((await download.element() as HTMLAnchorElement).getAttribute("href")!);
+    expect(downloadResponse.status).toBe(200);
+    expect(downloadResponse.headers.get("content-type")).toBe("image/png");
+    const previewUrl = URL.createObjectURL(await downloadResponse.blob());
+    preview.src = previewUrl;
+    await expect.poll(() => preview.naturalWidth).toBeGreaterThan(0);
+    URL.revokeObjectURL(previewUrl);
     const resultNode = useCanvasStore
         .getState()
         .openProject(projectId)!
