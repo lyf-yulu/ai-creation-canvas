@@ -54,30 +54,80 @@ export const CAPABILITY_TEMPLATES = [
 
 export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
     {
-        id: "seedream", capability: "multi_image", label: "Seedream（Ark 官方）", routeLabel: "Seedream · Ark 官方",
-        modality: "image", adapter_type: "ark", familyHint: "seedream",
-        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 14 }], output_media_type: "image", parameter_schema: objectSchema(arkImageProperties, [], "seedream"), parameter_mappings: arkImageMappings },
+        id: "seedream",
+        capability: "multi_image",
+        label: "Seedream（Ark 官方）",
+        routeLabel: "Seedream · Ark 官方",
+        modality: "image",
+        adapter_type: "ark",
+        familyHint: "seedream",
+        contract: {
+            operation: "image.edit",
+            input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 14 }],
+            output_media_type: "image",
+            parameter_schema: objectSchema(arkImageProperties, [], "seedream"),
+            parameter_mappings: arkImageMappings,
+        },
     },
     {
-        id: "banana", capability: "multi_image", label: "Banana（Chiyun / T8Star）", routeLabel: "Banana · Chiyun 兼容",
-        modality: "image", adapter_type: "chiyun_openai_images", familyHint: "nano-banana",
-        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "banana"), parameter_mappings: { size: "size", output_count: "n" } },
+        id: "banana",
+        capability: "multi_image",
+        label: "Banana（Chiyun / T8Star）",
+        routeLabel: "Banana · Chiyun 兼容",
+        modality: "image",
+        adapter_type: "chiyun_openai_images",
+        familyHint: "nano-banana",
+        contract: {
+            operation: "image.edit",
+            input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
+            output_media_type: "image",
+            parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "banana"),
+            parameter_mappings: { size: "size", output_count: "n" },
+        },
     },
     {
-        id: "gpt_image2", capability: "multi_image", label: "GPT-Image2（Chiyun）", routeLabel: "GPT-Image2 · Chiyun",
-        modality: "image", adapter_type: "chiyun_openai_images", familyHint: "gpt-image",
-        contract: { operation: "image.edit", input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "gpt_image2"), parameter_mappings: { size: "size", output_count: "n" } },
+        id: "gpt_image2",
+        capability: "multi_image",
+        label: "GPT-Image2（Chiyun）",
+        routeLabel: "GPT-Image2 · Chiyun",
+        modality: "image",
+        adapter_type: "chiyun_openai_images",
+        familyHint: "gpt-image",
+        contract: {
+            operation: "image.edit",
+            input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
+            output_media_type: "image",
+            parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "gpt_image2"),
+            parameter_mappings: { size: "size", output_count: "n" },
+        },
     },
     {
-        id: "seedance", capability: "multi_video", label: "Seedance（Ark 官方）", routeLabel: "Seedance · Ark 官方",
-        modality: "video", adapter_type: "ark", familyHint: "seedance",
-        contract: { operation: "video.generate", input_ports: [prompt, { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 }, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 }, { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 }], output_media_type: "video", parameter_schema: objectSchema(videoProperties, [], "seedance"), parameter_mappings: videoMappings },
+        id: "seedance",
+        capability: "multi_video",
+        label: "Seedance（Ark 官方）",
+        routeLabel: "Seedance · Ark 官方",
+        modality: "video",
+        adapter_type: "ark",
+        familyHint: "seedance",
+        contract: {
+            operation: "video.generate",
+            input_ports: [
+                prompt,
+                { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 },
+                { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 },
+                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 },
+                { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 },
+            ],
+            output_media_type: "video",
+            parameter_schema: objectSchema(videoProperties, [], "seedance"),
+            parameter_mappings: videoMappings,
+        },
     },
 ];
 
 const profileFromContract = (contract: AdminOperationContract | undefined): ModelProfileId | null => {
     const marker = contract?.parameter_schema?.["x-aicc-profile"];
-    return typeof marker === "string" && ADMIN_MODEL_TEMPLATES.some((item) => item.id === marker) ? marker as ModelProfileId : null;
+    return typeof marker === "string" && ADMIN_MODEL_TEMPLATES.some((item) => item.id === marker) ? (marker as ModelProfileId) : null;
 };
 
 export const templateForModel = (model: AdminLogicalModel | null): AdminTemplate => {
@@ -101,18 +151,33 @@ export const templateForRoute = (route: { adapter_type?: string; family?: string
     return undefined;
 };
 
+const canonicalJson = (value: unknown): unknown =>
+    Array.isArray(value)
+        ? value.map(canonicalJson)
+        : value && typeof value === "object"
+          ? Object.fromEntries(
+                Object.entries(value as Record<string, unknown>)
+                    .sort(([left], [right]) => left.localeCompare(right))
+                    .map(([key, item]) => [key, canonicalJson(item)]),
+            )
+          : value;
+
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+
 export const routeContractForModel = (template: AdminTemplate, model: AdminLogicalModel): AdminOperationContract => {
     const publicContract = model.operation_contracts?.find((item) => item.operation === template.contract.operation);
     if (!publicContract) return template.contract;
     const publicPorts = new Map(publicContract.input_ports.map((port) => [port.port_id, port]));
-    const input_ports = template.contract.input_ports.flatMap((port) => {
-        const publicPort = publicPorts.get(port.port_id);
-        if (!publicPort || publicPort.media_type !== port.media_type) return [];
-        return [{ ...port, min_items: Math.max(port.min_items, publicPort.min_items), max_items: Math.min(port.max_items, publicPort.max_items) }];
-    }).filter((port) => port.min_items <= port.max_items);
+    const input_ports = template.contract.input_ports
+        .flatMap((port) => {
+            const publicPort = publicPorts.get(port.port_id);
+            if (!publicPort || publicPort.media_type !== port.media_type) return [];
+            return [{ ...port, min_items: Math.max(port.min_items, publicPort.min_items), max_items: Math.min(port.max_items, publicPort.max_items) }];
+        })
+        .filter((port) => port.min_items <= port.max_items);
     const publicProperties = (publicContract.parameter_schema.properties || {}) as Record<string, unknown>;
     const trustedProperties = (template.contract.parameter_schema.properties || {}) as Record<string, unknown>;
-    const properties = Object.fromEntries(Object.entries(trustedProperties).filter(([name, rule]) => JSON.stringify(publicProperties[name]) === JSON.stringify(rule)));
+    const properties = Object.fromEntries(Object.entries(trustedProperties).filter(([name, rule]) => sameJson(publicProperties[name], rule)));
     const required = (template.contract.parameter_schema.required as string[] | undefined)?.filter((name) => name in properties) || [];
     return {
         ...template.contract,

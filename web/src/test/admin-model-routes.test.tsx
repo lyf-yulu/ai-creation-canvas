@@ -4,19 +4,114 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ModelRouteEditor } from "@/components/admin/model-route-editor";
 import type { AdminCredentialPool, AdminLogicalModel, AdminModelRoute } from "@/api/admin";
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+});
 
 const model: AdminLogicalModel = {
-    model_id: "banana", display_name: "Nano Banana", introduction: "Edit", modality: "image",
-    operation_contracts: [{ operation: "image.edit", input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }], output_media_type: "image", parameter_schema: { type: "object", "x-aicc-profile": "banana", properties: { size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" }, output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 } }, required: ["size", "output_count"], additionalProperties: false }, parameter_mappings: { size: "size", output_count: "n" } }],
-    enabled: true, archived_at: null, revision: 1,
+    model_id: "banana",
+    display_name: "Nano Banana",
+    introduction: "Edit",
+    modality: "image",
+    operation_contracts: [
+        {
+            operation: "image.edit",
+            input_ports: [
+                { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
+                { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 },
+            ],
+            output_media_type: "image",
+            parameter_schema: {
+                type: "object",
+                "x-aicc-profile": "banana",
+                properties: { size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" }, output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 } },
+                required: ["size", "output_count"],
+                additionalProperties: false,
+            },
+            parameter_mappings: { size: "size", output_count: "n" },
+        },
+    ],
+    enabled: true,
+    archived_at: null,
+    revision: 1,
 };
 const pools: AdminCredentialPool[] = [
-    { pool_id: "t8-gemini", provider_id: "t8star", adapter_type: "chiyun_openai_images", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "t8-cc", provider_id: "t8star", adapter_type: "chiyun_openai_images", group: "cc", allowed_families: ["claude"], revision_digest: "b".repeat(64), key_count: 1, total_capacity: 1, capacity_status: "available", available_count: 1, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "ark-image", provider_id: "ark", adapter_type: "ark", group: "official", allowed_families: ["seedream"], revision_digest: "c".repeat(64), key_count: 1, total_capacity: 2, capacity_status: "unavailable", available_count: null, busy_count: null, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "chiyun-gpt", provider_id: "chiyun", adapter_type: "chiyun_openai_images", group: "gpt-image", allowed_families: ["gpt-image"], revision_digest: "d".repeat(64), key_count: 1, total_capacity: 1, capacity_status: "available", available_count: 1, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
-    { pool_id: "ark-video", provider_id: "ark", adapter_type: "ark", group: "official", allowed_families: ["seedance"], revision_digest: "e".repeat(64), key_count: 1, total_capacity: 1, capacity_status: "available", available_count: 1, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null },
+    {
+        pool_id: "t8-gemini",
+        provider_id: "t8star",
+        adapter_type: "chiyun_openai_images",
+        group: "gemini",
+        allowed_families: ["nano-banana"],
+        revision_digest: "a".repeat(64),
+        key_count: 2,
+        total_capacity: 4,
+        capacity_status: "available",
+        available_count: 2,
+        busy_count: 0,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
+    {
+        pool_id: "t8-cc",
+        provider_id: "t8star",
+        adapter_type: "chiyun_openai_images",
+        group: "cc",
+        allowed_families: ["claude"],
+        revision_digest: "b".repeat(64),
+        key_count: 1,
+        total_capacity: 1,
+        capacity_status: "available",
+        available_count: 1,
+        busy_count: 0,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
+    {
+        pool_id: "ark-image",
+        provider_id: "ark",
+        adapter_type: "ark",
+        group: "official",
+        allowed_families: ["seedream"],
+        revision_digest: "c".repeat(64),
+        key_count: 1,
+        total_capacity: 2,
+        capacity_status: "unavailable",
+        available_count: null,
+        busy_count: null,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
+    {
+        pool_id: "chiyun-gpt",
+        provider_id: "chiyun",
+        adapter_type: "chiyun_openai_images",
+        group: "gpt-image",
+        allowed_families: ["gpt-image"],
+        revision_digest: "d".repeat(64),
+        key_count: 1,
+        total_capacity: 1,
+        capacity_status: "available",
+        available_count: 1,
+        busy_count: 0,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
+    {
+        pool_id: "ark-video",
+        provider_id: "ark",
+        adapter_type: "ark",
+        group: "official",
+        allowed_families: ["seedance"],
+        revision_digest: "e".repeat(64),
+        key_count: 1,
+        total_capacity: 1,
+        capacity_status: "available",
+        available_count: 1,
+        busy_count: 0,
+        circuit_status: "unsupported",
+        circuit_open_count: null,
+    },
 ];
 
 it("keeps Banana routes inside Chiyun-compatible nano-banana pools", () => {
@@ -41,7 +136,20 @@ it("maps Seedream, GPT-Image2 and Seedance to only their compatible provider poo
     expect(screen.getByLabelText("Provider")).toHaveTextContent("chiyun");
     expect(screen.getByLabelText("Provider")).not.toHaveTextContent(/t8star|ark/);
 
-    const seedance: AdminLogicalModel = { ...model, model_id: "seedance", modality: "video", operation_contracts: [{ operation: "video.generate", input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], output_media_type: "video", parameter_schema: { type: "object", "x-aicc-profile": "seedance", properties: {}, additionalProperties: false }, parameter_mappings: {} }] };
+    const seedance: AdminLogicalModel = {
+        ...model,
+        model_id: "seedance",
+        modality: "video",
+        operation_contracts: [
+            {
+                operation: "video.generate",
+                input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }],
+                output_media_type: "video",
+                parameter_schema: { type: "object", "x-aicc-profile": "seedance", properties: {}, additionalProperties: false },
+                parameter_mappings: {},
+            },
+        ],
+    };
     view.rerender(<ModelRouteEditor model={seedance} route={null} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByLabelText("线路模板")).toHaveTextContent("Seedance · Ark 官方");
     expect(screen.getByLabelText("Provider")).toHaveTextContent("ark");
@@ -65,7 +173,15 @@ it("hides incompatible providers and explains why an incomplete route cannot be 
         ...model,
         model_id: "seedance",
         modality: "video",
-        operation_contracts: [{ operation: "video.generate", input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }], output_media_type: "video", parameter_schema: { type: "object", properties: {}, additionalProperties: false }, parameter_mappings: {} }],
+        operation_contracts: [
+            {
+                operation: "video.generate",
+                input_ports: [{ port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 }],
+                output_media_type: "video",
+                parameter_schema: { type: "object", properties: {}, additionalProperties: false },
+                parameter_mappings: {},
+            },
+        ],
     };
     render(<ModelRouteEditor model={videoModel} route={null} pools={pools.filter((pool) => pool.pool_id !== "ark-video")} onSave={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByLabelText("Provider")).not.toHaveTextContent("t8star");
@@ -98,8 +214,53 @@ it("renders safe pool counts and never exposes deployment credentials", () => {
     expect(container.querySelector('[name="api_key"]')).toBeNull();
 });
 
+it("preserves semantically equal parameter rules when the server returns JSON keys in another order", () => {
+    const reordered: AdminLogicalModel = {
+        ...model,
+        operation_contracts: [
+            {
+                ...model.operation_contracts![0],
+                parameter_schema: {
+                    type: "object",
+                    properties: {
+                        output_count: { default: 1, maximum: 4, minimum: 1, type: "integer" },
+                        size: { default: "auto", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], type: "string" },
+                    },
+                    required: ["size", "output_count"],
+                    additionalProperties: false,
+                },
+            },
+        ],
+    };
+    const save = vi.fn().mockResolvedValue({ route_id: "ordered", model_id: "banana", enabled: false, archived_at: null, revision: 1 });
+    render(<ModelRouteEditor model={reordered} route={null} pools={pools} onSave={save} onSaved={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("线路 ID"), { target: { value: "ordered" } });
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "t8star" } });
+    fireEvent.change(screen.getByLabelText("供应商模型名"), { target: { value: "banana" } });
+    fireEvent.change(screen.getByLabelText("凭据池"), { target: { value: "t8-gemini" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存线路" }));
+
+    const contract = save.mock.calls[0][0].operation_contracts[0];
+    expect(Object.keys(contract.parameter_schema.properties)).toEqual(["size", "output_count"]);
+    expect(contract.parameter_mappings).toEqual({ size: "size", output_count: "n" });
+});
+
 it("makes a mismatched historical family visibly read-only instead of submitting a misleading template", () => {
-    const legacy = { route_id: "legacy-cc", model_id: "banana", provider_id: "t8star", provider_model_name: "legacy", adapter_type: "chiyun_openai_images" as const, credential_pool_ref: "t8-cc", family: "cc", operation_contracts: model.operation_contracts, priority: 1, max_concurrency: 1, enabled: false, archived_at: null, revision: 1 };
+    const legacy = {
+        route_id: "legacy-cc",
+        model_id: "banana",
+        provider_id: "t8star",
+        provider_model_name: "legacy",
+        adapter_type: "chiyun_openai_images" as const,
+        credential_pool_ref: "t8-cc",
+        family: "cc",
+        operation_contracts: model.operation_contracts,
+        priority: 1,
+        max_concurrency: 1,
+        enabled: false,
+        archived_at: null,
+        revision: 1,
+    };
     render(<ModelRouteEditor model={model} route={legacy} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByLabelText("模型族")).toHaveTextContent("cc");
     expect(screen.getByRole("alert")).toHaveTextContent("只读");
@@ -108,7 +269,21 @@ it("makes a mismatched historical family visibly read-only instead of submitting
 
 it("keeps a cross-model historical route read-only and restores a matching route identity", () => {
     const arkContract = { ...model.operation_contracts![0], parameter_schema: { type: "object", properties: {}, additionalProperties: false }, parameter_mappings: {} };
-    const ark = { route_id: "ark-edit", model_id: "banana", provider_id: "ark", provider_model_name: "seedream", adapter_type: "ark" as const, credential_pool_ref: "ark-image", family: "seedream", operation_contracts: [arkContract], priority: 1, max_concurrency: 1, enabled: false, archived_at: null, revision: 2 };
+    const ark = {
+        route_id: "ark-edit",
+        model_id: "banana",
+        provider_id: "ark",
+        provider_model_name: "seedream",
+        adapter_type: "ark" as const,
+        credential_pool_ref: "ark-image",
+        family: "seedream",
+        operation_contracts: [arkContract],
+        priority: 1,
+        max_concurrency: 1,
+        enabled: false,
+        archived_at: null,
+        revision: 2,
+    };
     const { rerender } = render(<ModelRouteEditor model={model} route={ark} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByLabelText("线路模板")).toHaveValue("banana");
     expect(screen.getByLabelText("线路模板")).toBeDisabled();
@@ -116,7 +291,16 @@ it("keeps a cross-model historical route read-only and restores a matching route
     expect(screen.getByRole("button", { name: "保存线路" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("只读");
 
-    const chiyun = { ...ark, route_id: "t8-edit", provider_id: "t8star", provider_model_name: "banana", adapter_type: "chiyun_openai_images" as const, credential_pool_ref: "t8-gemini", family: "nano-banana", operation_contracts: model.operation_contracts };
+    const chiyun = {
+        ...ark,
+        route_id: "t8-edit",
+        provider_id: "t8star",
+        provider_model_name: "banana",
+        adapter_type: "chiyun_openai_images" as const,
+        credential_pool_ref: "t8-gemini",
+        family: "nano-banana",
+        operation_contracts: model.operation_contracts,
+    };
     rerender(<ModelRouteEditor model={model} route={chiyun} pools={pools} onSave={vi.fn()} onSaved={vi.fn()} />);
     expect(screen.getByLabelText("线路模板")).toHaveValue("banana");
     expect(screen.getByLabelText("线路模板")).toBeDisabled();
@@ -127,7 +311,12 @@ it("keeps a cross-model historical route read-only and restores a matching route
 it("does not publish a pending route save after unmount", async () => {
     let resolveSave!: (value: AdminModelRoute) => void;
     const saved = vi.fn();
-    const save = vi.fn(() => new Promise<AdminModelRoute>((resolve) => { resolveSave = resolve; }));
+    const save = vi.fn(
+        () =>
+            new Promise<AdminModelRoute>((resolve) => {
+                resolveSave = resolve;
+            }),
+    );
     const { unmount } = render(<ModelRouteEditor model={model} route={null} pools={pools} onSave={save} onSaved={saved} />);
     fireEvent.change(screen.getByLabelText("线路模板"), { target: { value: "banana" } });
     fireEvent.change(screen.getByLabelText("线路 ID"), { target: { value: "pending" } });
