@@ -108,7 +108,7 @@ def test_chiyun_rejects_operations_or_inputs_outside_the_model_contract(tmp_path
     assert calls == 0
 
 
-@pytest.mark.parametrize("status,retryable", [(401, False), (400, False), (429, True), (503, False)])
+@pytest.mark.parametrize("status,retryable", [(401, False), (400, False), (429, True), (503, True)])
 def test_chiyun_classifies_errors_without_leaking_response(tmp_path: Path, status: int, retryable: bool) -> None:
     adapter = ChiyunGenerationAdapter(
         provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,

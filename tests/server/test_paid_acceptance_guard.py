@@ -14,17 +14,16 @@ def run_guard(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[s
         **os.environ,
         "AICC_RUN_PAID_ACCEPTANCE": "YES",
         "AICC_ACCEPTANCE_GUARD_ONLY": "YES",
-        "AICC_ACCEPTANCE_DATA": str(tmp_path / "brand-new-data"),
+        "AICC_ACCEPTANCE_DATA": str(ROOT / ".paid-acceptance" / f"guard-{tmp_path.name}"),
         "AICC_ACCEPTANCE_PORT": "8998",
-        "AICC_ACCEPTANCE_MODEL_IDS": "banana",
-        "AICC_ACCEPTANCE_CHANNEL_IDS": "banana-chiyun",
+        "AICC_ACCEPTANCE_MODEL_IDS": "seedream",
+        "AICC_ACCEPTANCE_CHANNEL_IDS": "seedream-ark",
         "AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT": "0",
         "AICC_MAX_PAID_CALLS": "1",
-        "AICC_CHIYUN_BASE_URL": "https://chiyun.example",
-        "CHIYUN_API_KEY": "test-only-never-sent",
+        "ARK_API_KEY": "test-only-never-sent",
         **overrides,
     }
-    for name in ("ARK_API_KEY", "T8STAR_API_KEY"):
+    for name in ("CHIYUN_API_KEY", "T8STAR_API_KEY"):
         if name not in overrides:
             environment.pop(name, None)
     return subprocess.run(
@@ -42,11 +41,11 @@ def test_guard_only_accepts_one_explicit_channel_without_provider_io(tmp_path: P
 
     assert result.returncode == 0
     assert "Paid acceptance guard ready. No provider request was made." in result.stdout
-    assert "CHIYUN_API_KEY=SET" in result.stdout
+    assert "CHIYUN_API_KEY=UNSET" in result.stdout
     assert "T8STAR_API_KEY=UNSET" in result.stdout
-    assert "ARK_API_KEY=UNSET" in result.stdout
+    assert "ARK_API_KEY=SET" in result.stdout
     assert "test-only" not in result.stdout + result.stderr
-    assert not (tmp_path / "brand-new-data").exists()
+    assert not (ROOT / ".paid-acceptance" / f"guard-{tmp_path.name}").exists()
 
 
 def test_guard_requires_the_new_exact_paid_opt_in(tmp_path: Path) -> None:
@@ -89,7 +88,8 @@ def test_guard_enforces_total_paid_call_budget_between_one_and_twenty(tmp_path: 
     not_numeric = run_guard(tmp_path, AICC_MAX_PAID_CALLS="one")
     plan_exceeds_budget = run_guard(
         tmp_path,
-        AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT="1",
+        AICC_ACCEPTANCE_MODEL_IDS="seedream,seedance",
+        AICC_ACCEPTANCE_CHANNEL_IDS="seedream-ark,seedance-ark",
         AICC_MAX_PAID_CALLS="1",
     )
 
@@ -98,30 +98,42 @@ def test_guard_enforces_total_paid_call_budget_between_one_and_twenty(tmp_path: 
         assert "AICC_MAX_PAID_CALLS" in result.stderr or "budget" in result.stderr.lower()
 
 
-def test_guard_requires_only_the_selected_channel_credentials_and_origins(tmp_path: Path) -> None:
-    missing_key = run_guard(tmp_path, CHIYUN_API_KEY="")
-    missing_origin = run_guard(tmp_path, AICC_CHIYUN_BASE_URL="")
-    t8_without_t8_key = run_guard(
+def test_guard_requires_selected_key_and_rejects_unapproved_third_party_origins(tmp_path: Path) -> None:
+    missing_key = run_guard(tmp_path, ARK_API_KEY="")
+    chiyun_unapproved = run_guard(
         tmp_path,
+        AICC_ACCEPTANCE_MODEL_IDS="banana",
+        AICC_ACCEPTANCE_CHANNEL_IDS="banana-chiyun",
+        AICC_CHIYUN_BASE_URL="https://attacker.example",
+        CHIYUN_API_KEY="test-only-never-sent",
+    )
+    t8_unapproved = run_guard(
+        tmp_path,
+        AICC_ACCEPTANCE_MODEL_IDS="banana",
         AICC_ACCEPTANCE_CHANNEL_IDS="banana-t8star",
-        AICC_T8STAR_BASE_URL="https://t8star.example",
-        T8STAR_API_KEY="",
+        AICC_T8STAR_BASE_URL="https://attacker.example",
+        T8STAR_API_KEY="test-only-never-sent",
     )
 
     assert missing_key.returncode == 64
-    assert "CHIYUN_API_KEY" in missing_key.stderr
-    assert missing_origin.returncode == 64
-    assert "AICC_CHIYUN_BASE_URL" in missing_origin.stderr
-    assert t8_without_t8_key.returncode == 64
-    assert "T8STAR_API_KEY" in t8_without_t8_key.stderr
+    assert "ARK_API_KEY" in missing_key.stderr
+    for result in (chiyun_unapproved, t8_unapproved):
+        assert result.returncode == 64
+        assert "approved origin" in result.stderr.lower()
 
 
-def test_guard_requires_a_brand_new_ignored_or_strictly_external_data_path(tmp_path: Path) -> None:
+def test_guard_requires_a_brand_new_direct_child_of_the_repo_paid_root(tmp_path: Path) -> None:
     existing = tmp_path / "existing"
     existing.mkdir()
 
     reused = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(existing))
+    arbitrary_external = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(tmp_path / "brand-new-external"))
     rejected_repo_path = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(ROOT / "work" / "paid-data"))
+    nested_paid_path = run_guard(tmp_path, AICC_ACCEPTANCE_DATA=str(ROOT / ".paid-acceptance" / "nested" / "paid-data"))
+    production_project = run_guard(
+        tmp_path,
+        AICC_ACCEPTANCE_DATA="/Users/260413a/ai-generation-portable-apps/state/task4-paid-data",
+    )
     accepted_ignored_path = run_guard(
         tmp_path,
         AICC_ACCEPTANCE_DATA=str(ROOT / ".paid-acceptance" / "guard-test-never-created"),
@@ -129,8 +141,9 @@ def test_guard_requires_a_brand_new_ignored_or_strictly_external_data_path(tmp_p
 
     assert reused.returncode == 64
     assert "brand-new" in reused.stderr
-    assert rejected_repo_path.returncode == 64
-    assert "data path" in rejected_repo_path.stderr.lower()
+    for result in (arbitrary_external, rejected_repo_path, nested_paid_path, production_project):
+        assert result.returncode == 64
+        assert "data path" in result.stderr.lower()
     assert accepted_ignored_path.returncode == 0
 
 
@@ -151,16 +164,26 @@ def test_guard_rejects_traversal_and_symlinked_external_data_paths(tmp_path: Pat
 
 
 def test_offline_key_boundary_consumes_the_bundle_without_exposing_a_value(tmp_path: Path) -> None:
+    foreign_key = tmp_path / "foreign-key-locator"
+    foreign_pool = tmp_path / "foreign-pool-locator"
+    foreign_key.write_text("must-survive", encoding="utf-8")
+    foreign_pool.write_text("must-survive", encoding="utf-8")
     result = run_guard(
         tmp_path,
         AICC_ACCEPTANCE_GUARD_ONLY="NO",
         AICC_ACCEPTANCE_ENV_PROBE="YES",
-        CHIYUN_API_KEY="sentinel-paid-key-never-log",
+        AICC_ACCEPTANCE_KEY_FILE=str(foreign_key),
+        AICC_ACCEPTANCE_POOL_FILE=str(foreign_pool),
+        AICC_CHIYUN_BASE_URL="https://attacker.example",
+        AICC_T8STAR_BASE_URL="https://attacker.example",
+        ARK_API_KEY="sentinel-paid-key-never-log",
     )
 
     assert result.returncode == 0
     assert "Paid acceptance key boundary ready. No provider request was made." in result.stdout
     assert "sentinel-paid-key" not in result.stdout + result.stderr
+    assert foreign_key.read_text(encoding="utf-8") == "must-survive"
+    assert foreign_pool.read_text(encoding="utf-8") == "must-survive"
 
 
 def test_paid_client_is_after_clean_worktree_and_every_offline_release_gate() -> None:
@@ -174,7 +197,30 @@ def test_paid_client_is_after_clean_worktree_and_every_offline_release_gate() ->
         "security-scan.sh",
         "pytest -q",
         "verify:release",
+        "npm audit",
         "build-release.sh",
         "--skip-web-build",
     ):
         assert 0 <= source.index(gate) < client
+
+
+def test_paid_data_directory_is_created_relative_to_nofollow_directory_descriptors() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    creation = source.index("Securely create the already-validated paid data directory")
+    client = source.rindex("acceptance_real_media.py")
+
+    assert creation < client
+    for token in ("os.O_NOFOLLOW", "dir_fd=repo_descriptor", "dir_fd=paid_descriptor", "os.fstat(data_descriptor)"):
+        assert token in source[creation:client]
+
+
+def test_shell_removes_only_the_exact_key_bundle_inode_it_created() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "unset AICC_ACCEPTANCE_KEY_FILE AICC_ACCEPTANCE_POOL_FILE AICC_CHIYUN_BASE_URL AICC_T8STAR_BASE_URL" in source
+    for token in (
+        "AICC_OWNED_KEY_PARENT_DEVICE",
+        "AICC_OWNED_KEY_FILE_INODE",
+        "os.stat(name, dir_fd=descriptor, follow_symlinks=False)",
+        "os.unlink(name, dir_fd=descriptor)",
+    ):
+        assert token in source

@@ -159,10 +159,8 @@ def classify_submission_error(error: Exception, adapter_template: str) -> Submis
     ):
         return SubmissionDisposition.SUBMISSION_UNKNOWN
     if isinstance(error, PortalUpstreamError):
-        if error.status_code in {408, 429}:
+        if error.status_code in {408, 429} or error.status_code >= 500:
             return SubmissionDisposition.TEMPORARY_UNAVAILABLE
-        if error.status_code >= 500:
-            return SubmissionDisposition.SUBMISSION_UNKNOWN
         return SubmissionDisposition.REJECTED
     if isinstance(error, InvalidUpstreamResult):
         return SubmissionDisposition.SUBMISSION_UNKNOWN
@@ -181,14 +179,12 @@ def error_from_transport(error: httpx.HTTPError, adapter_template: str) -> Submi
 
 
 def error_from_response(response: httpx.Response, adapter_template: str) -> SubmissionError:
-    task_id = _verified_task_id(response, adapter_template)
-    if task_id is not None:
+    if 400 <= response.status_code < 500 and response.status_code not in {408, 429}:
         return SubmissionError(
-            SubmissionDisposition.ACCEPTED,
-            "PROVIDER_TASK_ACCEPTED",
+            SubmissionDisposition.REJECTED,
+            "REQUEST_REJECTED",
             adapter_template=adapter_template,
             status_code=response.status_code,
-            provider_task_id=task_id,
         )
     if response.status_code in {408, 429}:
         return SubmissionError(
@@ -199,10 +195,19 @@ def error_from_response(response: httpx.Response, adapter_template: str) -> Subm
         )
     if response.status_code >= 500:
         return SubmissionError(
-            SubmissionDisposition.SUBMISSION_UNKNOWN,
-            "SUBMISSION_UNKNOWN",
+            SubmissionDisposition.TEMPORARY_UNAVAILABLE,
+            "TEMPORARY_UNAVAILABLE",
             adapter_template=adapter_template,
             status_code=response.status_code,
+        )
+    task_id = _verified_task_id(response, adapter_template)
+    if task_id is not None:
+        return SubmissionError(
+            SubmissionDisposition.ACCEPTED,
+            "PROVIDER_TASK_ACCEPTED",
+            adapter_template=adapter_template,
+            status_code=response.status_code,
+            provider_task_id=task_id,
         )
     return SubmissionError(
         SubmissionDisposition.REJECTED,

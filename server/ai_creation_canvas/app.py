@@ -34,7 +34,7 @@ from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog, LogicalModelCatalog, ManagedRoutingRuntime
+from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog, LogicalModelCatalog, ManagedRoutingRuntime, ProviderSubmissionBudget
 from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
@@ -113,12 +113,14 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     injected_execution_coordinator = execution_coordinator is not None
     if settings.environment == "production" and managed_routing_runtime is not None:
         raise ValueError("managed production runtime cannot be injected")
+    if managed_routing_runtime is not None and provider_submission_budget is not None:
+        raise ValueError("provider submission budget is already owned by the managed runtime")
     if registry is None:
         registry = AdapterRegistry()
     if settings.identity_mode == "local" and settings.enable_demo_adapter:
@@ -219,6 +221,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         )
         managed_routing_runtime = ManagedRoutingRuntime(
             store, lambda: loader.reload().as_mapping(), RouteSelector(), execution_coordinator, route_factory,
+            provider_submission_budget,
         )
     if managed_routing_runtime is not None:
         if managed_routing_runtime.store is not store:

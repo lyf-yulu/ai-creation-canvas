@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ModelSpec } from "@/api/contracts";
+import { ADMIN_MODEL_TEMPLATES } from "@/components/admin/model-templates";
 import { compileGraphJob, CompileJobError } from "@/features/graph/compile-job";
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
@@ -94,6 +95,28 @@ describe("compileGraphJob", () => {
         if (modelGraph?.role !== "model") throw new Error("fixture");
         modelGraph.parameters.unknown = 1;
         expect(() => compileGraphJob(unknown, connections, "model", model)).toThrow("不支持的参数");
+    });
+
+    it("enforces the trusted Seedream edit template minimum of one reference image", () => {
+        const template = ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedream")!;
+        const seedreamEdit: ModelSpec = {
+            model_id: "seedream",
+            service_id: "ark",
+            display_name: "Seedream",
+            operations: ["image.edit"],
+            input_media: ["text", "image"],
+            input_ports: template.contract.input_ports,
+            parameter_schema: template.contract.parameter_schema,
+            parameter_mappings: template.contract.parameter_mappings,
+        };
+        const editNodes = structuredClone(nodes);
+        const graph = editNodes[2].metadata?.graph;
+        if (graph?.role !== "model") throw new Error("fixture");
+        graph.operation = "image.edit";
+        graph.parameters = { size: "1K" };
+
+        expect(() => compileGraphJob(editNodes, connections.slice(0, 1), "model", seedreamEdit)).toThrow("reference_images 至少需要 1 个输入");
+        expect(compileGraphJob(editNodes, connections, "model", seedreamEdit).inputs.reference_images).toEqual(["asset-b", "asset-a"]);
     });
 
     it("compiles a protected result output back into an ordered image input", () => {

@@ -22,11 +22,23 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 from typing import Callable, NamedTuple
 
+from ai_creation_canvas.acceptance_models import acceptance_model_profiles
+
 
 _SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
-_credential_path: str | None = None
-_pool_path: str | None = None
 _child_process: subprocess.Popen[bytes] | None = None
+
+
+class OwnedFile(NamedTuple):
+    parent: Path
+    name: str
+    parent_device: int
+    parent_inode: int
+    file_device: int
+    file_inode: int
+
+
+_owned_pool_file: OwnedFile | None = None
 
 
 _CHANNEL_MODELS = {
@@ -37,90 +49,13 @@ _CHANNEL_MODELS = {
     "seedance-ark": "seedance",
 }
 
-_PROMPT_PORT = {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}
-_CHIYUN_CONTRACT = {
-    "operation": "image.edit",
-    "input_ports": [
-        _PROMPT_PORT,
-        {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
-    ],
-    "output_media_type": "image",
-    "parameter_schema": {
-        "type": "object",
-        "properties": {
-            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
-            "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
-        },
-        "required": ["size", "output_count"],
-        "additionalProperties": False,
-    },
-    "parameter_mappings": {"size": "size", "output_count": "n"},
-}
-_ARK_IMAGE_CONTRACT = {
-    "operation": "image.edit",
-    "input_ports": [
-        _PROMPT_PORT,
-        {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 14},
-    ],
-    "output_media_type": "image",
-    "parameter_schema": {
-        "type": "object",
-        "properties": {
-            "size": {
-                "type": "string",
-                "default": "2K",
-                "x-ark-size": {
-                    "presets": ["1K", "1.5K", "2K", "3K", "4K"],
-                    "min_pixels": 921600,
-                    "max_pixels": 16777216,
-                    "min_ratio": 0.0625,
-                    "max_ratio": 16,
-                },
-            },
-            "watermark": {"type": "boolean", "default": False},
-            "output_format": {"type": "string", "enum": ["png", "jpeg"], "default": "png"},
-            "prompt_optimization": {"type": "string", "enum": ["standard", "fast"], "default": "standard"},
-        },
-        "additionalProperties": False,
-    },
-    "parameter_mappings": {
-        "size": "size",
-        "watermark": "watermark",
-        "output_format": "output_format",
-        "prompt_optimization": "optimize_prompt_options.mode",
-    },
-}
-_ARK_VIDEO_CONTRACT = {
-    "operation": "video.generate",
-    "input_ports": [_PROMPT_PORT],
-    "output_media_type": "video",
-    "parameter_schema": {
-        "type": "object",
-        "properties": {
-            "ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "default": "16:9"},
-            "resolution": {"type": "string", "enum": ["480p", "720p", "1080p", "4k"], "default": "720p"},
-            "duration": {"type": "integer", "minimum": 4, "maximum": 30, "default": 5},
-            "generate_audio": {"type": "boolean", "default": True},
-            "return_last_frame": {"type": "boolean", "default": False},
-            "watermark": {"type": "boolean", "default": False},
-        },
-        "additionalProperties": False,
-    },
-    "parameter_mappings": {
-        "ratio": "ratio",
-        "resolution": "resolution",
-        "duration": "duration",
-        "generate_audio": "generate_audio",
-        "return_last_frame": "return_last_frame",
-        "watermark": "watermark",
-    },
-}
+_FROZEN_PROFILES = acceptance_model_profiles()["profiles"]
 _CHANNEL_DEFINITIONS = {
-    "banana-chiyun": ("banana", "chiyun", "gemini-2.5-flash-image", "chiyun_openai_images", "nano-banana", _CHIYUN_CONTRACT),
-    "banana-t8star": ("banana", "t8star", "gemini-2.5-flash-image", "chiyun_openai_images", "nano-banana", _CHIYUN_CONTRACT),
-    "gpt-image2-chiyun": ("gpt-image2", "chiyun", "gpt-image-2", "chiyun_openai_images", "gpt-image", _CHIYUN_CONTRACT),
-    "seedream-ark": ("seedream", "ark", "doubao-seedream-5-0-pro-260628", "ark", "seedream", _ARK_IMAGE_CONTRACT),
-    "seedance-ark": ("seedance", "ark", "doubao-seedance-2-5-260628", "ark", "seedance", _ARK_VIDEO_CONTRACT),
+    "banana-chiyun": ("banana", "chiyun", _FROZEN_PROFILES["banana"]["provider_model_name"], _FROZEN_PROFILES["banana"]["adapter_type"], _FROZEN_PROFILES["banana"]["family"], _FROZEN_PROFILES["banana"]["contract"]),
+    "banana-t8star": ("banana", "t8star", _FROZEN_PROFILES["banana"]["provider_model_name"], _FROZEN_PROFILES["banana"]["adapter_type"], _FROZEN_PROFILES["banana"]["family"], _FROZEN_PROFILES["banana"]["contract"]),
+    "gpt-image2-chiyun": ("gpt-image2", "chiyun", _FROZEN_PROFILES["gpt-image2"]["provider_model_name"], _FROZEN_PROFILES["gpt-image2"]["adapter_type"], _FROZEN_PROFILES["gpt-image2"]["family"], _FROZEN_PROFILES["gpt-image2"]["contract"]),
+    "seedream-ark": ("seedream", "ark", _FROZEN_PROFILES["seedream"]["provider_model_name"], _FROZEN_PROFILES["seedream"]["adapter_type"], _FROZEN_PROFILES["seedream"]["family"], _FROZEN_PROFILES["seedream"]["contract"]),
+    "seedance-ark": ("seedance", "ark", _FROZEN_PROFILES["seedance"]["provider_model_name"], _FROZEN_PROFILES["seedance"]["adapter_type"], _FROZEN_PROFILES["seedance"]["family"], _FROZEN_PROFILES["seedance"]["contract"]),
 }
 
 
@@ -164,24 +99,29 @@ def execute_paid_plan(
     activate_channel: Callable[[str], None],
     activate_banana: Callable[[], None],
     execute: Callable[[PaidCall], dict[str, object]],
+    finalize: Callable[[tuple[dict[str, object], ...]], None] | None = None,
 ) -> tuple[dict[str, object], ...]:
     records: list[dict[str, object]] = []
     batch_enabled = False
-    for call in plan:
-        if call.phase == "smoke":
-            if call.channel_id is None:
-                raise RuntimeError("paid smoke channel is missing")
-            activate_channel(call.channel_id)
-        elif call.phase == "banana_sample":
-            if not batch_enabled:
-                activate_banana()
-                batch_enabled = True
-        else:
-            raise RuntimeError("paid call phase is invalid")
-        record = execute(call)
-        if record.get("status") != "succeeded":
-            raise RuntimeError("paid acceptance call failed")
-        records.append(record)
+    try:
+        for call in plan:
+            if call.phase == "smoke":
+                if call.channel_id is None:
+                    raise RuntimeError("paid smoke channel is missing")
+                activate_channel(call.channel_id)
+            elif call.phase == "banana_sample":
+                if not batch_enabled:
+                    activate_banana()
+                    batch_enabled = True
+            else:
+                raise RuntimeError("paid call phase is invalid")
+            record = execute(call)
+            records.append(record)
+            if record.get("status") != "succeeded":
+                raise RuntimeError("paid acceptance call failed")
+    finally:
+        if finalize is not None:
+            finalize(tuple(records))
     return tuple(records)
 
 
@@ -191,10 +131,11 @@ def acceptance_definitions(
     chiyun_origin: str,
     t8star_origin: str,
 ) -> dict[str, list[dict[str, object]]]:
+    del chiyun_origin, t8star_origin
     paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
     origins = {
-        "chiyun": chiyun_origin,
-        "t8star": t8star_origin,
+        "chiyun": None,
+        "t8star": None,
         "ark": "https://ark.cn-beijing.volces.com",
     }
     providers: list[dict[str, object]] = []
@@ -208,7 +149,7 @@ def acceptance_definitions(
         if provider_id not in seen_providers:
             origin = origins[provider_id]
             if not origin:
-                raise ValueError(f"{provider_id} origin is required")
+                raise ValueError(f"{channel_id} has no code-approved origin")
             providers.append({
                 "provider_id": provider_id,
                 "display_name": f"Paid acceptance {provider_id}",
@@ -282,7 +223,7 @@ def write_credential_pool_config(
     path: Path,
     channel_ids: tuple[str, ...],
     keys: dict[str, str],
-) -> None:
+) -> OwnedFile:
     paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
     key_names = {
         "banana-chiyun": "CHIYUN_API_KEY",
@@ -326,6 +267,46 @@ def write_credential_pool_config(
         os.chmod(candidate, 0o600)
     finally:
         temporary.unlink(missing_ok=True)
+    parent_details = candidate.parent.lstat()
+    file_details = candidate.lstat()
+    if (
+        not stat.S_ISDIR(parent_details.st_mode)
+        or stat.S_ISLNK(parent_details.st_mode)
+        or not stat.S_ISREG(file_details.st_mode)
+        or file_details.st_mode & 0o077
+    ):
+        raise RuntimeError("acceptance credential pool ownership is unsafe")
+    return OwnedFile(
+        candidate.parent,
+        candidate.name,
+        parent_details.st_dev,
+        parent_details.st_ino,
+        file_details.st_dev,
+        file_details.st_ino,
+    )
+
+
+def _remove_owned_file(owned: OwnedFile | None) -> None:
+    if not isinstance(owned, OwnedFile):
+        return
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(owned.parent, flags)
+        try:
+            parent_details = os.fstat(descriptor)
+            file_details = os.stat(owned.name, dir_fd=descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(parent_details.st_mode)
+                or (parent_details.st_dev, parent_details.st_ino) != (owned.parent_device, owned.parent_inode)
+                or not stat.S_ISREG(file_details.st_mode)
+                or (file_details.st_dev, file_details.st_ino) != (owned.file_device, owned.file_inode)
+            ):
+                return
+            os.unlink(owned.name, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return
 
 
 def create_acceptance_app(
@@ -337,7 +318,9 @@ def create_acceptance_app(
     channel_ids: tuple[str, ...],
     chiyun_origin: str,
     t8star_origin: str,
+    maximum_provider_submissions: int,
 ):
+    from ai_creation_canvas.catalog import ProviderSubmissionBudget
     from ai_creation_canvas.app import create_app
     from ai_creation_canvas.config import Settings
     from ai_creation_canvas.domain.models import ModelInputPort
@@ -399,6 +382,7 @@ def create_acceptance_app(
         ),
         static_dir=static_dir,
         canvas_store=store,
+        provider_submission_budget=ProviderSubmissionBudget(maximum_provider_submissions),
     )
     runtime = app.state.managed_routing_runtime
     if runtime is None:
@@ -422,23 +406,12 @@ def _stop_child() -> None:
 
 
 def _remove_credential_file() -> None:
-    global _credential_path, _pool_path
-    paths = {
-        path
-        for path in (
-            _credential_path,
-            _pool_path,
-            os.environ.get("AICC_ACCEPTANCE_KEY_FILE", ""),
-            os.environ.get("AICC_ACCEPTANCE_POOL_FILE", ""),
-        )
-        if path
-    }
-    _credential_path = None
-    _pool_path = None
+    """Drop inherited locators without deleting caller-owned paths."""
+    global _owned_pool_file
+    owned, _owned_pool_file = _owned_pool_file, None
     os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", None)
     os.environ.pop("AICC_ACCEPTANCE_POOL_FILE", None)
-    for path_text in paths:
-        Path(path_text).unlink(missing_ok=True)
+    _remove_owned_file(owned)
 
 
 def _signal_cleanup(signum: int, _frame: object) -> None:
@@ -448,9 +421,6 @@ def _signal_cleanup(signum: int, _frame: object) -> None:
 
 
 def _install_signal_cleanup() -> None:
-    global _credential_path, _pool_path
-    _credential_path = os.environ.get("AICC_ACCEPTANCE_KEY_FILE")
-    _pool_path = os.environ.get("AICC_ACCEPTANCE_POOL_FILE")
     for item in _SIGNALS:
         signal.signal(item, _signal_cleanup)
 
@@ -563,33 +533,27 @@ def verify_media_file(path: Path, mime: str, kind: str) -> dict[str, object]:
 
 
 def consume_server_keys() -> dict[str, str]:
-    global _credential_path
     allowed = {"ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY"}
     if any(name in os.environ for name in allowed):
         raise RuntimeError("paid credential leaked into acceptance environment")
-    path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "") or _credential_path or ""
+    path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "")
     path = Path(path_text)
-    try:
-        details = path.lstat()
-        if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077 or not 1 <= details.st_size <= 16 * 1024:
+    details = path.lstat()
+    if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077 or not 1 <= details.st_size <= 16 * 1024:
+        raise RuntimeError("unsafe acceptance credential file")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_mode & 0o077
+            or (details.st_dev, details.st_ino) != (opened.st_dev, opened.st_ino)
+            or (details.st_dev, details.st_ino) != (current.st_dev, current.st_ino)
+        ):
             raise RuntimeError("unsafe acceptance credential file")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        with os.fdopen(descriptor, "rb") as handle:
-            opened = os.fstat(handle.fileno())
-            current = path.lstat()
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_mode & 0o077
-                or (details.st_dev, details.st_ino) != (opened.st_dev, opened.st_ino)
-                or (details.st_dev, details.st_ino) != (current.st_dev, current.st_ino)
-            ):
-                raise RuntimeError("unsafe acceptance credential file")
-            raw = handle.read(16 * 1024 + 1)
-    finally:
-        if path_text:
-            path.unlink(missing_ok=True)
-        _credential_path = None
+        raw = handle.read(16 * 1024 + 1)
     try:
         payload = json.loads(raw)
     except (UnicodeDecodeError, ValueError, UnboundLocalError):
@@ -638,6 +602,15 @@ class ApiStatusError(RuntimeError):
     def __init__(self, status: int) -> None:
         super().__init__("acceptance API request failed")
         self.status = status
+
+
+class PaidAcceptanceFailure(RuntimeError):
+    def __init__(self, failure_class: str) -> None:
+        allowed = {"submission_unknown", "business_4xx", "retryable_http", "service_5xx", "transport", "timeout", "generation_failed", "acceptance_contract"}
+        if failure_class not in allowed:
+            raise ValueError("paid acceptance failure class is invalid")
+        super().__init__("paid acceptance failed")
+        self.failure_class = failure_class
 
 
 class ApiSession:
@@ -760,7 +733,9 @@ def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, o
         time.sleep(2)
         state = user.json("GET", f"/api/v1/jobs/{job_id}")
     if state.get("status") != "succeeded":
-        raise RuntimeError("generation did not succeed")
+        status = str(state.get("status", ""))
+        failure_class = "submission_unknown" if status == "submission_unknown" else "timeout" if status in {"uploading", "submitting", "queued", "running"} else "generation_failed"
+        raise PaidAcceptanceFailure(failure_class)
     results = state.get("results")
     if not isinstance(results, list) or len(results) < 1 or not isinstance(results[0], dict):
         raise RuntimeError("result contract missing")
@@ -843,6 +818,8 @@ def _set_model_routes(admin: ApiSession, model_id: str, enabled_route_ids: set[s
 
 
 def _failure_class(error: Exception) -> str:
+    if isinstance(error, PaidAcceptanceFailure):
+        return error.failure_class
     if isinstance(error, ApiStatusError):
         if error.status in {408, 429}:
             return "retryable_http"
@@ -866,24 +843,38 @@ def _failure_record(call: PaidCall, *, selected_channel: str, user_id: str, erro
     }
 
 
-def _summary_record(records: tuple[dict[str, object], ...], *, user_id: str) -> dict[str, object]:
+def _summary_record(records: tuple[dict[str, object], ...], *, user_id: str, planned_calls: int) -> dict[str, object]:
+    if type(planned_calls) is not int or not 0 <= len(records) <= planned_calls <= 20:
+        raise ValueError("paid acceptance summary count is invalid")
     distribution: dict[str, int] = {}
     durations: list[float] = []
     total_bytes = 0
+    failure_classes: dict[str, int] = {}
+    succeeded = 0
     for record in records:
         channel = str(record["selected_channel"])
         distribution[channel] = distribution.get(channel, 0) + 1
-        durations.append(float(record["duration_seconds"]))
-        total_bytes += int(record["bytes"])
+        if record.get("status") == "succeeded":
+            succeeded += 1
+            durations.append(float(record["duration_seconds"]))
+            total_bytes += int(record["bytes"])
+        else:
+            failure_class = str(record.get("failure_class", "acceptance_contract"))
+            failure_classes[failure_class] = failure_classes.get(failure_class, 0) + 1
+    failed = len(records) - succeeded
     return {
         "phase": "summary",
-        "status": "succeeded",
-        "calls": len(records),
+        "status": "succeeded" if failed == 0 and len(records) == planned_calls else "failed",
+        "planned_calls": planned_calls,
+        "attempted_calls": len(records),
+        "succeeded": succeeded,
+        "failed": failed,
+        "not_run": planned_calls - len(records),
         "channel_distribution": distribution,
-        "failure_classes": {},
+        "failure_classes": failure_classes,
         "latency_seconds": {
-            "minimum": round(min(durations), 2),
-            "maximum": round(max(durations), 2),
+            "minimum": round(min(durations), 2) if durations else 0.0,
+            "maximum": round(max(durations), 2) if durations else 0.0,
             "total": round(sum(durations), 2),
         },
         "bytes": total_bytes,
@@ -951,16 +942,17 @@ def run_guarded_paid_acceptance(
             emit(render_record(record))
             return record
         except Exception as error:
-            emit(render_record(_failure_record(call, selected_channel=expected_channel, user_id=user_id, error=error)))
-            raise
+            record = _failure_record(call, selected_channel=expected_channel, user_id=user_id, error=error)
+            emit(render_record(record))
+            return record
 
     records = execute_paid_plan(
         plan,
         activate_channel=activate_channel,
         activate_banana=activate_banana,
         execute=execute,
+        finalize=lambda records: emit(render_record(_summary_record(records, user_id=user_id, planned_calls=len(plan)))),
     )
-    emit(render_record(_summary_record(records, user_id=user_id)))
     return records
 
 
@@ -980,6 +972,7 @@ def _serve_paid() -> None:
         channel_ids=channels,
         chiyun_origin=os.environ.get("AICC_CHIYUN_BASE_URL", ""),
         t8star_origin=os.environ.get("AICC_T8STAR_BASE_URL", ""),
+        maximum_provider_submissions=int(os.environ["AICC_MAX_PAID_CALLS"]),
     )
     if not accounts.created:
         raise RuntimeError("isolated acceptance accounts were not created")
@@ -1019,7 +1012,7 @@ def _probe_signal_server() -> None:
 
 
 def main() -> int:
-    global _pool_path
+    global _owned_pool_file
     keys = consume_server_keys()
     root = Path(__file__).resolve().parents[1]
     data_dir = Path(os.environ["AICC_ACCEPTANCE_DATA"])
@@ -1035,10 +1028,12 @@ def main() -> int:
         maximum_paid_calls=int(os.environ["AICC_MAX_PAID_CALLS"]),
     )
     pool_path = data_dir / ".credential-pools.json"
-    write_credential_pool_config(pool_path, channels, keys)
-    _pool_path = str(pool_path)
+    owned_pool = write_credential_pool_config(pool_path, channels, keys)
+    _owned_pool_file = owned_pool
     environment = dict(os.environ)
     environment.pop("AICC_ACCEPTANCE_KEY_FILE", None)
+    environment.pop("AICC_CHIYUN_BASE_URL", None)
+    environment.pop("AICC_T8STAR_BASE_URL", None)
     environment["AICC_ACCEPTANCE_POOL_FILE"] = str(pool_path)
     environment["PYTHONUNBUFFERED"] = "1"
     with server_log.open("ab", buffering=0) as output:
@@ -1073,8 +1068,9 @@ def main() -> int:
         finally:
             server_log.unlink(missing_ok=True)
             _stop_child()
-            pool_path.unlink(missing_ok=True)
-            _pool_path = None
+            _remove_owned_file(owned_pool)
+            if _owned_pool_file == owned_pool:
+                _owned_pool_file = None
 
 
 if __name__ == "__main__":
@@ -1082,7 +1078,14 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--probe-key-boundary"]:
             probe_values = consume_server_keys()
-            if not probe_values or any(name in os.environ for name in ("ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY")):
+            if not probe_values or any(
+                name in os.environ
+                for name in (
+                    "ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY",
+                    "AICC_ACCEPTANCE_KEY_FILE", "AICC_ACCEPTANCE_POOL_FILE",
+                    "AICC_CHIYUN_BASE_URL", "AICC_T8STAR_BASE_URL",
+                )
+            ):
                 raise RuntimeError("paid credential boundary failed")
             del probe_values
             print("Paid acceptance key boundary ready. No provider request was made.")

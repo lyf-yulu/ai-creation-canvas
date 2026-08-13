@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
@@ -19,6 +20,7 @@ from ai_creation_canvas.adapters.factory import ProviderProtocol, RouteAdapterFa
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.catalog import ManagedRoutingRuntime
+from ai_creation_canvas import catalog as catalog_module
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.coordination import CredentialLease, CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
@@ -34,6 +36,27 @@ from tests.server.test_model_registry import _provider
 
 ORIGIN = "http://127.0.0.1:45991"
 PNG = b"\x89PNG\r\n\x1a\nmanaged-result"
+
+
+def test_provider_submission_budget_is_atomic_and_never_exceeds_twenty() -> None:
+    budget_type = getattr(catalog_module, "ProviderSubmissionBudget", None)
+    assert budget_type is not None
+    budget = budget_type(20)
+
+    def consume(_: int) -> bool:
+        try:
+            budget.consume()
+        except Exception as error:
+            assert error.__class__.__name__ == "ProviderSubmissionBudgetExhausted"
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        results = tuple(pool.map(consume, range(128)))
+
+    assert sum(results) == 20
+    assert budget.used == 20
+    assert budget.remaining == 0
 
 
 def headers(user: str = "user-a") -> dict[str, str]:
@@ -66,9 +89,10 @@ def pool(pool_id: str, provider: str, group: str, keys: tuple[str, ...]) -> Cred
 
 
 class ScriptedCoordinator:
-    def __init__(self) -> None:
+    def __init__(self, *, busy_official: bool = True) -> None:
         self.acquisitions: list[tuple[str, str]] = []
         self.legacy_calls = 0
+        self.busy_official = busy_official
 
     def acquire(self, *args, **kwargs):
         self.legacy_calls += 1
@@ -76,7 +100,7 @@ class ScriptedCoordinator:
 
     @asynccontextmanager
     async def acquire_credential(self, job_id, user_id, candidate):
-        if candidate.route.route_id == "official-route":
+        if self.busy_official and candidate.route.route_id == "official-route":
             raise ExecutionCapacityExceeded("busy")
         key = candidate.pool.keys[0]
         self.acquisitions.append((candidate.route.route_id, key.key_id))
@@ -86,7 +110,7 @@ class ScriptedCoordinator:
         return hashlib.sha256(secret.encode()).hexdigest()
 
 
-def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, store: CanvasStore | None = None):
+def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, store: CanvasStore | None = None, submission_budget=None):
     store = store or CanvasStore(tmp_path / "data")
     store.create_provider_definition(ProviderDefinition("google", "Google", "chiyun_openai_images", "https://google.example", "official"), actor_user_id="bootstrap")
     store.create_provider_definition(ProviderDefinition("t8star", "T8", "chiyun_openai_images", "https://t8.example", "gemini"), actor_user_id="bootstrap")
@@ -107,7 +131,7 @@ def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, stor
         },
         transport=httpx.MockTransport(handler),
     )
-    runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory)
+    runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory, submission_budget)
     registry = AdapterRegistry()
     app = create_app(Settings("test", 45991, store.data_dir, "test-signing-secret"), static_dir=tmp_path / "dist", registry=registry, model_catalog=ModelCatalog(registry), canvas_store=store, managed_routing_runtime=runtime)
     with store._connection(immediate=True) as db:
@@ -120,6 +144,34 @@ def payload(**changes):
     body = {"operation": "image.edit", "model_id": "nano-banana", "prompt": "edit @图片1", "params": {"size": "1024x1024", "output_count": 1}, "asset_ids": [], "inputs": {"reference_images": ["reference-1"]}, "idempotency_key": "managed-key"}
     body.update(changes)
     return body
+
+
+def test_provider_submission_budget_counts_every_route_and_key_attempt_before_io(tmp_path: Path) -> None:
+    provider_posts = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal provider_posts
+        provider_posts += 1
+        return httpx.Response(503, json={"error": "temporarily unavailable"})
+
+    budget = catalog_module.ProviderSubmissionBudget(2)
+    coordinator = ScriptedCoordinator(busy_official=False)
+    app, store, _ = build_app(tmp_path, handler, coordinator, submission_budget=budget)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/api/v1/jobs", headers=headers(), json=payload())
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "PAID_CALL_BUDGET_EXHAUSTED"
+    assert provider_posts == 2
+    assert budget.used == 2 and budget.remaining == 0
+    assert coordinator.acquisitions[:2] == [("official-route", "official-a"), ("gemini-route", "gemini-a")]
+    jobs = store.list_jobs_for_owner("user-a")
+    assert len(jobs) == 1 and jobs[0]["status"] == "failed" and jobs[0]["error_code"] == "PAID_CALL_BUDGET_EXHAUSTED"
+
+    replay = client.post("/api/v1/jobs", headers=headers(), json=payload())
+    assert replay.status_code == 201 and replay.json()["status"] == "failed"
+    assert provider_posts == 2 and budget.used == 2
 
 
 def test_managed_route_retries_explicit_429_on_next_compatible_key_and_persists_safe_snapshot(tmp_path: Path) -> None:
@@ -169,6 +221,26 @@ def test_managed_route_retries_explicit_429_on_next_compatible_key_and_persists_
     headed = client.head(f"/api/v1/results/{response.json()['id']}", headers=headers())
     ranged = client.get(f"/api/v1/results/{response.json()['id']}", headers={**headers(), "Range": "bytes=0-7"})
     assert headed.status_code == 200 and ranged.status_code == 206 and ranged.content == PNG[:8]
+
+
+def test_managed_route_retries_an_explicit_5xx_but_never_a_business_4xx(tmp_path: Path) -> None:
+    statuses = iter((503, 200))
+    seen_auth: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth.append(request.headers["authorization"])
+        status = next(statuses)
+        if status == 503:
+            return httpx.Response(status, json={"error": "temporary"})
+        return httpx.Response(status, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+    coordinator = ScriptedCoordinator()
+    app, _, _ = build_app(tmp_path, handler, coordinator)
+    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", headers=headers(), json=payload())
+
+    assert response.status_code == 201
+    assert seen_auth == ["Bearer secret-value-gemini-a", "Bearer secret-value-gemini-b"]
+    assert coordinator.acquisitions == [("gemini-route", "gemini-a"), ("gemini-route", "gemini-b")]
 
 
 def test_unknown_future_snapshot_version_fails_closed(tmp_path: Path) -> None:

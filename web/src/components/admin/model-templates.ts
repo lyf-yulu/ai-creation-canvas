@@ -8,7 +8,7 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
     ...(required.length ? { required } : {}),
     additionalProperties: false,
 });
-const size = { type: "string", default: "2K", "x-ark-size": { presets: ["1K", "1.5K", "2K", "3K", "4K"], min_pixels: 921600, max_pixels: 16777216, min_ratio: 0.0625, max_ratio: 16 } };
+const size = { type: "string", default: "2K", "x-ark-size": { presets: ["1K", "1.5K", "2K"], min_pixels: 921600, max_pixels: 4624220, min_ratio: 0.0625, max_ratio: 16 } };
 
 const arkImageProperties = {
     size,
@@ -74,7 +74,7 @@ export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
         familyHint: "seedream",
         contract: {
             operation: "image.edit",
-            input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 14 }],
+            input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
             output_media_type: "image",
             parameter_schema: objectSchema(arkImageProperties, [], "seedream"),
             parameter_mappings: arkImageMappings,

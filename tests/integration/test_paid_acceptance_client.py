@@ -36,22 +36,31 @@ def test_paid_job_payloads_are_exactly_one_single_image_and_one_5s_480p_video() 
 
 def test_reviewed_channel_definitions_use_only_code_owned_models_and_origins() -> None:
     definitions = module.acceptance_definitions(
-        ("banana-chiyun", "banana-t8star", "seedance-ark"),
-        chiyun_origin="https://chiyun.example",
-        t8star_origin="https://t8star.example",
+        ("seedream-ark", "seedance-ark"),
+        chiyun_origin="https://attacker.example",
+        t8star_origin="https://attacker.example",
     )
 
-    assert {item["provider_id"] for item in definitions["providers"]} == {"chiyun", "t8star", "ark"}
-    assert {item["model_id"] for item in definitions["models"]} == {"banana", "seedance"}
+    assert {item["provider_id"] for item in definitions["providers"]} == {"ark"}
+    assert {item["base_url"] for item in definitions["providers"]} == {"https://ark.cn-beijing.volces.com"}
+    assert {item["model_id"] for item in definitions["models"]} == {"seedream", "seedance"}
     routes = {item["route_id"]: item for item in definitions["routes"]}
-    assert set(routes) == {"banana-chiyun", "banana-t8star", "seedance-ark"}
-    assert routes["banana-chiyun"]["provider_model_name"] == "gemini-2.5-flash-image"
-    assert routes["banana-t8star"]["provider_model_name"] == "gemini-2.5-flash-image"
+    assert set(routes) == {"seedream-ark", "seedance-ark"}
+    assert routes["seedream-ark"]["provider_model_name"] == "doubao-seedream-5-0-pro-260628"
     assert routes["seedance-ark"]["provider_model_name"] == "doubao-seedance-2-5-260628"
     assert routes["seedance-ark"]["operation_contracts"][0]["operation"] == "video.generate"
     encoded = json.dumps(definitions, sort_keys=True)
     for forbidden in ("api_key", "authorization", "secret"):
         assert forbidden not in encoded.lower()
+
+
+def test_third_party_channel_cannot_turn_a_caller_supplied_origin_into_an_approved_destination() -> None:
+    with pytest.raises(ValueError, match="approved origin"):
+        module.acceptance_definitions(
+            ("banana-chiyun",),
+            chiyun_origin="https://attacker.example",
+            t8star_origin="https://attacker.example",
+        )
 
 
 def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
@@ -70,6 +79,19 @@ def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
     assert seedance["params"] == {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False, "return_last_frame": False}
     assert seedance["inputs"] == {}
     assert len({banana["idempotency_key"], seedream["idempotency_key"], seedance["idempotency_key"]}) == 3
+
+
+def test_four_acceptance_model_profiles_match_the_frozen_cross_stack_fixture() -> None:
+    fixture = json.loads((ROOT / "tests" / "fixtures" / "acceptance-model-profiles.json").read_text(encoding="utf-8"))
+
+    assert module.acceptance_model_profiles() == fixture
+    profiles = fixture["profiles"]
+    assert set(profiles) == {"banana", "gpt-image2", "seedream", "seedance"}
+    assert {item["port_id"]: item["min_items"] for item in profiles["seedream"]["contract"]["input_ports"]}["reference_images"] == 1
+    assert len(profiles["seedance"]["contract"]["input_ports"]) == 5
+    assert set(profiles["seedance"]["contract"]["parameter_schema"]["properties"]) == {
+        "ratio", "resolution", "duration", "generate_audio", "camera_fixed", "return_last_frame", "output_format", "watermark",
+    }
 
 
 def test_acceptance_log_projection_cannot_include_sensitive_request_fields() -> None:
@@ -91,6 +113,55 @@ def test_acceptance_log_projection_cannot_include_sensitive_request_fields() -> 
     serialized = module.render_record(record)
     for forbidden in ("key", "prompt", "cookie", "url", "authorization", "secret"):
         assert forbidden not in serialized.lower()
+
+
+def test_failure_class_preserves_submission_unknown_and_partial_summary_counts() -> None:
+    failure = module.PaidAcceptanceFailure("submission_unknown")
+    assert module._failure_class(failure) == "submission_unknown"
+    records = (
+        module.sanitized_result_record(
+            phase="banana_sample", logical_model="banana", selected_channel="banana-chiyun",
+            status="succeeded", mime="image/png", byte_count=10, duration_seconds=1.2, user_id="user-safe",
+        ),
+        {
+            "phase": "banana_sample", "logical_model": "banana", "selected_channel": "banana-t8star",
+            "status": "failed", "failure_class": "submission_unknown", "user_id": "user-safe",
+        },
+    )
+
+    summary = module._summary_record(records, user_id="user-safe", planned_calls=4)
+
+    assert summary == {
+        "phase": "summary", "status": "failed", "planned_calls": 4, "attempted_calls": 2,
+        "succeeded": 1, "failed": 1, "not_run": 2,
+        "channel_distribution": {"banana-chiyun": 1, "banana-t8star": 1},
+        "failure_classes": {"submission_unknown": 1},
+        "latency_seconds": {"minimum": 1.2, "maximum": 1.2, "total": 1.2},
+        "bytes": 10, "user_id": "user-safe",
+    }
+
+
+def test_paid_plan_finalizer_emits_partial_summary_after_a_failure() -> None:
+    plan = module.paid_call_plan(("banana-chiyun",), banana_sample_count=2, maximum_paid_calls=3)
+    emitted: list[dict[str, object]] = []
+
+    def execute(call) -> dict[str, object]:
+        if call.phase == "banana_sample":
+            return {"phase": call.phase, "logical_model": "banana", "selected_channel": "banana-chiyun", "status": "failed", "failure_class": "business_4xx", "user_id": "user-safe"}
+        return module.sanitized_result_record(phase="smoke", logical_model="banana", selected_channel="banana-chiyun", status="succeeded", mime="image/png", byte_count=1, duration_seconds=1, user_id="user-safe")
+
+    with pytest.raises(RuntimeError, match="paid acceptance call failed"):
+        module.execute_paid_plan(
+            plan,
+            activate_channel=lambda _: None,
+            activate_banana=lambda: None,
+            execute=execute,
+            finalize=lambda records: emitted.append(module._summary_record(records, user_id="user-safe", planned_calls=len(plan))),
+        )
+
+    assert emitted[0]["attempted_calls"] == 2
+    assert emitted[0]["not_run"] == 1
+    assert emitted[0]["failure_classes"] == {"business_4xx": 1}
 
 
 def test_paid_call_plan_runs_every_channel_smoke_before_the_banana_sample() -> None:
@@ -232,23 +303,19 @@ def test_runner_consumes_a_mode_0600_multi_key_bundle_once(tmp_path: Path, monke
     values = module.consume_server_keys()
 
     assert set(values) == {"ARK_API_KEY", "CHIYUN_API_KEY"}
-    assert not key_file.exists()
+    assert key_file.exists()
     assert "AICC_ACCEPTANCE_KEY_FILE" not in os.environ
 
 
 def test_acceptance_server_bootstrap_validates_every_selected_route_without_provider_io(tmp_path: Path) -> None:
-    channels = ("banana-chiyun", "banana-t8star", "seedream-ark", "seedance-ark")
+    channels = ("seedream-ark", "seedance-ark")
     data_dir = tmp_path / "paid-data"
     data_dir.mkdir(mode=0o700)
     pool_file = data_dir / ".credential-pools.json"
     module.write_credential_pool_config(
         pool_file,
         channels,
-        {
-            "CHIYUN_API_KEY": "offline-chiyun-key",
-            "T8STAR_API_KEY": "offline-t8star-key",
-            "ARK_API_KEY": "offline-ark-key",
-        },
+        {"ARK_API_KEY": "offline-ark-key"},
     )
 
     app, accounts = module.create_acceptance_app(
@@ -259,18 +326,46 @@ def test_acceptance_server_bootstrap_validates_every_selected_route_without_prov
         channel_ids=channels,
         chiyun_origin="https://chiyun.example",
         t8star_origin="https://t8star.example",
+        maximum_provider_submissions=2,
     )
 
     assert accounts.created is True
-    assert {item.model_id for item in app.state.canvas_store.list_logical_models()} == {"banana", "seedream", "seedance"}
+    assert {item.model_id for item in app.state.canvas_store.list_logical_models()} == {"seedream", "seedance"}
     routes = app.state.canvas_store.list_model_routes(include_archived=False)
     assert {item.route_id for item in routes} == set(channels)
-    assert sum(item.enabled for item in routes if item.model_id == "banana") == 1
+    assert all(item.enabled for item in routes)
     for route in routes:
         app.state.managed_routing_runtime.adapter_factory.validate_route(route)
     summaries = app.state.managed_routing_runtime.pools()
     assert set(summaries) == {f"paid-{channel}" for channel in channels}
     assert pool_file.stat().st_mode & 0o777 == 0o600
+    assert app.state.managed_routing_runtime.submission_budget.remaining == 2
+
+
+def test_runner_deletes_only_the_exact_pool_inode_it_created(tmp_path: Path) -> None:
+    pool_file = tmp_path / "pool.json"
+    owned = module.write_credential_pool_config(
+        pool_file,
+        ("seedream-ark",),
+        {"ARK_API_KEY": "offline-ark-key"},
+    )
+    assert owned is not None
+
+    replacement = tmp_path / "replacement.json"
+    replacement.write_text("replacement-must-survive", encoding="utf-8")
+    replacement.chmod(0o600)
+    os.replace(replacement, pool_file)
+    module._remove_owned_file(owned)
+    assert pool_file.read_text(encoding="utf-8") == "replacement-must-survive"
+
+    second = tmp_path / "second-pool.json"
+    second_owned = module.write_credential_pool_config(
+        second,
+        ("seedream-ark",),
+        {"ARK_API_KEY": "offline-ark-key"},
+    )
+    module._remove_owned_file(second_owned)
+    assert not second.exists()
 
 
 def test_real_runner_checks_project_owner_before_first_paid_post(monkeypatch) -> None:
@@ -311,11 +406,13 @@ def test_real_runner_checks_project_owner_before_first_paid_post(monkeypatch) ->
     ]
 
 
-def test_runner_signal_before_key_read_removes_credential_file(tmp_path: Path) -> None:
+def test_runner_signal_never_deletes_an_external_key_or_pool_locator(tmp_path: Path) -> None:
     key_file = tmp_path / "paid-key"
     key_file.write_text("sentinel-paid-key", encoding="utf-8"); key_file.chmod(0o600)
+    pool_file = tmp_path / "paid-pool"
+    pool_file.write_text("sentinel-paid-pool", encoding="utf-8"); pool_file.chmod(0o600)
     ready = tmp_path / "ready"
-    environment = {**os.environ, "AICC_ACCEPTANCE_KEY_FILE": str(key_file), "AICC_ACCEPTANCE_SIGNAL_PROBE_FILE": str(ready)}
+    environment = {**os.environ, "AICC_ACCEPTANCE_KEY_FILE": str(key_file), "AICC_ACCEPTANCE_POOL_FILE": str(pool_file), "AICC_ACCEPTANCE_SIGNAL_PROBE_FILE": str(ready)}
     environment.pop("ARK_API_KEY", None)
     process = subprocess.Popen([sys.executable, str(ROOT / "scripts/acceptance_real_media.py"), "--probe-signal-before-key"], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     for _ in range(100):
@@ -325,11 +422,12 @@ def test_runner_signal_before_key_read_removes_credential_file(tmp_path: Path) -
     process.send_signal(signal.SIGTERM)
     stdout, stderr = process.communicate(timeout=5)
     assert process.returncode != 0
-    assert not key_file.exists()
+    assert key_file.exists()
+    assert pool_file.exists()
     assert "sentinel-paid-key" not in stdout + stderr
 
 
-def test_runner_signal_with_server_child_removes_key_and_child(tmp_path: Path) -> None:
+def test_runner_signal_with_server_child_preserves_shell_owned_key_and_stops_child(tmp_path: Path) -> None:
     key_file = tmp_path / "paid-key"
     key_file.write_text(json.dumps({"ARK_API_KEY": "sentinel-paid-key"}), encoding="utf-8"); key_file.chmod(0o600)
     child_pid_file = tmp_path / "child-pid"
@@ -345,7 +443,7 @@ def test_runner_signal_with_server_child_removes_key_and_child(tmp_path: Path) -
     process.send_signal(signal.SIGHUP)
     stdout, stderr = process.communicate(timeout=5)
     assert process.returncode != 0
-    assert not key_file.exists()
+    assert key_file.exists()
     for _ in range(100):
         try: os.kill(child_pid, 0)
         except ProcessLookupError: break

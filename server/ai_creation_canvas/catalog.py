@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+from threading import Lock
 from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from ai_creation_canvas.adapters.portal.catalog import CatalogResult
@@ -17,6 +18,38 @@ from ai_creation_canvas.model_routing import LogicalModelDefinition, validate_ro
 from ai_creation_canvas.routing import RouteSelector
 
 
+class ProviderSubmissionBudgetExhausted(RuntimeError):
+    """Raised before provider I/O when the acceptance budget is exhausted."""
+
+
+class ProviderSubmissionBudget:
+    """Process-local atomic ceiling for provider submission attempts."""
+
+    def __init__(self, maximum: int) -> None:
+        if type(maximum) is not int or not 1 <= maximum <= 20:
+            raise ValueError("provider submission budget must be between one and twenty")
+        self._maximum = maximum
+        self._used = 0
+        self._lock = Lock()
+
+    def consume(self) -> int:
+        with self._lock:
+            if self._used >= self._maximum:
+                raise ProviderSubmissionBudgetExhausted("provider submission budget exhausted")
+            self._used += 1
+            return self._used
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._used
+
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return self._maximum - self._used
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class ManagedRoutingRuntime:
     """Explicit app-owned boundary for managed logical-model routing."""
@@ -26,9 +59,15 @@ class ManagedRoutingRuntime:
     selector: RouteSelector
     coordinator: object
     adapter_factory: object
+    submission_budget: ProviderSubmissionBudget | None = None
 
     def __post_init__(self) -> None:
-        if not callable(self.pool_snapshot) or not isinstance(self.selector, RouteSelector):
+        if (
+            not callable(self.pool_snapshot)
+            or not isinstance(self.selector, RouteSelector)
+            or self.submission_budget is not None
+            and not isinstance(self.submission_budget, ProviderSubmissionBudget)
+        ):
             raise ValueError("managed routing runtime is invalid")
 
     def __repr__(self) -> str:

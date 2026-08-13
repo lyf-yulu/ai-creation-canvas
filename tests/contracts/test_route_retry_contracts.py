@@ -40,7 +40,7 @@ def _http_error(kind: type[httpx.HTTPError]) -> httpx.HTTPError:
         (_http_error(httpx.RemoteProtocolError), SubmissionDisposition.SUBMISSION_UNKNOWN),
         (PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=408), SubmissionDisposition.TEMPORARY_UNAVAILABLE),
         (PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=429), SubmissionDisposition.TEMPORARY_UNAVAILABLE),
-        (PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=500), SubmissionDisposition.SUBMISSION_UNKNOWN),
+        (PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True, status_code=500), SubmissionDisposition.TEMPORARY_UNAVAILABLE),
         (PortalUpstreamError("REQUEST_REJECTED", retryable=False, status_code=401), SubmissionDisposition.REJECTED),
         (PortalUpstreamError("REQUEST_REJECTED", retryable=False, status_code=403), SubmissionDisposition.REJECTED),
         (PortalUpstreamError("INVALID_MODEL", retryable=False, status_code=400), SubmissionDisposition.REJECTED),
@@ -164,7 +164,7 @@ async def _submit(adapter_template: str, tmp_path: Path, transport: httpx.AsyncB
         (401, SubmissionDisposition.REJECTED),
         (403, SubmissionDisposition.REJECTED),
         (400, SubmissionDisposition.REJECTED),
-        (503, SubmissionDisposition.SUBMISSION_UNKNOWN),
+        (503, SubmissionDisposition.TEMPORARY_UNAVAILABLE),
     ],
 )
 def test_submission_http_responses_raise_safe_typed_dispositions(tmp_path: Path, adapter_template: str, status: int, want: SubmissionDisposition) -> None:
@@ -212,21 +212,30 @@ def test_submission_transport_failures_raise_safe_typed_dispositions(
 
 
 @pytest.mark.parametrize("adapter_template", ["ark.image.generate", "chiyun_openai_images.image.edit"])
-def test_synchronous_template_error_id_is_never_typed_as_accepted(tmp_path: Path, adapter_template: str) -> None:
+def test_synchronous_template_explicit_5xx_is_retryable_even_if_body_contains_an_irrelevant_task_id(tmp_path: Path, adapter_template: str) -> None:
     transport = httpx.MockTransport(lambda _: httpx.Response(503, json={"id": "cgt-not-an-async-task"}))
     with pytest.raises(SubmissionError) as caught:
         asyncio.run(_submit(adapter_template, tmp_path, transport))
-    assert caught.value.disposition is SubmissionDisposition.SUBMISSION_UNKNOWN
+    assert caught.value.disposition is SubmissionDisposition.TEMPORARY_UNAVAILABLE
     assert caught.value.provider_task_id is None
-    assert caught.value.safe_to_retry_elsewhere is False
+    assert caught.value.safe_to_retry_elsewhere is True
 
 
-def test_ark_async_video_error_cgt_id_is_typed_as_accepted(tmp_path: Path) -> None:
+def test_ark_async_video_explicit_5xx_is_retryable_even_if_body_contains_a_task_id(tmp_path: Path) -> None:
     transport = httpx.MockTransport(lambda _: httpx.Response(503, json={"id": "cgt-recoverable"}))
     with pytest.raises(SubmissionError) as caught:
         asyncio.run(_submit("ark.video.generate", tmp_path, transport))
-    assert caught.value.disposition is SubmissionDisposition.ACCEPTED
-    assert caught.value.provider_task_id == "cgt-recoverable"
+    assert caught.value.disposition is SubmissionDisposition.TEMPORARY_UNAVAILABLE
+    assert caught.value.provider_task_id is None
+    assert caught.value.safe_to_retry_elsewhere is True
+
+
+def test_ark_async_video_business_4xx_never_becomes_accepted_from_a_body_task_id(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(lambda _: httpx.Response(400, json={"id": "cgt-must-not-bypass-rejection"}))
+    with pytest.raises(SubmissionError) as caught:
+        asyncio.run(_submit("ark.video.generate", tmp_path, transport))
+    assert caught.value.disposition is SubmissionDisposition.REJECTED
+    assert caught.value.provider_task_id is None
     assert caught.value.safe_to_retry_elsewhere is False
 
 

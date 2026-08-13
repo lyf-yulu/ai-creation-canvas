@@ -203,7 +203,7 @@ class RouteAdapterFactory:
         if len(route.operation_contracts) != 1:
             raise ValueError("route must bind exactly one operation template")
         contract = route.operation_contracts[0]
-        _validate_parameter_contract(route.adapter_type, contract.operation, contract.parameter_schema, contract.parameter_mappings)
+        _validate_parameter_contract(route.adapter_type, contract.operation, contract.parameter_schema, contract.parameter_mappings, route.family)
         ports = {port.port_id: port for port in contract.input_ports}
         if route.adapter_type == "ark":
             targets = set(contract.parameter_mappings.values())
@@ -384,6 +384,7 @@ def _validate_parameter_contract(
     operation: ModelOperation,
     schema: Mapping[str, object],
     mappings: Mapping[str, str],
+    family: str,
 ) -> None:
     if adapter_type == "ark" and operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
         template = _ARK_IMAGE_PARAMETERS
@@ -396,8 +397,18 @@ def _validate_parameter_contract(
         required_template = frozenset({"size", "output_count"})
     else:
         raise ValueError("route parameter template is unsupported")
-    if set(schema) - {"type", "properties", "required", "additionalProperties"}:
+    if set(schema) - {"type", "properties", "required", "additionalProperties", "x-aicc-profile"}:
         raise ValueError("route parameter schema is unsupported")
+    profile = schema.get("x-aicc-profile")
+    expected_profile = (
+        "seedream" if adapter_type == "ark" and operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}
+        else "seedance" if adapter_type == "ark" and operation is ModelOperation.VIDEO_GENERATE
+        else "banana" if family == "nano-banana"
+        else "gpt_image2" if family == "gpt-image"
+        else None
+    )
+    if profile is not None and profile != expected_profile:
+        raise ValueError("route parameter profile is unsupported")
     properties = schema.get("properties")
     raw_required = schema.get("required", [])
     if (

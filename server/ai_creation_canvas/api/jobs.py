@@ -23,6 +23,7 @@ from ai_creation_canvas.credential_pools import CredentialPool
 from ai_creation_canvas.model_registry import OperationContract
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteCandidate
+from ai_creation_canvas.catalog import ProviderSubmissionBudgetExhausted
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -238,6 +239,19 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
             try:
                 async with runtime.coordinator.acquire_credential(str(reservation.job["id"]), context.user.user_id, candidate) as acquired:
                     lease = acquired
+                    if runtime.submission_budget is not None:
+                        try:
+                            runtime.submission_budget.consume()
+                        except ProviderSubmissionBudgetExhausted:
+                            store.mark_submission_rejected(
+                                str(reservation.job["id"]), token, "PAID_CALL_BUDGET_EXHAUSTED",
+                            )
+                            raise problem(
+                                request,
+                                "PAID_CALL_BUDGET_EXHAUSTED",
+                                "The paid provider submission budget is exhausted.",
+                                status=503,
+                            ) from None
                     snapshot = _route_snapshot(candidate.route, original.pool.revision_digest)
                     snapshot_item = store.record_routing_snapshot(
                         str(reservation.job["id"]), token,

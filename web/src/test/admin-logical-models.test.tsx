@@ -3,6 +3,8 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { ModelEditor } from "@/components/admin/model-editor";
 import type { AdminLogicalModel } from "@/api/admin";
+import frozenProfiles from "../../../tests/fixtures/acceptance-model-profiles.json";
+import { ADMIN_MODEL_TEMPLATES, callingPresetsForModel } from "@/components/admin/model-templates";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -62,4 +64,15 @@ it("does not publish a pending save result or error after unmount", async () => 
     resolveSave({ ...image, display_name: "Pending", revision: 8 });
     await Promise.resolve();
     expect(saved).not.toHaveBeenCalled();
+});
+
+it("keeps all four admin templates exactly aligned with the frozen server acceptance profiles", () => {
+    const fixture = frozenProfiles.profiles as Record<string, { provider_model_name: string; contract: unknown }>;
+    const profileIds = { banana: "banana", gpt_image2: "gpt-image2", seedream: "seedream", seedance: "seedance" } as const;
+    for (const template of ADMIN_MODEL_TEMPLATES) {
+        const expected = fixture[profileIds[template.id]];
+        expect(template.contract).toEqual(expected.contract);
+        const model = { ...image, operation_contracts: [template.contract] };
+        expect(callingPresetsForModel(model)[0].providerModelName).toBe(expected.provider_model_name);
+    }
 });
