@@ -103,7 +103,7 @@ it("keeps the logical-model administrator usable without horizontal overflow at 
         let body: unknown = {};
         if (url.includes("/admin/users")) body = { users: [{ user_id: "user", username: "user", display_name: "普通用户", role: "user", enabled: true, must_change_password: false, model_ids: ["banana"], created_at: 1, updated_at: 1 }] };
         else if (url.includes("/admin/models")) body = { models: [{ model_id: "banana", service_id: "banana", display_name: "Nano Banana", operations: ["image.edit"], input_media: ["text", "image"], parameter_schema: {} }] };
-        else if (url.includes("/credential-pools")) body = { pools: [{ pool_id: "t8-gemini", provider_id: "t8star", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null }] };
+        else if (url.includes("/credential-pools")) body = { pools: [{ pool_id: "t8-gemini", provider_id: "t8star", adapter_type: "chiyun_openai_images", group: "gemini", allowed_families: ["nano-banana"], revision_digest: "a".repeat(64), key_count: 2, total_capacity: 4, capacity_status: "available", available_count: 2, busy_count: 0, circuit_status: "unsupported", circuit_open_count: null }] };
         else if (url.includes("/routes")) body = { routes: [] };
         else if (url.includes("/logical-models")) body = { models: [{ model_id: "banana", display_name: "Nano Banana", introduction: "多参考图编辑", modality: "image", operation_contracts: [contract], enabled: true, archived_at: null, revision: 1 }] };
         return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
@@ -113,13 +113,25 @@ it("keeps the logical-model administrator usable without horizontal overflow at 
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
-    for (const name of ["保存模型", "新建线路", "保存派发"]) {
-        const button = page.getByRole("button", { name });
-        await expect.element(button).toBeVisible();
-        const rectangle = (await button.element()).getBoundingClientRect();
+    await expect.element(page.getByRole("heading", { name: "调用设置" })).toBeVisible();
+    await expect.element(page.getByRole("article", { name: "T8Star 调用设置" })).toBeVisible();
+    const requiredControls = [
+        page.getByLabelText("启用 T8Star"),
+        page.getByLabelText("T8Star 凭据池"),
+        page.getByLabelText("T8Star 优先级"),
+        page.getByLabelText("T8Star 最大并发"),
+        page.getByRole("button", { name: "保存 T8Star 设置" }),
+        page.getByLabelText("选择账号"),
+        page.getByRole("button", { name: "保存派发" }),
+    ];
+    for (const control of requiredControls) {
+        await expect.element(control).toBeVisible();
+        const rectangle = (await control.element()).getBoundingClientRect();
         expect(rectangle.left).toBeGreaterThanOrEqual(0);
         expect(rectangle.right).toBeLessThanOrEqual(window.innerWidth);
     }
+    await page.getByLabelText("T8Star 凭据池").selectOptions("t8-gemini");
+    await expect.element(page.getByRole("button", { name: "保存 T8Star 设置" })).not.toBeDisabled();
 });
 
 it("runs the connected media graph editing path in desktop Chromium", async () => {
