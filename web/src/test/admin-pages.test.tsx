@@ -34,11 +34,13 @@ afterEach(() => {
 
 it("shows administrator destinations only to an administrator", () => {
     const { rerender } = render(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
+    expect(screen.getAllByRole("link", { name: "统计" })).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "账号管理" })).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "模型派发" })).toHaveLength(2);
 
     useSessionStore.setState({ session: { user_id: "user-1", username: "普通用户", role: "user", must_change_password: false } });
     rerender(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
+    expect(screen.getAllByRole("link", { name: "统计" })).toHaveLength(2);
     expect(screen.queryByRole("link", { name: "账号管理" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "模型派发" })).not.toBeInTheDocument();
 });

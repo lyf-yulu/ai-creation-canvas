@@ -1,4 +1,4 @@
-import { FolderKanban, Images, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
+import { BarChart3, FolderKanban, Images, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 
@@ -10,6 +10,7 @@ const releasedNavigation = [
     { label: "项目", to: "/canvas", icon: FolderKanban },
     { label: "资产", to: "/assets", icon: Images },
     { label: "任务", to: "/tasks", icon: Rows3 },
+    { label: "统计", to: "/usage", icon: BarChart3 },
 ] as const;
 
 const adminNavigation = [
