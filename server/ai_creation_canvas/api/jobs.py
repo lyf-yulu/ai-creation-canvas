@@ -28,6 +28,7 @@ from ai_creation_canvas.catalog import ProviderSubmissionBudgetExhausted
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 64
+_MAX_BILLABLE_VIDEO_SECONDS = 86_400
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _RESULT_ASSET = re.compile(r"job-result\.([A-Za-z0-9_-]{1,128})\.([0-9]{1,2})\Z")
 
@@ -105,6 +106,37 @@ def _validate_parameters(model: ModelSpec, values: dict[str, Any]) -> None:
     if model.parameter_mappings and set(values) - set(model.parameter_mappings):
         raise ValueError("parameters are not mapped")
     validate_parameter_values(schema, values)
+
+
+def _billing_quantities(
+    operation: object,
+    params: Mapping[str, object],
+    parameter_schema: Mapping[str, object],
+) -> tuple[int, int]:
+    operation_value = getattr(operation, "value", operation)
+    if operation_value in {"image.generate", "image.edit"}:
+        return 0, 1
+    if operation_value not in {"video.generate", "video.image_to_video"}:
+        return 0, 0
+    duration = params.get("duration")
+    properties = parameter_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return 0, 0
+    rule = properties.get("duration")
+    if not isinstance(rule, Mapping) or rule.get("type") != "integer":
+        return 0, 0
+    minimum, maximum = rule.get("minimum"), rule.get("maximum")
+    if (
+        type(duration) is not int
+        or type(minimum) is not int
+        or type(maximum) is not int
+        or minimum > maximum
+        or duration < minimum
+        or duration > maximum
+        or duration > _MAX_BILLABLE_VIDEO_SECONDS
+    ):
+        return 0, 0
+    return duration, 0
 
 
 def _response(item: dict[str, object], request: Request) -> dict[str, object]:
@@ -386,6 +418,11 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         _validate_parameters(model, payload.params)
     except (TypeError, ValueError):
         raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422) from None
+    video_seconds, image_count = _billing_quantities(
+        domain_request.operation,
+        domain_request.params,
+        model.parameter_schema,
+    )
     runtime = getattr(request.app.state, "managed_routing_runtime", None)
     managed = runtime is not None and runtime.is_managed(domain_request.model_id)
     selected_adapter = None if managed else request.app.state.adapter_registry.generation(model.service_id)
@@ -458,6 +495,8 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         submission_json=submission_json if binding is not None else None,
         logical_model_id=domain_request.model_id if managed else None,
         logical_model_revision=runtime.logical_model(domain_request.model_id).revision if managed else None,
+        video_seconds=video_seconds,
+        image_count=image_count,
     )
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)

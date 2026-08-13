@@ -33,6 +33,8 @@ def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
     row, _ = store.job_for_owner("j", "u")
     assert row and row["result_id"] == "opaque_id"
     assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}
+    assert store.usage_rates() == {"video_price_fen": 0, "image_price_fen": 0}
+    assert store.usage_for_owner("u") == {"user_id": "u", "total_cost_fen": 0, "jobs": ()}
 
 def test_stale_reservation_token_cannot_overwrite_reclaimed_job(tmp_path):
     store = CanvasStore(tmp_path / "data")
@@ -143,3 +145,130 @@ def test_checkpoint_busy_once_retries_before_clearing_the_pending_marker(tmp_pat
     assert calls[:2] == [("before_vacuum", 0), ("before_vacuum", 1)]
     with store._connection() as verify:
         assert verify.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "0"
+
+
+def test_success_captures_current_rates_once(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="video", service_id="video", operation="video.generate", idempotency_key="video-key", request_hash="v" * 64, video_seconds=5)
+    store.mark_submitted("video", "up-video", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    store.record_polled_job("video", token=str(claim["submission_token"]), status="succeeded", result_id="result")
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 125
+    assert usage["jobs"][0]["video_price_fen"] == 25
+
+
+def test_failed_and_repeated_completion_do_not_charge(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=10, image_price_fen=20)
+    reserved = store.reserve_job(user_id="user-a", job_id="image", service_id="image", operation="image.generate", idempotency_key="image-key", request_hash="i" * 64, image_count=1)
+    store.mark_submitted("image", "up-image", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    store.record_polled_job("image", token=str(claim["submission_token"]), status="failed", error_code="TASK_FAILED")
+    assert store.usage_for_owner("user-a")["total_cost_fen"] == 0
+
+
+def test_synchronous_submission_success_captures_current_rates(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="sync", service_id="image", operation="image.generate", idempotency_key="sync-key", request_hash="s" * 64, image_count=1)
+    store.mark_submitted("sync", "up-sync", "succeeded", str(reserved.job["submission_token"]))
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 120
+    assert len(usage["jobs"]) == 1
+    job = usage["jobs"][0]
+    assert job["operation"] == "image.generate"
+    assert job["status"] == "succeeded"
+    assert job["image_count"] == 1
+    assert job["image_price_fen"] == 120
+    assert job["cost_fen"] == 120
+    assert job["charged_at"] is not None
+
+
+def test_success_without_a_billable_quantity_keeps_every_snapshot_empty(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(
+        user_id="user-a",
+        job_id="unmetered-video",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="unmetered-key",
+        request_hash="u" * 64,
+    )
+
+    completed = store.mark_submitted(
+        "unmetered-video",
+        "up-unmetered",
+        "succeeded",
+        str(reserved.job["submission_token"]),
+    )
+
+    assert completed["video_seconds"] == completed["image_count"] == 0
+    assert completed["video_price_fen"] is None
+    assert completed["image_price_fen"] is None
+    assert completed["cost_fen"] is None
+    assert completed["charged_at"] is None
+    assert store.usage_for_owner("user-a") == {
+        "user_id": "user-a",
+        "total_cost_fen": 0,
+        "jobs": (),
+    }
+
+
+@pytest.mark.parametrize("scope", ("owner", "all_users"))
+def test_usage_totals_can_exceed_sqlite_signed_integer_range(tmp_path, scope):
+    store = CanvasStore(tmp_path / scope)
+    with store._connection(immediate=True) as db:
+        db.execute(
+            """
+            WITH digits(d) AS (
+                VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+            ), numbers(n) AS (
+                SELECT a.d + 10*b.d + 100*c.d + 1000*d.d + 10000*e.d + 100000*f.d
+                FROM digits a CROSS JOIN digits b CROSS JOIN digits c
+                CROSS JOIN digits d CROSS JOIN digits e CROSS JOIN digits f
+            )
+            INSERT INTO canvas_jobs (
+                id,user_id,service_id,operation,status,idempotency_key,request_hash,
+                video_seconds,image_count,video_price_fen,image_price_fen,cost_fen,
+                charged_at,created_at,updated_at
+            )
+            SELECT
+                printf('maximum-video-%06d', n),'user-a','video','video.generate','succeeded',
+                printf('maximum-key-%06d', n),'hash',86400,0,1000000000,0,86400000000000,
+                'charged','created','updated'
+            FROM numbers WHERE n < 106752
+            """
+        )
+
+    usage = (
+        store.usage_for_owner("user-a")
+        if scope == "owner"
+        else store.usage_for_all_users()[0]
+    )
+
+    assert usage["total_cost_fen"] == 9_223_372_800_000_000_000
+    assert len(usage["jobs"]) == 106_752
+
+
+def test_duplicate_successful_poll_callback_keeps_one_cost_snapshot(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="video", service_id="video", operation="video.generate", idempotency_key="duplicate-key", request_hash="d" * 64, video_seconds=5)
+    store.mark_submitted("video", "up-video", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    token = str(claim["submission_token"])
+    store.record_polled_job("video", token=token, status="succeeded", result_id="result")
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    store.record_polled_job("video", token=token, status="succeeded", result_id="result")
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 125
+    assert len(usage["jobs"]) == 1
+    assert usage["jobs"][0]["video_price_fen"] == 25

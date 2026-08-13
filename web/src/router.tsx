@@ -11,6 +11,7 @@ import TasksPage from "@/pages/tasks";
 import AdminModelsPage from "@/pages/admin/models";
 import AdminUsersPage from "@/pages/admin/users";
 import AdminUsagePage from "@/pages/admin/usage";
+import UsagePage from "@/pages/usage";
 
 export const router = createBrowserRouter([
     { path: "/login", element: <LoginPage /> },
@@ -22,6 +23,7 @@ export const router = createBrowserRouter([
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
             { path: "/assets", element: <ActivityAssetsPage /> },
             { path: "/tasks", element: <TasksPage /> },
+            { path: "/usage", element: <UsagePage /> },
             { path: "/admin/users", element: <RoleGate allowed={["admin"]}><AdminUsersPage /></RoleGate> },
             { path: "/admin/models", element: <RoleGate allowed={["admin"]}><AdminModelsPage /></RoleGate> },
             { path: "/admin/usage", element: <RoleGate allowed={["admin"]}><AdminUsagePage /></RoleGate> },

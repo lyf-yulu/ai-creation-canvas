@@ -5,11 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 from dataclasses import replace
 from typing import Literal
 
 from ai_creation_canvas.api._common import context_for, problem
+from ai_creation_canvas.api.usage import all_usage_projection
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.domain.models import ModelInputPort, ModelOperation
@@ -32,6 +33,12 @@ router = APIRouter(prefix="/api/v1/admin")
 class UserPatch(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     enabled: bool
+
+
+class UsageRates(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    video_price_fen: int = Field(ge=0, le=1_000_000_000)
+    image_price_fen: int = Field(ge=0, le=1_000_000_000)
 
 
 class ModelAssignments(BaseModel):
@@ -81,20 +88,46 @@ async def list_users(request: Request) -> dict[str, object]:
 @router.get("/usage")
 async def usage_summary(request: Request) -> dict[str, object]:
     _require_admin(request)
-    rows = request.app.state.canvas_store.admin_usage_by_user()
+    store = request.app.state.canvas_store
+    rows = store.admin_usage_by_user()
+    charged = all_usage_projection(store)
+    charged_by_user = {str(item["user_id"]): item["summary"] for item in charged["users"]}
+    empty_charged = {"successful_jobs": 0, "image_count": 0, "video_seconds": 0, "total_cost_fen": "0"}
     users = [
         {
             "user_id": row["user_id"],
             "username": row["username_normalized"],
             "display_name": row["display_name"],
             **{name: int(row[name]) for name in ("jobs", "succeeded", "failed", "active", "image", "video")},
+            "summary": charged_by_user.get(str(row["user_id"]), empty_charged),
         }
         for row in rows
     ]
     return {
+        "summary": charged["summary"],
+        "jobs": charged["jobs"],
         "totals": {name: sum(int(row[name]) for row in rows) for name in ("jobs", "succeeded", "failed", "active", "image", "video")},
         "users": users,
     }
+
+
+@router.get("/usage/rates")
+async def get_usage_rates(request: Request) -> dict[str, int]:
+    _require_admin(request)
+    return request.app.state.canvas_store.usage_rates()
+
+
+@router.put("/usage/rates")
+async def update_usage_rates(request: Request) -> dict[str, int]:
+    _require_admin(request)
+    try:
+        body = UsageRates.model_validate(await request.json())
+    except (ValidationError, ValueError):
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.") from None
+    return request.app.state.canvas_store.set_usage_rates(
+        video_price_fen=body.video_price_fen,
+        image_price_fen=body.image_price_fen,
+    )
 
 
 @router.patch("/users/{user_id}")
