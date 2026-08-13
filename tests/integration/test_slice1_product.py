@@ -195,7 +195,26 @@ def test_local_admin_price_freeze_is_visible_only_to_the_owner_and_admin(tmp_pat
 
     owner_usage = user.get("/api/v1/usage")
     assert owner_usage.status_code == 200
-    assert sorted(item["cost_fen"] for item in owner_usage.json()["jobs"]) == [120, 125, 999]
+    charged_jobs = owner_usage.json()["jobs"]
+    assert len(charged_jobs) == 3
+    video_job = next(item for item in charged_jobs if item["operation"] == "video.generate")
+    first_image_job = next(item for item in charged_jobs if item["operation"] == "image.generate" and item["image_price_fen"] == 120)
+    later_image_job = next(item for item in charged_jobs if item["operation"] == "image.generate" and item["image_price_fen"] == 999)
+    assert video_job["operation"] == "video.generate"
+    assert video_job["video_seconds"] == 5
+    assert video_job["image_count"] == 0
+    assert video_job["video_price_fen"] == 25
+    assert video_job["cost_fen"] == 125
+    assert first_image_job["operation"] == "image.generate"
+    assert first_image_job["image_count"] == 1
+    assert first_image_job["video_seconds"] == 0
+    assert first_image_job["image_price_fen"] == 120
+    assert first_image_job["cost_fen"] == 120
+    assert later_image_job["operation"] == "image.generate"
+    assert later_image_job["image_count"] == 1
+    assert later_image_job["video_seconds"] == 0
+    assert later_image_job["image_price_fen"] == 999
+    assert later_image_job["cost_fen"] == 999
     assert owner_usage.json()["summary"]["total_cost_fen"] == 1244
     assert user.get("/api/v1/admin/usage").status_code == 404
 
