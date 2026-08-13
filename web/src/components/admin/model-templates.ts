@@ -8,13 +8,13 @@ const objectSchema = (properties: Record<string, unknown>, required: string[] = 
     ...(required.length ? { required } : {}),
     additionalProperties: false,
 });
-const size = { type: "string", default: "2K", "x-ark-size": { presets: ["1K", "1.5K", "2K"], min_pixels: 921600, max_pixels: 4624220, min_ratio: 0.0625, max_ratio: 16 } };
+const size = { type: "string", default: "2K", title: "尺寸", description: "可选择预设，也可输入宽x高", "x-ark-size": { presets: ["1K", "1.5K", "2K"], min_pixels: 921600, max_pixels: 4624220, min_ratio: 0.0625, max_ratio: 16 } };
 
 const arkImageProperties = {
     size,
-    watermark: { type: "boolean", default: false },
-    output_format: { type: "string", enum: ["png", "jpeg"], default: "png" },
-    prompt_optimization: { type: "string", enum: ["standard", "fast"], default: "standard" },
+    output_format: { type: "string", enum: ["png", "jpeg"], default: "png", title: "图片格式" },
+    prompt_optimization: { type: "string", enum: ["standard", "fast"], default: "standard", title: "提示词优化" },
+    watermark: { type: "boolean", default: false, title: "添加水印" },
 };
 const arkImageMappings = { size: "size", watermark: "watermark", output_format: "output_format", prompt_optimization: "optimize_prompt_options.mode" };
 const chiyunProperties = {
@@ -22,14 +22,12 @@ const chiyunProperties = {
     output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },
 };
 const videoProperties = {
-    ratio: { type: "string", enum: ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], default: "16:9" },
-    resolution: { type: "string", enum: ["480p", "720p", "1080p", "4k"], default: "720p" },
-    duration: { type: "integer", minimum: 4, maximum: 30, default: 5 },
-    generate_audio: { type: "boolean", default: true },
-    camera_fixed: { type: "boolean", default: false },
-    return_last_frame: { type: "boolean", default: false },
-    output_format: { type: "string", enum: ["mp4", "mov"], default: "mp4" },
-    watermark: { type: "boolean", default: false },
+    ratio: { type: "string", enum: ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], default: "16:9", title: "画面比例" },
+    resolution: { type: "string", enum: ["480p", "720p"], default: "720p", title: "分辨率" },
+    duration: { type: "integer", minimum: 4, maximum: 30, default: 5, title: "时长（秒）" },
+    generate_audio: { type: "boolean", default: true, title: "生成声音" },
+    output_format: { type: "string", enum: ["mp4", "mov"], default: "mp4", title: "视频格式" },
+    watermark: { type: "boolean", default: false, title: "添加水印" },
 };
 const videoMappings = Object.fromEntries(Object.keys(videoProperties).map((key) => [key, key]));
 
@@ -76,7 +74,7 @@ export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
             operation: "image.edit",
             input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
             output_media_type: "image",
-            parameter_schema: objectSchema(arkImageProperties, [], "seedream"),
+            parameter_schema: objectSchema(arkImageProperties),
             parameter_mappings: arkImageMappings,
         },
     },
@@ -124,13 +122,13 @@ export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
             operation: "video.generate",
             input_ports: [
                 prompt,
+                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 30 },
                 { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 },
                 { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 },
-                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 9 },
-                { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 3 },
+                { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 10 },
             ],
             output_media_type: "video",
-            parameter_schema: objectSchema(videoProperties, [], "seedance"),
+            parameter_schema: objectSchema(videoProperties),
             parameter_mappings: videoMappings,
         },
     },
@@ -208,10 +206,11 @@ export const routeContractForModel = (template: AdminTemplate, model: AdminLogic
     const trustedProperties = (template.contract.parameter_schema.properties || {}) as Record<string, unknown>;
     const properties = Object.fromEntries(Object.entries(trustedProperties).filter(([name, rule]) => sameJson(publicProperties[name], rule)));
     const required = (template.contract.parameter_schema.required as string[] | undefined)?.filter((name) => name in properties) || [];
+    const trustedProfile = profileFromContract(template.contract) || undefined;
     return {
         ...template.contract,
         input_ports,
-        parameter_schema: objectSchema(properties, required, template.id),
+        parameter_schema: objectSchema(properties, required, trustedProfile),
         parameter_mappings: Object.fromEntries(Object.entries(template.contract.parameter_mappings).filter(([name]) => name in properties)),
     };
 };

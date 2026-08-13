@@ -99,12 +99,13 @@ def execute_paid_plan(
     activate_channel: Callable[[str], None],
     activate_banana: Callable[[], None],
     execute: Callable[[PaidCall], dict[str, object]],
-    finalize: Callable[[tuple[dict[str, object], ...]], None] | None = None,
+    recorder: "PaidRunRecorder",
 ) -> tuple[dict[str, object], ...]:
     records: list[dict[str, object]] = []
     batch_enabled = False
-    try:
-        for call in plan:
+    for call in plan:
+        recorder.begin_call(call)
+        try:
             if call.phase == "smoke":
                 if call.channel_id is None:
                     raise RuntimeError("paid smoke channel is missing")
@@ -115,13 +116,19 @@ def execute_paid_plan(
                     batch_enabled = True
             else:
                 raise RuntimeError("paid call phase is invalid")
+        except Exception as error:
+            recorder.fail_current(error, failure_class="activation_failed")
+            raise
+        recorder.mark_attempted()
+        try:
             record = execute(call)
-            records.append(record)
-            if record.get("status") != "succeeded":
-                raise RuntimeError("paid acceptance call failed")
-    finally:
-        if finalize is not None:
-            finalize(tuple(records))
+        except Exception as error:
+            recorder.fail_current(error)
+            raise
+        recorder.record_current(record)
+        records.append(record)
+        if record.get("status") != "succeeded":
+            raise RuntimeError("paid acceptance call failed")
     return tuple(records)
 
 
@@ -214,7 +221,7 @@ def request_for_paid_call(call: PaidCall, owned_asset_id: str) -> dict[str, obje
         **common,
         "operation": "video.generate",
         "prompt": "A green circle moves slowly across a black background.",
-        "params": {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False, "return_last_frame": False},
+        "params": {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False},
         "inputs": {},
     }
 
@@ -832,54 +839,214 @@ def _failure_class(error: Exception) -> str:
     return "acceptance_contract"
 
 
-def _failure_record(call: PaidCall, *, selected_channel: str, user_id: str, error: Exception) -> dict[str, object]:
+_SAFE_RUN_FAILURE_CLASSES = frozenset({
+    "submission_unknown", "business_4xx", "retryable_http", "service_5xx",
+    "transport", "timeout", "generation_failed", "acceptance_contract",
+    "upload_failed", "preflight_failed", "activation_failed", "blocked_after_failure",
+})
+
+
+def _failure_record(
+    call: PaidCall,
+    *,
+    selected_channel: str,
+    user_id: str,
+    error: Exception | None = None,
+    failure_class: str | None = None,
+    status: str = "failed",
+) -> dict[str, object]:
+    classified = failure_class if failure_class is not None else _failure_class(error or RuntimeError())
+    if classified not in _SAFE_RUN_FAILURE_CLASSES or status not in {"failed", "not_run"}:
+        raise ValueError("paid acceptance failure record is invalid")
     return {
         "phase": call.phase,
         "logical_model": call.model_id,
         "selected_channel": selected_channel,
-        "status": "failed",
-        "failure_class": _failure_class(error),
+        "status": status,
+        "failure_class": classified,
         "user_id": user_id,
     }
 
 
-def _summary_record(records: tuple[dict[str, object], ...], *, user_id: str, planned_calls: int) -> dict[str, object]:
-    if type(planned_calls) is not int or not 0 <= len(records) <= planned_calls <= 20:
+def _summary_record(
+    outcomes: tuple[dict[str, object], ...],
+    *,
+    user_id: str,
+    attempted_calls: int,
+) -> dict[str, object]:
+    if (
+        not 1 <= len(outcomes) <= 20
+        or type(attempted_calls) is not int
+        or not 0 <= attempted_calls <= len(outcomes)
+    ):
         raise ValueError("paid acceptance summary count is invalid")
     distribution: dict[str, int] = {}
     durations: list[float] = []
     total_bytes = 0
     failure_classes: dict[str, int] = {}
+    not_run_classes: dict[str, int] = {}
+    projection: list[dict[str, object]] = []
     succeeded = 0
-    for record in records:
+    failed = 0
+    not_run = 0
+    for record in outcomes:
+        status = record.get("status")
+        if status not in {"succeeded", "failed", "not_run"}:
+            raise ValueError("paid acceptance summary outcome is invalid")
         channel = str(record["selected_channel"])
-        distribution[channel] = distribution.get(channel, 0) + 1
-        if record.get("status") == "succeeded":
+        item = {
+            "phase": str(record["phase"]),
+            "logical_model": str(record["logical_model"]),
+            "selected_channel": channel,
+            "status": status,
+        }
+        if status != "not_run":
+            distribution[channel] = distribution.get(channel, 0) + 1
+        if status == "succeeded":
             succeeded += 1
             durations.append(float(record["duration_seconds"]))
             total_bytes += int(record["bytes"])
         else:
-            failure_class = str(record.get("failure_class", "acceptance_contract"))
+            failure_class = str(record.get("failure_class", ""))
+            if failure_class not in _SAFE_RUN_FAILURE_CLASSES:
+                raise ValueError("paid acceptance summary failure class is invalid")
+            item["failure_class"] = failure_class
             failure_classes[failure_class] = failure_classes.get(failure_class, 0) + 1
-    failed = len(records) - succeeded
+            if status == "failed":
+                failed += 1
+            else:
+                not_run += 1
+                not_run_classes[failure_class] = not_run_classes.get(failure_class, 0) + 1
+        projection.append(item)
     return {
         "phase": "summary",
-        "status": "succeeded" if failed == 0 and len(records) == planned_calls else "failed",
-        "planned_calls": planned_calls,
-        "attempted_calls": len(records),
+        "status": "succeeded" if succeeded == len(outcomes) else "failed",
+        "planned_calls": len(outcomes),
+        "attempted_calls": attempted_calls,
         "succeeded": succeeded,
         "failed": failed,
-        "not_run": planned_calls - len(records),
+        "not_run": not_run,
         "channel_distribution": distribution,
         "failure_classes": failure_classes,
+        "not_run_classes": not_run_classes,
         "latency_seconds": {
             "minimum": round(min(durations), 2) if durations else 0.0,
             "maximum": round(max(durations), 2) if durations else 0.0,
             "total": round(sum(durations), 2),
         },
         "bytes": total_bytes,
+        "outcomes": projection,
         "user_id": user_id,
     }
+
+
+class PaidRunRecorder:
+    """Account for every planned call and emit exactly one redacted summary."""
+
+    def __init__(
+        self,
+        plan: tuple[PaidCall, ...],
+        *,
+        user_id: str,
+        emit: Callable[[str], None],
+    ) -> None:
+        if not plan or len(plan) > 20 or not callable(emit):
+            raise ValueError("paid acceptance recorder is invalid")
+        self._plan = plan
+        self._user_id = user_id
+        self._emit = emit
+        self._outcomes: list[dict[str, object] | None] = [None] * len(plan)
+        self._current_index: int | None = None
+        self._next_index = 0
+        self._attempted_calls = 0
+        self._preflight_failure_class = "preflight_failed"
+        self._stage = "preflight"
+        self._finalized = False
+
+    def __enter__(self) -> "PaidRunRecorder":
+        return self
+
+    def preflight(self, failure_class: str, action: Callable[[], object]) -> object:
+        if failure_class not in {"upload_failed", "preflight_failed"} or self._stage != "preflight":
+            raise ValueError("paid acceptance preflight is invalid")
+        try:
+            return action()
+        except Exception:
+            self._preflight_failure_class = failure_class
+            raise
+
+    def begin_call(self, call: PaidCall) -> None:
+        if self._current_index is not None or self._next_index >= len(self._plan) or self._plan[self._next_index] != call:
+            raise RuntimeError("paid acceptance call order is invalid")
+        self._current_index = self._next_index
+        self._stage = "activation"
+
+    def mark_attempted(self) -> None:
+        if self._current_index is None or self._stage != "activation":
+            raise RuntimeError("paid acceptance attempt is invalid")
+        self._attempted_calls += 1
+        self._stage = "execution"
+
+    def record_current(self, record: dict[str, object]) -> None:
+        index = self._current_index
+        if index is None or self._stage != "execution" or record.get("status") not in {"succeeded", "failed"}:
+            raise RuntimeError("paid acceptance result record is invalid")
+        self._outcomes[index] = dict(record)
+        self._emit(render_record(record))
+        self._advance()
+
+    def fail_current(self, error: Exception, *, failure_class: str | None = None) -> None:
+        index = self._current_index
+        if index is None or self._stage not in {"activation", "execution"}:
+            raise RuntimeError("paid acceptance failure stage is invalid")
+        call = self._plan[index]
+        record = _failure_record(
+            call,
+            selected_channel=call.channel_id or "unresolved",
+            user_id=self._user_id,
+            error=error,
+            failure_class=failure_class,
+        )
+        self._outcomes[index] = record
+        self._emit(render_record(record))
+        self._advance()
+
+    def _advance(self) -> None:
+        self._next_index += 1
+        self._current_index = None
+        self._stage = "preflight" if self._next_index == 0 else "between_calls"
+
+    def _fill_not_run(self, failure_class: str) -> None:
+        for index, outcome in enumerate(self._outcomes):
+            if outcome is not None:
+                continue
+            call = self._plan[index]
+            self._outcomes[index] = _failure_record(
+                call,
+                selected_channel=call.channel_id or "unresolved",
+                user_id=self._user_id,
+                failure_class=failure_class,
+                status="not_run",
+            )
+
+    def __exit__(self, error_type: object, error: BaseException | None, _traceback: object) -> bool:
+        if self._finalized:
+            return False
+        if error is not None:
+            if self._current_index is not None and self._outcomes[self._current_index] is None:
+                safe_error = error if isinstance(error, Exception) else RuntimeError()
+                failure_class = "activation_failed" if self._stage == "activation" else _failure_class(safe_error)
+                self.fail_current(safe_error, failure_class=failure_class)
+            if all(outcome is None for outcome in self._outcomes):
+                self._fill_not_run(self._preflight_failure_class)
+            else:
+                self._fill_not_run("blocked_after_failure")
+        else:
+            self._fill_not_run("blocked_after_failure")
+        outcomes = tuple(item for item in self._outcomes if item is not None)
+        self._emit(render_record(_summary_record(outcomes, user_id=self._user_id, attempted_calls=self._attempted_calls)))
+        self._finalized = True
+        return False
 
 
 def run_guarded_paid_acceptance(
@@ -895,29 +1062,31 @@ def run_guarded_paid_acceptance(
 ) -> tuple[dict[str, object], ...]:
     from ai_creation_canvas.storage.sqlite import CanvasStore
 
-    owned_asset_id = user.upload_reference_png()
-    if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
-        raise RuntimeError("asset owner isolation failed")
-    assigned = admin.json("PUT", f"/api/v1/admin/users/{user_id}/models", {"model_ids": list(model_ids)})
-    if set(assigned.get("model_ids", [])) != set(model_ids):
-        raise RuntimeError("model assignment failed")
-    visible = user.json("GET", "/api/v1/models").get("models")
-    if not isinstance(visible, list) or {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
-        raise RuntimeError("model assignment isolation failed")
-    store = CanvasStore(data_dir)
-    banana_routes = {channel for channel in channel_ids if _CHANNEL_MODELS[channel] == "banana"}
+    recorder = PaidRunRecorder(plan, user_id=user_id, emit=emit)
+    with recorder:
+        owned_asset_id = recorder.preflight("upload_failed", user.upload_reference_png)
+        if not isinstance(owned_asset_id, str):
+            raise RuntimeError("asset upload contract missing")
+        if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
+            raise RuntimeError("asset owner isolation failed")
+        assigned = admin.json("PUT", f"/api/v1/admin/users/{user_id}/models", {"model_ids": list(model_ids)})
+        if set(assigned.get("model_ids", [])) != set(model_ids):
+            raise RuntimeError("model assignment failed")
+        visible = user.json("GET", "/api/v1/models").get("models")
+        if not isinstance(visible, list) or {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
+            raise RuntimeError("model assignment isolation failed")
+        store = CanvasStore(data_dir)
+        banana_routes = {channel for channel in channel_ids if _CHANNEL_MODELS[channel] == "banana"}
 
-    def activate_channel(channel_id: str) -> None:
-        _set_model_routes(admin, _CHANNEL_MODELS[channel_id], {channel_id})
+        def activate_channel(channel_id: str) -> None:
+            _set_model_routes(admin, _CHANNEL_MODELS[channel_id], {channel_id})
 
-    def activate_banana() -> None:
-        if not banana_routes:
-            raise RuntimeError("Banana batch route is unavailable")
-        _set_model_routes(admin, "banana", banana_routes)
+        def activate_banana() -> None:
+            if not banana_routes:
+                raise RuntimeError("Banana batch route is unavailable")
+            _set_model_routes(admin, "banana", banana_routes)
 
-    def execute(call: PaidCall) -> dict[str, object]:
-        expected_channel = call.channel_id or "unresolved"
-        try:
+        def execute(call: PaidCall) -> dict[str, object]:
             payload = request_for_paid_call(call, owned_asset_id)
             kind = "video" if payload["operation"] == "video.generate" else "image"
             result = _poll_and_download(user, admin, payload, kind)
@@ -939,21 +1108,15 @@ def run_guarded_paid_acceptance(
                 duration_seconds=result.duration_seconds,
                 user_id=user_id,
             )
-            emit(render_record(record))
-            return record
-        except Exception as error:
-            record = _failure_record(call, selected_channel=expected_channel, user_id=user_id, error=error)
-            emit(render_record(record))
             return record
 
-    records = execute_paid_plan(
-        plan,
-        activate_channel=activate_channel,
-        activate_banana=activate_banana,
-        execute=execute,
-        finalize=lambda records: emit(render_record(_summary_record(records, user_id=user_id, planned_calls=len(plan)))),
-    )
-    return records
+        return execute_paid_plan(
+            plan,
+            activate_channel=activate_channel,
+            activate_banana=activate_banana,
+            execute=execute,
+            recorder=recorder,
+        )
 
 
 def _serve_paid() -> None:

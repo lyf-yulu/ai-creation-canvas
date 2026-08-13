@@ -3,8 +3,8 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { ModelEditor } from "@/components/admin/model-editor";
 import type { AdminLogicalModel } from "@/api/admin";
-import frozenProfiles from "../../../tests/fixtures/acceptance-model-profiles.json";
-import { ADMIN_MODEL_TEMPLATES, callingPresetsForModel } from "@/components/admin/model-templates";
+import arkConfig from "../../../server/config/ark-models.example.json";
+import { ADMIN_MODEL_TEMPLATES, callingPresetsForModel, routeContractForModel } from "@/components/admin/model-templates";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -66,13 +66,45 @@ it("does not publish a pending save result or error after unmount", async () => 
     expect(saved).not.toHaveBeenCalled();
 });
 
-it("keeps all four admin templates exactly aligned with the frozen server acceptance profiles", () => {
-    const fixture = frozenProfiles.profiles as Record<string, { provider_model_name: string; contract: unknown }>;
-    const profileIds = { banana: "banana", gpt_image2: "gpt-image2", seedream: "seedream", seedance: "seedance" } as const;
-    for (const template of ADMIN_MODEL_TEMPLATES) {
-        const expected = fixture[profileIds[template.id]];
-        expect(template.contract).toEqual(expected.contract);
+it("cross-checks Ark templates against formal config and keeps trusted Chiyun contracts exact", () => {
+    const formal = Object.fromEntries(arkConfig.models.map((item) => [item.model_id, item]));
+    for (const [profileId, modelId, operation] of [
+        ["seedream", "doubao-seedream-5-0-pro-260628", "image.edit"],
+        ["seedance", "doubao-seedance-2-5-260628", "video.generate"],
+    ] as const) {
+        const template = ADMIN_MODEL_TEMPLATES.find((item) => item.id === profileId)!;
+        const declaration = formal[modelId];
+        const expectedPorts = structuredClone(declaration.input_ports);
+        if (profileId === "seedream") expectedPorts.find((item) => item.port_id === "reference_images")!.min_items = 1;
+        expect(template.contract.operation).toBe(operation);
+        expect(template.contract.input_ports).toEqual(expectedPorts);
+        expect(template.contract.parameter_schema).toEqual(declaration.parameter_schema);
+        expect(template.contract.parameter_mappings).toEqual(declaration.parameter_mappings);
         const model = { ...image, operation_contracts: [template.contract] };
-        expect(callingPresetsForModel(model)[0].providerModelName).toBe(expected.provider_model_name);
+        expect(routeContractForModel(template, model)).toEqual(template.contract);
+        expect(callingPresetsForModel(model)[0].providerModelName).toBe(modelId);
+    }
+
+    const expectedChiyun = {
+        input_ports: [
+            { port_id: "prompt", media_type: "text", min_items: 1, max_items: 1 },
+            { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 },
+        ],
+        parameter_schema: {
+            type: "object",
+            properties: {
+                size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" },
+                output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },
+            },
+            required: ["size", "output_count"],
+            additionalProperties: false,
+        },
+        parameter_mappings: { size: "size", output_count: "n" },
+    };
+    for (const profileId of ["banana", "gpt_image2"] as const) {
+        const contract = ADMIN_MODEL_TEMPLATES.find((item) => item.id === profileId)!.contract;
+        expect(contract.input_ports).toEqual(expectedChiyun.input_ports);
+        expect({ ...contract.parameter_schema, "x-aicc-profile": undefined }).toEqual({ ...expectedChiyun.parameter_schema, "x-aicc-profile": undefined });
+        expect(contract.parameter_mappings).toEqual(expectedChiyun.parameter_mappings);
     }
 });

@@ -230,8 +230,8 @@ class RouteAdapterFactory:
                 limits = {
                     "first_frame": ("image", 1),
                     "last_frame": ("image", 1),
-                    "reference_images": ("image", 9),
-                    "reference_audio": ("audio", 3),
+                    "reference_images": ("image", 30),
+                    "reference_audio": ("audio", 10),
                 }
                 if set(ports) - ({"prompt"} | set(limits)):
                     raise ValueError("Ark video inputs are unsupported")

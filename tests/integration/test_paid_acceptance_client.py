@@ -12,6 +12,8 @@ import time
 
 import pytest
 
+from ai_creation_canvas.adapters.ark import load_ark_model_declarations
+from ai_creation_canvas.adapters.factory import _CHIYUN_PARAMETERS
 from tests.server.test_model_assignments import local_clients
 
 
@@ -76,22 +78,49 @@ def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
     assert seedream["params"] == {"size": "1K", "watermark": False, "output_format": "png", "prompt_optimization": "fast"}
     assert seedream["inputs"] == {"reference_images": [owned_asset]}
     assert seedance["operation"] == "video.generate"
-    assert seedance["params"] == {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False, "return_last_frame": False}
+    assert seedance["params"] == {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False}
     assert seedance["inputs"] == {}
     assert len({banana["idempotency_key"], seedream["idempotency_key"], seedance["idempotency_key"]}) == 3
 
 
-def test_four_acceptance_model_profiles_match_the_frozen_cross_stack_fixture() -> None:
-    fixture = json.loads((ROOT / "tests" / "fixtures" / "acceptance-model-profiles.json").read_text(encoding="utf-8"))
-
-    assert module.acceptance_model_profiles() == fixture
-    profiles = fixture["profiles"]
+def test_acceptance_profiles_cross_check_authoritative_ark_config_and_factory_templates() -> None:
+    config = ROOT / "server" / "config" / "ark-models.example.json"
+    ark = {item.model_id: item for item in load_ark_model_declarations(config, config.parent)}
+    profiles = module.acceptance_model_profiles()["profiles"]
     assert set(profiles) == {"banana", "gpt-image2", "seedream", "seedance"}
-    assert {item["port_id"]: item["min_items"] for item in profiles["seedream"]["contract"]["input_ports"]}["reference_images"] == 1
-    assert len(profiles["seedance"]["contract"]["input_ports"]) == 5
-    assert set(profiles["seedance"]["contract"]["parameter_schema"]["properties"]) == {
-        "ratio", "resolution", "duration", "generate_audio", "camera_fixed", "return_last_frame", "output_format", "watermark",
-    }
+    for profile_id, model_id, operation in (
+        ("seedream", "doubao-seedream-5-0-pro-260628", "image.edit"),
+        ("seedance", "doubao-seedance-2-5-260628", "video.generate"),
+    ):
+        declaration = ark[model_id]
+        profile = profiles[profile_id]
+        contract = profile["contract"]
+        assert profile["provider_model_name"] == declaration.model_id
+        assert operation in declaration.operations and contract["operation"] == operation
+        assert contract["parameter_schema"] == declaration.parameter_schema
+        assert contract["parameter_mappings"] == declaration.parameter_mappings
+        expected_ports = [
+            {"port_id": item.port_id, "media_type": item.media_type, "min_items": item.min_items, "max_items": item.max_items}
+            for item in declaration.input_ports
+        ]
+        if profile_id == "seedream":
+            next(item for item in expected_ports if item["port_id"] == "reference_images")["min_items"] = 1
+        assert contract["input_ports"] == expected_ports
+
+    seedance_properties = profiles["seedance"]["contract"]["parameter_schema"]["properties"]
+    assert set(seedance_properties) == {"ratio", "resolution", "duration", "generate_audio", "output_format", "watermark"}
+    assert seedance_properties["resolution"]["enum"] == ["480p", "720p"]
+    seedance_ports = {item["port_id"]: item for item in profiles["seedance"]["contract"]["input_ports"]}
+    assert seedance_ports["reference_images"]["max_items"] == 30
+    assert seedance_ports["reference_audio"]["max_items"] == 10
+
+    trusted_chiyun_properties = {name: dict(rule) for name, (_target, rule) in _CHIYUN_PARAMETERS.items()}
+    trusted_chiyun_mappings = {name: target for name, (target, _rule) in _CHIYUN_PARAMETERS.items()}
+    for profile_id, family in (("banana", "nano-banana"), ("gpt-image2", "gpt-image")):
+        profile = profiles[profile_id]
+        assert profile["family"] == family
+        assert profile["contract"]["parameter_schema"]["properties"] == trusted_chiyun_properties
+        assert profile["contract"]["parameter_mappings"] == trusted_chiyun_mappings
 
 
 def test_acceptance_log_projection_cannot_include_sensitive_request_fields() -> None:
@@ -127,41 +156,176 @@ def test_failure_class_preserves_submission_unknown_and_partial_summary_counts()
             "phase": "banana_sample", "logical_model": "banana", "selected_channel": "banana-t8star",
             "status": "failed", "failure_class": "submission_unknown", "user_id": "user-safe",
         },
+        {
+            "phase": "banana_sample", "logical_model": "banana", "selected_channel": "unresolved",
+            "status": "not_run", "failure_class": "blocked_after_failure", "user_id": "user-safe",
+        },
+        {
+            "phase": "banana_sample", "logical_model": "banana", "selected_channel": "unresolved",
+            "status": "not_run", "failure_class": "blocked_after_failure", "user_id": "user-safe",
+        },
     )
 
-    summary = module._summary_record(records, user_id="user-safe", planned_calls=4)
+    summary = module._summary_record(records, user_id="user-safe", attempted_calls=2)
 
-    assert summary == {
-        "phase": "summary", "status": "failed", "planned_calls": 4, "attempted_calls": 2,
-        "succeeded": 1, "failed": 1, "not_run": 2,
-        "channel_distribution": {"banana-chiyun": 1, "banana-t8star": 1},
-        "failure_classes": {"submission_unknown": 1},
-        "latency_seconds": {"minimum": 1.2, "maximum": 1.2, "total": 1.2},
-        "bytes": 10, "user_id": "user-safe",
-    }
+    assert summary["planned_calls"] == 4 and summary["attempted_calls"] == 2
+    assert summary["succeeded"] == 1 and summary["failed"] == 1 and summary["not_run"] == 2
+    assert summary["channel_distribution"] == {"banana-chiyun": 1, "banana-t8star": 1}
+    assert summary["failure_classes"] == {"submission_unknown": 1, "blocked_after_failure": 2}
+    assert summary["not_run_classes"] == {"blocked_after_failure": 2}
+    assert summary["latency_seconds"] == {"minimum": 1.2, "maximum": 1.2, "total": 1.2}
+    assert summary["bytes"] == 10 and summary["user_id"] == "user-safe"
+    assert len(summary["outcomes"]) == 4
 
 
 def test_paid_plan_finalizer_emits_partial_summary_after_a_failure() -> None:
     plan = module.paid_call_plan(("banana-chiyun",), banana_sample_count=2, maximum_paid_calls=3)
-    emitted: list[dict[str, object]] = []
+    emitted: list[str] = []
 
     def execute(call) -> dict[str, object]:
         if call.phase == "banana_sample":
             return {"phase": call.phase, "logical_model": "banana", "selected_channel": "banana-chiyun", "status": "failed", "failure_class": "business_4xx", "user_id": "user-safe"}
         return module.sanitized_result_record(phase="smoke", logical_model="banana", selected_channel="banana-chiyun", status="succeeded", mime="image/png", byte_count=1, duration_seconds=1, user_id="user-safe")
 
-    with pytest.raises(RuntimeError, match="paid acceptance call failed"):
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=emitted.append)
+    with pytest.raises(RuntimeError, match="paid acceptance call failed"), recorder:
         module.execute_paid_plan(
             plan,
             activate_channel=lambda _: None,
             activate_banana=lambda: None,
             execute=execute,
-            finalize=lambda records: emitted.append(module._summary_record(records, user_id="user-safe", planned_calls=len(plan))),
+            recorder=recorder,
         )
 
-    assert emitted[0]["attempted_calls"] == 2
-    assert emitted[0]["not_run"] == 1
-    assert emitted[0]["failure_classes"] == {"business_4xx": 1}
+    summary = _summary_lines(emitted)[0]
+    assert summary["attempted_calls"] == 2
+    assert summary["not_run"] == 1
+    assert summary["failure_classes"] == {"business_4xx": 1, "blocked_after_failure": 1}
+
+
+def _summary_lines(emitted: list[str]) -> list[dict[str, object]]:
+    decoded = [json.loads(line) for line in emitted]
+    return [item for item in decoded if item.get("phase") == "summary"]
+
+
+def _guarded_failure_dependencies(
+    *,
+    upload_error: Exception | None = None,
+    owner_status: int = 404,
+    assigned_models: tuple[str, ...] = ("seedream", "seedance"),
+    visible_models: tuple[str, ...] = ("seedream", "seedance"),
+):
+    class User:
+        def upload_reference_png(self):
+            if upload_error is not None:
+                raise upload_error
+            return "owned-asset"
+
+        def json(self, method, path, payload=None, expected=(200,)):
+            assert method == "GET" and path == "/api/v1/models"
+            return {"models": [{"model_id": item} for item in visible_models]}
+
+    class Admin:
+        def request(self, method, path):
+            assert method == "GET" and path == "/api/v1/assets/owned-asset"
+            return owner_status, {}, b""
+
+        def json(self, method, path, payload=None, expected=(200,)):
+            if method == "PUT":
+                return {"model_ids": list(assigned_models)}
+            raise RuntimeError("activation-private-message")
+
+    return User(), Admin()
+
+
+def test_guarded_paid_run_emits_one_redacted_summary_when_upload_fails(tmp_path: Path) -> None:
+    plan = module.paid_call_plan(("seedream-ark", "seedance-ark"), banana_sample_count=0, maximum_paid_calls=2)
+    private_error = RuntimeError("upload private prompt secret https://sensitive.example")
+    user, admin = _guarded_failure_dependencies(upload_error=private_error)
+    emitted: list[str] = []
+
+    with pytest.raises(RuntimeError) as caught:
+        module.run_guarded_paid_acceptance(
+            admin=admin, user=user, data_dir=tmp_path, channel_ids=("seedream-ark", "seedance-ark"),
+            model_ids=("seedream", "seedance"), plan=plan, user_id="user-safe", emit=emitted.append,
+        )
+
+    assert caught.value is private_error
+    summaries = _summary_lines(emitted)
+    assert len(summaries) == 1
+    assert summaries[0]["attempted_calls"] == 0
+    assert summaries[0]["failed"] == 0 and summaries[0]["not_run"] == 2
+    assert summaries[0]["failure_classes"] == {"upload_failed": 2}
+    assert [item["failure_class"] for item in summaries[0]["outcomes"]] == ["upload_failed", "upload_failed"]
+    assert "private prompt" not in json.dumps(summaries[0]).lower()
+
+
+@pytest.mark.parametrize(
+    "dependency_overrides",
+    [
+        {"owner_status": 200},
+        {"assigned_models": ("seedream",)},
+        {"visible_models": ("seedream",)},
+    ],
+    ids=("owner", "assignment", "visibility"),
+)
+def test_guarded_paid_run_emits_one_summary_when_preflight_fails(tmp_path: Path, dependency_overrides: dict[str, object]) -> None:
+    plan = module.paid_call_plan(("seedream-ark", "seedance-ark"), banana_sample_count=0, maximum_paid_calls=2)
+    user, admin = _guarded_failure_dependencies(**dependency_overrides)
+    emitted: list[str] = []
+
+    with pytest.raises(RuntimeError):
+        module.run_guarded_paid_acceptance(
+            admin=admin, user=user, data_dir=tmp_path, channel_ids=("seedream-ark", "seedance-ark"),
+            model_ids=("seedream", "seedance"), plan=plan, user_id="user-safe", emit=emitted.append,
+        )
+
+    summaries = _summary_lines(emitted)
+    assert len(summaries) == 1
+    assert summaries[0]["failure_classes"] == {"preflight_failed": 2}
+    assert summaries[0]["failed"] == 0 and summaries[0]["not_run"] == 2
+
+
+def test_guarded_paid_run_classifies_activation_failure_without_swallowing_it(tmp_path: Path) -> None:
+    plan = module.paid_call_plan(("seedream-ark", "seedance-ark"), banana_sample_count=0, maximum_paid_calls=2)
+    user, admin = _guarded_failure_dependencies()
+    emitted: list[str] = []
+
+    with pytest.raises(RuntimeError, match="activation-private-message"):
+        module.run_guarded_paid_acceptance(
+            admin=admin, user=user, data_dir=tmp_path, channel_ids=("seedream-ark", "seedance-ark"),
+            model_ids=("seedream", "seedance"), plan=plan, user_id="user-safe", emit=emitted.append,
+        )
+
+    summaries = _summary_lines(emitted)
+    assert len(summaries) == 1
+    assert summaries[0]["attempted_calls"] == 0
+    assert summaries[0]["failed"] == 1 and summaries[0]["not_run"] == 1
+    assert summaries[0]["failure_classes"] == {"activation_failed": 1, "blocked_after_failure": 1}
+    assert "activation-private-message" not in json.dumps(summaries[0])
+
+
+def test_guarded_paid_run_preserves_unexpected_execution_exception_and_summarizes_once(tmp_path: Path, monkeypatch) -> None:
+    plan = module.paid_call_plan(("seedream-ark", "seedance-ark"), banana_sample_count=0, maximum_paid_calls=2)
+    user, admin = _guarded_failure_dependencies()
+    private_error = RuntimeError("unexpected private prompt secret https://sensitive.example")
+    monkeypatch.setattr(module, "_set_model_routes", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_poll_and_download", lambda *_args, **_kwargs: (_ for _ in ()).throw(private_error))
+    emitted: list[str] = []
+
+    with pytest.raises(RuntimeError) as caught:
+        module.run_guarded_paid_acceptance(
+            admin=admin, user=user, data_dir=tmp_path, channel_ids=("seedream-ark", "seedance-ark"),
+            model_ids=("seedream", "seedance"), plan=plan, user_id="user-safe", emit=emitted.append,
+        )
+
+    assert caught.value is private_error
+    summaries = _summary_lines(emitted)
+    assert len(summaries) == 1
+    assert summaries[0]["attempted_calls"] == 1
+    assert summaries[0]["failed"] == 1 and summaries[0]["not_run"] == 1
+    assert summaries[0]["failure_classes"] == {"acceptance_contract": 1, "blocked_after_failure": 1}
+    assert "unexpected private" not in json.dumps(summaries[0]).lower()
 
 
 def test_paid_call_plan_runs_every_channel_smoke_before_the_banana_sample() -> None:
@@ -205,10 +369,14 @@ def test_banana_batch_is_never_enabled_after_a_failed_channel_smoke() -> None:
         events.append(f"execute:{call.phase}:{call.channel_id or 'auto'}")
         if call.channel_id == "seedance-ark":
             raise RuntimeError("smoke failed")
-        return {"status": "succeeded"}
+        return module.sanitized_result_record(
+            phase=call.phase, logical_model=call.model_id, selected_channel=call.channel_id or "unresolved",
+            status="succeeded", mime="image/png", byte_count=1, duration_seconds=1, user_id="user-safe",
+        )
 
-    with pytest.raises(RuntimeError, match="smoke failed"):
-        module.execute_paid_plan(plan, activate_channel=activate, activate_banana=activate_banana, execute=execute)
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=lambda _line: None)
+    with pytest.raises(RuntimeError, match="smoke failed"), recorder:
+        module.execute_paid_plan(plan, activate_channel=activate, activate_banana=activate_banana, execute=execute, recorder=recorder)
 
     assert events == [
         "activate:banana-chiyun",
