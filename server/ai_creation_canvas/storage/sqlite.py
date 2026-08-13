@@ -21,6 +21,9 @@ _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
+_MAX_USAGE_PRICE_FEN = 1_000_000_000
+_MAX_VIDEO_SECONDS = 86_400
+_MAX_IMAGE_COUNT = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,9 +192,19 @@ class CanvasStore:
                 id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
                 upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                 idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
-                error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL, attempt INTEGER NOT NULL DEFAULT 0,
+                video_seconds INTEGER NOT NULL DEFAULT 0, image_count INTEGER NOT NULL DEFAULT 0,
+                video_price_fen INTEGER, image_price_fen INTEGER, cost_fen INTEGER, charged_at TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_usage_rates (
+                singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                video_price_fen INTEGER NOT NULL CHECK(video_price_fen>=0),
+                image_price_fen INTEGER NOT NULL CHECK(image_price_fen>=0),
+                updated_at TEXT NOT NULL
+            )""")
+        db.execute("INSERT OR IGNORE INTO canvas_usage_rates VALUES(1,0,0,?)", (_now(),))
         marker = db.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()
         scrub_pending = bool(marker is not None and marker[0] == "1")
         columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
@@ -212,7 +225,14 @@ class CanvasStore:
                 "result_id" if "result_id" in columns else legacy_result,
                 "submission_token" if "submission_token" in columns else "NULL",
                 "lease_until" if "lease_until" in columns else "NULL",
-                "attempt" if "attempt" in columns else "0", "created_at", "updated_at",
+                "attempt" if "attempt" in columns else "0",
+                "video_seconds" if "video_seconds" in columns else "0",
+                "image_count" if "image_count" in columns else "0",
+                "video_price_fen" if "video_price_fen" in columns else "NULL",
+                "image_price_fen" if "image_price_fen" in columns else "NULL",
+                "cost_fen" if "cost_fen" in columns else "NULL",
+                "charged_at" if "charged_at" in columns else "NULL",
+                "created_at", "updated_at",
             ]
             db.execute("ALTER TABLE canvas_jobs RENAME TO canvas_jobs_legacy")
             db.execute("""CREATE TABLE canvas_jobs (
@@ -220,13 +240,22 @@ class CanvasStore:
                     upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, error_code TEXT,
                     result_id TEXT, submission_token TEXT, lease_until REAL,
-                    attempt INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    attempt INTEGER NOT NULL DEFAULT 0,
+                    video_seconds INTEGER NOT NULL DEFAULT 0, image_count INTEGER NOT NULL DEFAULT 0,
+                    video_price_fen INTEGER, image_price_fen INTEGER, cost_fen INTEGER, charged_at TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     UNIQUE(user_id,idempotency_key))""")
             db.execute("INSERT INTO canvas_jobs SELECT " + ",".join(projection) + " FROM canvas_jobs_legacy")
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0")):
+        for name, spec in (
+            ("result_id", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"),
+            ("attempt", "INTEGER NOT NULL DEFAULT 0"),
+            ("video_seconds", "INTEGER NOT NULL DEFAULT 0"), ("image_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("video_price_fen", "INTEGER"), ("image_price_fen", "INTEGER"),
+            ("cost_fen", "INTEGER"), ("charged_at", "TEXT"),
+        ):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
@@ -424,6 +453,61 @@ class CanvasStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    @staticmethod
+    def _validated_usage_value(value: int, *, name: str, maximum: int) -> int:
+        if type(value) is not int or value < 0 or value > maximum:
+            raise ValueError(f"{name} is invalid")
+        return value
+
+    def usage_rates(self) -> dict[str, int]:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT video_price_fen,image_price_fen FROM canvas_usage_rates WHERE singleton=1"
+            ).fetchone()
+        assert row is not None
+        return {"video_price_fen": int(row["video_price_fen"]), "image_price_fen": int(row["image_price_fen"])}
+
+    def set_usage_rates(self, *, video_price_fen: int, image_price_fen: int) -> dict[str, int]:
+        video_price_fen = self._validated_usage_value(video_price_fen, name="video_price_fen", maximum=_MAX_USAGE_PRICE_FEN)
+        image_price_fen = self._validated_usage_value(image_price_fen, name="image_price_fen", maximum=_MAX_USAGE_PRICE_FEN)
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE canvas_usage_rates SET video_price_fen=?,image_price_fen=?,updated_at=? WHERE singleton=1",
+                (video_price_fen, image_price_fen, _now()),
+            )
+        return {"video_price_fen": video_price_fen, "image_price_fen": image_price_fen}
+
+    @staticmethod
+    def _usage_jobs(db: sqlite3.Connection, user_id: str) -> tuple[dict[str, object], ...]:
+        rows = db.execute(
+            "SELECT operation,status,video_seconds,image_count,video_price_fen,image_price_fen,cost_fen,charged_at "
+            "FROM canvas_jobs WHERE user_id=? AND charged_at IS NOT NULL ORDER BY charged_at DESC,id DESC",
+            (user_id,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def usage_for_owner(self, user_id: str) -> dict[str, object]:
+        with self._connection() as db:
+            total = db.execute(
+                "SELECT COALESCE(SUM(cost_fen),0) FROM canvas_jobs WHERE user_id=? AND charged_at IS NOT NULL",
+                (user_id,),
+            ).fetchone()[0]
+            jobs = self._usage_jobs(db, user_id)
+        return {"user_id": user_id, "total_cost_fen": int(total), "jobs": jobs}
+
+    def usage_for_all_users(self) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            user_ids = db.execute("SELECT DISTINCT user_id FROM canvas_jobs ORDER BY user_id").fetchall()
+            usage = []
+            for row in user_ids:
+                user_id = str(row["user_id"])
+                total = db.execute(
+                    "SELECT COALESCE(SUM(cost_fen),0) FROM canvas_jobs WHERE user_id=? AND charged_at IS NOT NULL",
+                    (user_id,),
+                ).fetchone()[0]
+                usage.append({"user_id": user_id, "total_cost_fen": int(total), "jobs": self._usage_jobs(db, user_id)})
+        return tuple(usage)
+
     def create_project(self, *, user_id: str, project_id: str, title: str, document_json: str) -> tuple[dict[str, object], bool, bool]:
         """Return row, created, conflict. Replaying an identical create is safe."""
         now = _now()
@@ -493,7 +577,9 @@ class CanvasStore:
             db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
             return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, video_seconds: int = 0, image_count: int = 0) -> Reservation:
+        video_seconds = self._validated_usage_value(video_seconds, name="video_seconds", maximum=_MAX_VIDEO_SECONDS)
+        image_count = self._validated_usage_value(image_count, name="image_count", maximum=_MAX_IMAGE_COUNT)
         now = _now()
         token = os.urandom(16).hex()
         lease_until = self._clock() + lease_seconds
@@ -508,7 +594,7 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, now, now))
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,video_seconds,image_count,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, video_seconds, image_count, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)
@@ -552,6 +638,48 @@ class CanvasStore:
             raise KeyError(job_id)
         return dict(row)
 
+    @staticmethod
+    def _capture_usage_snapshot(db: sqlite3.Connection, job_id: str, now: str) -> None:
+        job = db.execute("SELECT video_seconds,image_count,charged_at FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        if job is None or job["charged_at"] is not None:
+            return
+        rates = db.execute("SELECT video_price_fen,image_price_fen FROM canvas_usage_rates WHERE singleton=1").fetchone()
+        assert rates is not None
+        total = int(job["video_seconds"]) * int(rates["video_price_fen"]) + int(job["image_count"]) * int(rates["image_price_fen"])
+        db.execute("UPDATE canvas_jobs SET video_price_fen=?,image_price_fen=?,cost_fen=?,charged_at=? WHERE id=? AND charged_at IS NULL", (rates["video_price_fen"], rates["image_price_fen"], total, now, job_id))
+
+    def claim_pollable_job(self) -> dict[str, object] | None:
+        now = _now()
+        token = os.urandom(16).hex()
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT * FROM canvas_jobs WHERE status IN ('queued','running') AND (lease_until IS NULL OR lease_until<=?) ORDER BY updated_at,id LIMIT 1",
+                (self._clock(),),
+            ).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? WHERE id=?", (token, self._clock() + 30.0, now, row["id"]))
+            claimed = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (row["id"],)).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def record_polled_job(self, job_id: str, *, token: str, status: str, error_code: str | None = None, result_id: str | None = None) -> dict[str, object]:
+        if status not in {"queued", "running", "succeeded", "failed"}:
+            raise ValueError("polled status is invalid")
+        now = _now()
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] != token or row["status"] in {"succeeded", "failed"}:
+                return dict(row)
+            db.execute("UPDATE canvas_jobs SET status=?,error_code=COALESCE(?,error_code),result_id=COALESCE(?,result_id),submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (status, error_code, result_id, now, job_id))
+            if status == "succeeded":
+                self._capture_usage_snapshot(db, job_id, now)
+            updated = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        assert updated is not None
+        return dict(updated)
+
     def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         with self._connection(immediate=True) as db:
@@ -564,6 +692,8 @@ class CanvasStore:
             now = _now()
             result_id = result_id if result_id is not None else result_ref
             db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=COALESCE(?, upstream_job_id), error_code=COALESCE(?, error_code), result_id=COALESCE(?, result_id), updated_at=? WHERE id=?", (status, upstream_job_id, error_code, result_id, now, job_id))
+            if status == "succeeded":
+                self._capture_usage_snapshot(db, job_id, now)
             updated = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert updated is not None
         return dict(updated)

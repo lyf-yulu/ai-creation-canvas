@@ -33,6 +33,8 @@ def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
     row, _ = store.job_for_owner("j", "u")
     assert row and row["result_id"] == "opaque_id"
     assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}
+    assert store.usage_rates() == {"video_price_fen": 0, "image_price_fen": 0}
+    assert store.usage_for_owner("u") == {"user_id": "u", "total_cost_fen": 0, "jobs": ()}
 
 def test_stale_reservation_token_cannot_overwrite_reclaimed_job(tmp_path):
     store = CanvasStore(tmp_path / "data")
@@ -143,3 +145,28 @@ def test_checkpoint_busy_once_retries_before_clearing_the_pending_marker(tmp_pat
     assert calls[:2] == [("before_vacuum", 0), ("before_vacuum", 1)]
     with store._connection() as verify:
         assert verify.execute("SELECT value FROM canvas_meta WHERE key='legacy_result_scrub_pending'").fetchone()[0] == "0"
+
+
+def test_success_captures_current_rates_once(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="video", service_id="video", operation="video.generate", idempotency_key="video-key", request_hash="v" * 64, video_seconds=5)
+    store.mark_submitted("video", "up-video", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    store.record_polled_job("video", token=str(claim["submission_token"]), status="succeeded", result_id="result")
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 125
+    assert usage["jobs"][0]["video_price_fen"] == 25
+
+
+def test_failed_and_repeated_completion_do_not_charge(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=10, image_price_fen=20)
+    reserved = store.reserve_job(user_id="user-a", job_id="image", service_id="image", operation="image.generate", idempotency_key="image-key", request_hash="i" * 64, image_count=1)
+    store.mark_submitted("image", "up-image", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    store.record_polled_job("image", token=str(claim["submission_token"]), status="failed", error_code="TASK_FAILED")
+    assert store.usage_for_owner("user-a")["total_cost_fen"] == 0
