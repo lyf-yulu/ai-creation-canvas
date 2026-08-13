@@ -67,9 +67,10 @@ it("shows each user's aggregate usage and every charged job to an administrator"
 
     render(<UsagePage />);
 
-    expect(await screen.findByText("user-1")).toBeVisible();
-    expect(screen.getByText("¥2.45 · 1 个任务")).toBeVisible();
-    expect(screen.getByText("user-1 · video.generate")).toBeVisible();
+    expect(await screen.findByText("user-1 · video.generate")).toBeVisible();
+    expect(screen.getByText("全局汇总：已完成任务 1 · 图片 1 · 视频 5 秒 · ¥2.45")).toBeVisible();
+    expect(screen.getByText("user-1 · 已完成任务 1 · 图片 1 · 视频 5 秒 · ¥2.45")).toBeVisible();
+    expect(screen.getByText("succeeded · 1 张图片 · 5 秒视频 · 2026-08-13T00:00:00Z")).toBeVisible();
 });
 
 it("keeps the administrator loading error visible when the owner request finishes later", async () => {
@@ -113,4 +114,38 @@ it("restores the saved prices after an administrator save failure", async () => 
     await waitFor(() => expect(alertMock).toHaveBeenCalledWith("价格未保存，请重试。"));
     expect(videoInput).toHaveValue("0.10");
     expect(imageInput).toHaveValue("1.00");
+});
+
+it("keeps administrator usage visible when price settings fail to load", async () => {
+    useSessionStore.setState({ session: { user_id: "admin-1", username: "管理员", role: "admin", must_change_password: false } });
+    vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify(ownerUsage), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(
+            new Response(JSON.stringify({ summary: ownerUsage.summary, users: [{ user_id: "user-1", summary: ownerUsage.summary }], jobs: [{ ...ownerUsage.jobs[0], user_id: "user-1" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ code: "internal_error" }), { status: 500, headers: { "content-type": "application/json" } }));
+
+    render(<UsagePage />);
+
+    expect(await screen.findByText("全局汇总：已完成任务 1 · 图片 1 · 视频 5 秒 · ¥2.45")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("计费价格暂时无法加载，请稍后重试。");
+    expect(screen.queryByRole("button", { name: "保存价格" })).not.toBeInTheDocument();
+});
+
+it("rejects an invalid decimal price without issuing a save request", async () => {
+    useSessionStore.setState({ session: { user_id: "admin-1", username: "管理员", role: "admin", must_change_password: false } });
+    const alertMock = vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify(ownerUsage), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ summary: ownerUsage.summary, users: [], jobs: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 10, image_price_fen: 100 }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<UsagePage />);
+
+    fireEvent.change(await screen.findByLabelText("每秒视频价格（元）"), { target: { value: "1.234" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存价格" }));
+
+    expect(alertMock).toHaveBeenCalledWith("价格必须是最多两位小数的非负金额。");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
 });

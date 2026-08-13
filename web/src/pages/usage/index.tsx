@@ -10,6 +10,7 @@ const yuanToFen = (value: string) => {
     return Number(yuan) * 100 + Number(decimal.padEnd(2, "0"));
 };
 const fenToYuan = (fen: number) => (fen / 100).toFixed(2);
+const summaryText = (summary: Usage["summary"]) => `已完成任务 ${summary.successful_jobs} · 图片 ${summary.image_count} · 视频 ${summary.video_seconds} 秒 · ${formatFen(summary.total_cost_fen)}`;
 
 function SummaryCards({ summary }: { summary: Usage["summary"] }) {
     const cards = [
@@ -108,13 +109,12 @@ function AdminUsageDetails({ usage }: { usage: AdminUsage }) {
     return (
         <section className="mt-7 rounded-xl border border-[#1f3f2a] bg-[#09120c] p-5">
             <h2 className="text-sm font-medium">全部用户统计</h2>
-            <p className="mt-2 text-sm text-[#829889]">总成本 {formatFen(usage.summary.total_cost_fen)}</p>
+            <p className="mt-2 text-sm text-[#829889]">全局汇总：{summaryText(usage.summary)}</p>
             <ul className="mt-4 divide-y divide-[#183522] border-y border-[#183522]">
                 {usage.users.map((user) => (
                     <li key={user.user_id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                        <span className="text-sm text-[#e4f5e9]">{user.user_id}</span>
-                        <span className="text-xs text-[#829889]">
-                            {formatFen(user.summary.total_cost_fen)} · {user.summary.successful_jobs} 个任务
+                        <span className="text-sm text-[#e4f5e9]">
+                            {user.user_id} · {summaryText(user.summary)}
                         </span>
                     </li>
                 ))}
@@ -126,8 +126,13 @@ function AdminUsageDetails({ usage }: { usage: AdminUsage }) {
                 <ul className="mt-3 divide-y divide-[#183522] border-y border-[#183522]">
                     {usage.jobs.map((job, index) => (
                         <li key={`${job.user_id}-${job.operation}-${job.charged_at}-${index}`} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                            <span className="text-sm text-[#e4f5e9]">
-                                {job.user_id} · {job.operation}
+                            <span>
+                                <span className="block text-sm text-[#e4f5e9]">
+                                    {job.user_id} · {job.operation}
+                                </span>
+                                <span className="mt-1 block text-xs text-[#688371]">
+                                    {job.status} · {job.image_count} 张图片 · {job.video_seconds} 秒视频 · {job.charged_at}
+                                </span>
                             </span>
                             <span className="text-xs text-[#58d881]">{formatFen(job.cost_fen)}</span>
                         </li>
@@ -144,12 +149,14 @@ export default function UsagePage() {
     const [adminUsage, setAdminUsage] = useState<AdminUsage | null>(null);
     const [rates, setRates] = useState<UsageRates | null>(null);
     const [ownerFailed, setOwnerFailed] = useState(false);
-    const [adminFailed, setAdminFailed] = useState(false);
+    const [adminUsageFailed, setAdminUsageFailed] = useState(false);
+    const [ratesFailed, setRatesFailed] = useState(false);
 
     useEffect(() => {
         let active = true;
         setOwnerFailed(false);
-        setAdminFailed(false);
+        setAdminUsageFailed(false);
+        setRatesFailed(false);
         void fetchUsage()
             .then((value) => {
                 if (active) {
@@ -164,15 +171,25 @@ export default function UsagePage() {
                 }
             });
         if (isAdmin) {
-            void Promise.all([fetchAdminUsage(), fetchUsageRates()])
-                .then(([nextAdminUsage, nextRates]) => {
+            void fetchAdminUsage()
+                .then((nextAdminUsage) => {
                     if (active) {
                         setAdminUsage(nextAdminUsage);
-                        setRates(nextRates);
+                        setAdminUsageFailed(false);
                     }
                 })
                 .catch(() => {
-                    if (active) setAdminFailed(true);
+                    if (active) setAdminUsageFailed(true);
+                });
+            void fetchUsageRates()
+                .then((nextRates) => {
+                    if (active) {
+                        setRates(nextRates);
+                        setRatesFailed(false);
+                    }
+                })
+                .catch(() => {
+                    if (active) setRatesFailed(true);
                 });
         }
         return () => {
@@ -202,9 +219,19 @@ export default function UsagePage() {
             <p className="text-xs tracking-[0.2em] text-[#58ed87]">USAGE · COST</p>
             <h1 className="mt-2 text-3xl font-semibold">生成统计</h1>
             <p className="mt-2 text-sm text-[#829889]">统计当前账号已计费的图片和视频生成任务。</p>
-            {(ownerFailed || adminFailed) && (
+            {ownerFailed && (
                 <p role="alert" className="mt-5 rounded border border-[#70502b] bg-[#241a0c] p-3 text-sm text-[#ffbd73]">
                     统计暂时无法完整加载，请稍后重试。
+                </p>
+            )}
+            {adminUsageFailed && (
+                <p role="alert" className="mt-5 rounded border border-[#70502b] bg-[#241a0c] p-3 text-sm text-[#ffbd73]">
+                    全部用户统计暂时无法加载，请稍后重试。
+                </p>
+            )}
+            {ratesFailed && (
+                <p role="alert" className="mt-5 rounded border border-[#70502b] bg-[#241a0c] p-3 text-sm text-[#ffbd73]">
+                    计费价格暂时无法加载，请稍后重试。
                 </p>
             )}
             {usage === null ? (
