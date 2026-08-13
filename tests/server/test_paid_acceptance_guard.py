@@ -41,11 +41,28 @@ def test_guard_only_accepts_one_explicit_channel_without_provider_io(tmp_path: P
 
     assert result.returncode == 0
     assert "Paid acceptance guard ready. No provider request was made." in result.stdout
-    assert "CHIYUN_API_KEY=UNSET" in result.stdout
+    assert "CHIYUN_BANANA_API_KEY=UNSET" in result.stdout
+    assert "CHIYUN_GPT_IMAGE2_API_KEY=UNSET" in result.stdout
     assert "T8STAR_API_KEY=UNSET" in result.stdout
     assert "ARK_API_KEY=SET" in result.stdout
     assert "test-only" not in result.stdout + result.stderr
     assert not (ROOT / ".paid-acceptance" / f"guard-{tmp_path.name}").exists()
+
+
+def test_guard_accepts_only_the_exact_twelve_call_real_production_matrix(tmp_path: Path) -> None:
+    result = run_guard(
+        tmp_path,
+        AICC_REAL_PRODUCTION_MATRIX="YES",
+        AICC_ACCEPTANCE_MODEL_IDS="banana,gpt-image2,seedream,seedance",
+        AICC_ACCEPTANCE_CHANNEL_IDS="banana-chiyun,gpt-image2-chiyun,seedream-ark,seedance-ark",
+        AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT="8",
+        AICC_MAX_PAID_CALLS="12",
+        CHIYUN_BANANA_API_KEY="test-only-banana-key",
+        CHIYUN_GPT_IMAGE2_API_KEY="test-only-gpt-key",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "logical_jobs=12 provider_post_budget=12" in result.stdout
+    assert "No provider request was made" in result.stdout
 
 
 def test_guard_requires_the_new_exact_paid_opt_in(tmp_path: Path) -> None:
@@ -105,7 +122,7 @@ def test_guard_requires_selected_key_and_rejects_unapproved_third_party_origins(
         AICC_ACCEPTANCE_MODEL_IDS="banana",
         AICC_ACCEPTANCE_CHANNEL_IDS="banana-chiyun",
         AICC_CHIYUN_BASE_URL="https://attacker.example",
-        CHIYUN_API_KEY="test-only-never-sent",
+        CHIYUN_BANANA_API_KEY="test-only-never-sent",
     )
     t8_unapproved = run_guard(
         tmp_path,
@@ -117,9 +134,9 @@ def test_guard_requires_selected_key_and_rejects_unapproved_third_party_origins(
 
     assert missing_key.returncode == 64
     assert "ARK_API_KEY" in missing_key.stderr
-    for result in (chiyun_unapproved, t8_unapproved):
-        assert result.returncode == 64
-        assert "approved origin" in result.stderr.lower()
+    assert chiyun_unapproved.returncode == 0
+    assert t8_unapproved.returncode == 64
+    assert "approved origin" in t8_unapproved.stderr.lower()
 
 
 def test_guard_requires_a_brand_new_direct_child_of_the_repo_paid_root(tmp_path: Path) -> None:

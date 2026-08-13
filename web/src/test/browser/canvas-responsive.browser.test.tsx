@@ -86,8 +86,8 @@ function installAdminApi({ startEmpty = false } = {}) {
                 pools: [
                     {
                         pool_id: "banana-chiyun",
-                        provider_id: "chiyun",
-                        adapter_type: "chiyun_openai_images",
+                        provider_id: "chiyun-banana",
+                        adapter_type: "chiyun_gemini_images",
                         group: "banana",
                         allowed_families: ["nano-banana"],
                         revision_digest: "a".repeat(64),
@@ -274,14 +274,13 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     await expect.element(page.getByLabelText("模型显示名")).toHaveValue("Nano Banana Offline");
     expect(state.calls.find((item) => item.method === "PUT" && item.url.endsWith("/logical-models/nano-banana"))?.body).toMatchObject({ revision: 1, display_name: "Nano Banana Offline" });
 
-    const addRoute = async (provider: "Chiyun" | "T8Star", pool: string) => {
+    const addRoute = async (provider: "Chiyun", pool: string) => {
         await page.getByLabelText(`${provider} 凭据池`).selectOptions(pool);
         await page.getByRole("button", { name: `保存 ${provider} 设置` }).click();
         await expect.element(page.getByLabelText(`启用 ${provider}`)).toBeVisible();
     };
     await addRoute("Chiyun", "banana-chiyun");
-    await addRoute("T8Star", "banana-t8-gemini");
-    expect(state.routes().map((route) => route.credential_pool_ref)).toEqual(["banana-chiyun", "banana-t8-gemini"]);
+    expect(state.routes().map((route) => route.credential_pool_ref)).toEqual(["banana-chiyun"]);
     expect(document.body.textContent).toContain("可用 2");
     expect(document.body.textContent).not.toMatch(/offline-fixture-secret|api key|base url/i);
     for (const label of ["线路 ID", "线路模板", "Provider", "模型族", "供应商模型名"]) await expect.element(page.getByText(label, { exact: true })).not.toBeInTheDocument();
@@ -298,8 +297,8 @@ it("runs the desktop administrator route, lifecycle, assignment and canvas-node 
     await expect.element(page.getByLabelText("Chiyun 优先级")).toHaveValue(9);
     const routeUpdates = state.calls.filter((item) => item.method === "PUT" && item.url.endsWith("/routes/nano-banana-chiyun"));
     expect(routeUpdates).toHaveLength(2);
-    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_id: "chiyun", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
-    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_id: "chiyun", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[0].body).toMatchObject({ revision: 1, provider_id: "chiyun-banana", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
+    expect(routeUpdates[1].body).toMatchObject({ revision: 2, provider_id: "chiyun-banana", provider_model_name: "gemini-2.5-flash-image", priority: 9, max_concurrency: 3 });
 
     await page.getByLabelText("启用 Chiyun").click();
     await expect.element(page.getByLabelText("启用 Chiyun")).toBeChecked();

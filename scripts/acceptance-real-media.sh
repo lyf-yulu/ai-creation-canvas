@@ -84,9 +84,9 @@ import re
 import sys
 
 channels = {
-    "banana-chiyun": ("banana", "CHIYUN_API_KEY", None),
+    "banana-chiyun": ("banana", "CHIYUN_BANANA_API_KEY", "https://chiyun.work"),
     "banana-t8star": ("banana", "T8STAR_API_KEY", None),
-    "gpt-image2-chiyun": ("gpt-image2", "CHIYUN_API_KEY", None),
+    "gpt-image2-chiyun": ("gpt-image2", "CHIYUN_GPT_IMAGE2_API_KEY", "https://chiyun.work"),
     "seedream-ark": ("seedream", "ARK_API_KEY", "https://ark.cn-beijing.volces.com"),
     "seedance-ark": ("seedance", "ARK_API_KEY", "https://ark.cn-beijing.volces.com"),
 }
@@ -127,6 +127,12 @@ if banana_samples and "banana" not in expected_models:
 planned = len(channel_ids) + banana_samples
 if planned > maximum:
     reject("The paid call plan exceeds the explicit AICC_MAX_PAID_CALLS budget.")
+if os.environ.get("AICC_REAL_PRODUCTION_MATRIX") == "YES" and (
+    channel_ids != ["banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark"]
+    or model_ids != ["banana", "gpt-image2", "seedream", "seedance"]
+    or maximum != 12
+):
+    reject("The real production matrix requires four ordered channels, four ordered models and exactly twelve submissions.")
 
 selected_key_names = {channels[channel][1] for channel in channel_ids}
 for channel in channel_ids:
@@ -137,7 +143,7 @@ for name in sorted(selected_key_names):
     if not 8 <= len(value) <= 4096 or any(char in value for char in "\r\n\0"):
         reject(f"{name} is required for the selected channel.")
 print(f"Paid acceptance plan: models={','.join(model_ids)} channels={','.join(channel_ids)} logical_jobs={planned} provider_post_budget={maximum}.")
-for name in ("CHIYUN_API_KEY", "T8STAR_API_KEY", "ARK_API_KEY"):
+for name in ("CHIYUN_BANANA_API_KEY", "CHIYUN_GPT_IMAGE2_API_KEY", "T8STAR_API_KEY", "ARK_API_KEY"):
     print(f"{name}={'SET' if bool(os.environ.get(name)) else 'UNSET'}")
 PY
 
@@ -216,9 +222,9 @@ from pathlib import Path
 import stat
 
 channel_keys = {
-    "banana-chiyun": "CHIYUN_API_KEY",
+    "banana-chiyun": "CHIYUN_BANANA_API_KEY",
     "banana-t8star": "T8STAR_API_KEY",
-    "gpt-image2-chiyun": "CHIYUN_API_KEY",
+    "gpt-image2-chiyun": "CHIYUN_GPT_IMAGE2_API_KEY",
     "seedream-ark": "ARK_API_KEY",
     "seedance-ark": "ARK_API_KEY",
 }
@@ -242,10 +248,10 @@ with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
     handle.flush()
     os.fsync(handle.fileno())
 PY
-unset ARK_API_KEY CHIYUN_API_KEY T8STAR_API_KEY
+unset ARK_API_KEY CHIYUN_BANANA_API_KEY CHIYUN_GPT_IMAGE2_API_KEY T8STAR_API_KEY
 
 if [ "${AICC_ACCEPTANCE_ENV_PROBE:-}" = "YES" ]; then
-    [ -z "${ARK_API_KEY+x}" ] && [ -z "${CHIYUN_API_KEY+x}" ] && [ -z "${T8STAR_API_KEY+x}" ] || fail "Offline environment still contains a paid credential."
+    [ -z "${ARK_API_KEY+x}" ] && [ -z "${CHIYUN_BANANA_API_KEY+x}" ] && [ -z "${CHIYUN_GPT_IMAGE2_API_KEY+x}" ] && [ -z "${T8STAR_API_KEY+x}" ] || fail "Offline environment still contains a paid credential."
     AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py" --probe-key-boundary
     exit 0
 fi

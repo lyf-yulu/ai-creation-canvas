@@ -56,13 +56,11 @@ def test_reviewed_channel_definitions_use_only_code_owned_models_and_origins() -
         assert forbidden not in encoded.lower()
 
 
-def test_third_party_channel_cannot_turn_a_caller_supplied_origin_into_an_approved_destination() -> None:
-    with pytest.raises(ValueError, match="approved origin"):
-        module.acceptance_definitions(
-            ("banana-chiyun",),
-            chiyun_origin="https://attacker.example",
-            t8star_origin="https://attacker.example",
-        )
+def test_chiyun_channel_ignores_caller_origin_and_uses_code_owned_destination() -> None:
+    definitions = module.acceptance_definitions(
+        ("banana-chiyun",), chiyun_origin="https://attacker.example", t8star_origin="https://attacker.example",
+    )
+    assert definitions["providers"][0]["base_url"] == "https://chiyun.work"
 
 
 def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
@@ -72,7 +70,7 @@ def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
     seedance = module.request_for_paid_call(module.PaidCall("smoke", "seedance-ark", "seedance"), owned_asset)
 
     assert banana["operation"] == "image.edit"
-    assert banana["params"] == {"size": "1024x1024", "output_count": 1}
+    assert banana["params"] == {"aspect_ratio": "1:1", "image_size": "2K"}
     assert banana["inputs"] == {"reference_images": [owned_asset]}
     assert seedream["operation"] == "image.edit"
     assert seedream["params"] == {"size": "1K", "watermark": False, "output_format": "png", "prompt_optimization": "fast"}
@@ -81,6 +79,17 @@ def test_each_paid_call_uses_the_minimum_reviewed_request_shape() -> None:
     assert seedance["params"] == {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False}
     assert seedance["inputs"] == {}
     assert len({banana["idempotency_key"], seedream["idempotency_key"], seedance["idempotency_key"]}) == 3
+
+
+def test_real_production_plan_is_exactly_three_cases_per_model_with_twelve_calls() -> None:
+    plan = module.real_production_plan()
+    assert len(plan) == 12
+    assert [(item.model_id, item.sample_index) for item in plan] == [
+        (model_id, index)
+        for model_id in ("banana", "gpt-image2", "seedream", "seedance")
+        for index in (1, 2, 3)
+    ]
+    assert len({(item.channel_id, item.sample_index) for item in plan}) == 12
 
 
 def test_acceptance_profiles_cross_check_authoritative_ark_config_and_factory_templates() -> None:
@@ -116,7 +125,7 @@ def test_acceptance_profiles_cross_check_authoritative_ark_config_and_factory_te
 
     trusted_chiyun_properties = {name: dict(rule) for name, (_target, rule) in _CHIYUN_PARAMETERS.items()}
     trusted_chiyun_mappings = {name: target for name, (target, _rule) in _CHIYUN_PARAMETERS.items()}
-    for profile_id, family in (("banana", "nano-banana"), ("gpt-image2", "gpt-image")):
+    for profile_id, family in (("gpt-image2", "gpt-image"),):
         profile = profiles[profile_id]
         assert profile["family"] == family
         assert profile["contract"]["parameter_schema"]["properties"] == trusted_chiyun_properties
@@ -565,17 +574,17 @@ def test_two_paid_poll_flows_keep_the_result_reference_chain_and_stream_checks(m
 def test_runner_consumes_a_mode_0600_multi_key_bundle_once(tmp_path: Path, monkeypatch) -> None:
     key_file = tmp_path / "paid-keys.json"
     key_file.write_text(
-        json.dumps({"ARK_API_KEY": "sentinel-ark-key", "CHIYUN_API_KEY": "sentinel-chiyun-key"}),
+        json.dumps({"ARK_API_KEY": "sentinel-ark-key", "CHIYUN_BANANA_API_KEY": "sentinel-chiyun-key"}),
         encoding="utf-8",
     )
     key_file.chmod(0o600)
     monkeypatch.setenv("AICC_ACCEPTANCE_KEY_FILE", str(key_file))
-    for name in ("ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY"):
+    for name in ("ARK_API_KEY", "CHIYUN_BANANA_API_KEY", "CHIYUN_GPT_IMAGE2_API_KEY", "T8STAR_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     values = module.consume_server_keys()
 
-    assert set(values) == {"ARK_API_KEY", "CHIYUN_API_KEY"}
+    assert set(values) == {"ARK_API_KEY", "CHIYUN_BANANA_API_KEY"}
     assert key_file.exists()
     assert "AICC_ACCEPTANCE_KEY_FILE" not in os.environ
 

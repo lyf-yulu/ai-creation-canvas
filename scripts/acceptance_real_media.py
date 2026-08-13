@@ -51,9 +51,9 @@ _CHANNEL_MODELS = {
 
 _FROZEN_PROFILES = acceptance_model_profiles()["profiles"]
 _CHANNEL_DEFINITIONS = {
-    "banana-chiyun": ("banana", "chiyun", _FROZEN_PROFILES["banana"]["provider_model_name"], _FROZEN_PROFILES["banana"]["adapter_type"], _FROZEN_PROFILES["banana"]["family"], _FROZEN_PROFILES["banana"]["contract"]),
+    "banana-chiyun": ("banana", "chiyun-banana", _FROZEN_PROFILES["banana"]["provider_model_name"], _FROZEN_PROFILES["banana"]["adapter_type"], _FROZEN_PROFILES["banana"]["family"], _FROZEN_PROFILES["banana"]["contract"]),
     "banana-t8star": ("banana", "t8star", _FROZEN_PROFILES["banana"]["provider_model_name"], _FROZEN_PROFILES["banana"]["adapter_type"], _FROZEN_PROFILES["banana"]["family"], _FROZEN_PROFILES["banana"]["contract"]),
-    "gpt-image2-chiyun": ("gpt-image2", "chiyun", _FROZEN_PROFILES["gpt-image2"]["provider_model_name"], _FROZEN_PROFILES["gpt-image2"]["adapter_type"], _FROZEN_PROFILES["gpt-image2"]["family"], _FROZEN_PROFILES["gpt-image2"]["contract"]),
+    "gpt-image2-chiyun": ("gpt-image2", "chiyun-gpt-image2", _FROZEN_PROFILES["gpt-image2"]["provider_model_name"], _FROZEN_PROFILES["gpt-image2"]["adapter_type"], _FROZEN_PROFILES["gpt-image2"]["family"], _FROZEN_PROFILES["gpt-image2"]["contract"]),
     "seedream-ark": ("seedream", "ark", _FROZEN_PROFILES["seedream"]["provider_model_name"], _FROZEN_PROFILES["seedream"]["adapter_type"], _FROZEN_PROFILES["seedream"]["family"], _FROZEN_PROFILES["seedream"]["contract"]),
     "seedance-ark": ("seedance", "ark", _FROZEN_PROFILES["seedance"]["provider_model_name"], _FROZEN_PROFILES["seedance"]["adapter_type"], _FROZEN_PROFILES["seedance"]["family"], _FROZEN_PROFILES["seedance"]["contract"]),
 }
@@ -64,6 +64,15 @@ class PaidCall(NamedTuple):
     channel_id: str | None
     model_id: str
     sample_index: int | None = None
+
+
+def real_production_plan() -> tuple[PaidCall, ...]:
+    channels = ("banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark")
+    return tuple(
+        PaidCall("production_case", channel, _CHANNEL_MODELS[channel], index)
+        for channel in channels
+        for index in range(1, 4)
+    )
 
 
 def paid_call_plan(
@@ -106,7 +115,7 @@ def execute_paid_plan(
     for call in plan:
         recorder.begin_call(call)
         try:
-            if call.phase == "smoke":
+            if call.phase in {"smoke", "production_case"}:
                 if call.channel_id is None:
                     raise RuntimeError("paid smoke channel is missing")
                 activate_channel(call.channel_id)
@@ -141,7 +150,8 @@ def acceptance_definitions(
     del chiyun_origin, t8star_origin
     paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
     origins = {
-        "chiyun": None,
+        "chiyun-banana": "https://chiyun.work",
+        "chiyun-gpt-image2": "https://chiyun.work",
         "t8star": None,
         "ark": "https://ark.cn-beijing.volces.com",
     }
@@ -193,7 +203,7 @@ def acceptance_definitions(
     return {"providers": providers, "models": models, "routes": routes}
 
 
-def request_for_paid_call(call: PaidCall, owned_asset_id: str) -> dict[str, object]:
+def request_for_paid_call(call: PaidCall, owned_asset_id: str, extra_asset_ids: tuple[str, ...] = ()) -> dict[str, object]:
     if not isinstance(call, PaidCall) or call.model_id not in set(_CHANNEL_MODELS.values()):
         raise ValueError("paid call is invalid")
     common: dict[str, object] = {
@@ -201,13 +211,26 @@ def request_for_paid_call(call: PaidCall, owned_asset_id: str) -> dict[str, obje
         "asset_ids": [],
         "idempotency_key": secrets.token_urlsafe(24),
     }
-    if call.model_id in {"banana", "gpt-image2"}:
+    reference_ids = (owned_asset_id,) if call.sample_index in {None, 1} else (owned_asset_id, *extra_asset_ids[:1])
+    if call.sample_index == 3 and len(reference_ids) > 1:
+        reference_ids = tuple(reversed(reference_ids))
+    if call.model_id == "banana":
+        ratios = {1: "1:1", 2: "16:9", 3: "9:16"}
         return {
             **common,
             "operation": "image.edit",
             "prompt": "Keep the green circle and place it on a clean black background.",
-            "params": {"size": "1024x1024", "output_count": 1},
-            "inputs": {"reference_images": [owned_asset_id]},
+            "params": {"aspect_ratio": ratios.get(call.sample_index, "1:1"), "image_size": "2K"},
+            "inputs": {"reference_images": list(reference_ids)},
+        }
+    if call.model_id == "gpt-image2":
+        sizes = {1: "1024x1024", 2: "1024x1536", 3: "1536x1024"}
+        return {
+            **common,
+            "operation": "image.edit",
+            "prompt": "Keep the green circle and place it on a clean black background.",
+            "params": {"size": sizes.get(call.sample_index, "1024x1024"), "output_count": 1},
+            "inputs": {"reference_images": list(reference_ids)},
         }
     if call.model_id == "seedream":
         return {
@@ -215,14 +238,14 @@ def request_for_paid_call(call: PaidCall, owned_asset_id: str) -> dict[str, obje
             "operation": "image.edit",
             "prompt": "Keep the green circle and place it on a clean black background.",
             "params": {"size": "1K", "watermark": False, "output_format": "png", "prompt_optimization": "fast"},
-            "inputs": {"reference_images": [owned_asset_id]},
+            "inputs": {"reference_images": list(reference_ids)},
         }
     return {
         **common,
         "operation": "video.generate",
         "prompt": "A green circle moves slowly across a black background.",
         "params": {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False},
-        "inputs": {},
+        "inputs": {} if call.sample_index in {None, 1} else {"reference_images": list(reference_ids)},
     }
 
 
@@ -233,13 +256,13 @@ def write_credential_pool_config(
 ) -> OwnedFile:
     paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
     key_names = {
-        "banana-chiyun": "CHIYUN_API_KEY",
+        "banana-chiyun": "CHIYUN_BANANA_API_KEY",
         "banana-t8star": "T8STAR_API_KEY",
-        "gpt-image2-chiyun": "CHIYUN_API_KEY",
+        "gpt-image2-chiyun": "CHIYUN_GPT_IMAGE2_API_KEY",
         "seedream-ark": "ARK_API_KEY",
         "seedance-ark": "ARK_API_KEY",
     }
-    groups = {"chiyun": "chiyun", "t8star": "gemini", "ark": "official"}
+    groups = {"chiyun-banana": "banana", "chiyun-gpt-image2": "gpt-image", "t8star": "gemini", "ark": "official"}
     selected = {key_names[channel] for channel in channel_ids}
     if (
         not selected <= set(keys)
@@ -540,7 +563,7 @@ def verify_media_file(path: Path, mime: str, kind: str) -> dict[str, object]:
 
 
 def consume_server_keys() -> dict[str, str]:
-    allowed = {"ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY"}
+    allowed = {"ARK_API_KEY", "CHIYUN_BANANA_API_KEY", "CHIYUN_GPT_IMAGE2_API_KEY", "T8STAR_API_KEY"}
     if any(name in os.environ for name in allowed):
         raise RuntimeError("paid credential leaked into acceptance environment")
     path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "")
@@ -726,6 +749,25 @@ def _project_document(asset_id: str, image_model: str, video_model: str, asset_b
         {"id": "prompt-video", "fromNodeId": "prompt", "fromPortId": "prompt", "toNodeId": "video-model", "toPortId": "prompt"},
     ]
     return {"id": "paid-acceptance-canvas", "title": "Paid acceptance", "createdAt": now, "updatedAt": now, "nodes": nodes, "connections": connections, "chatSessions": [], "activeChatId": None, "backgroundMode": "lines", "showImageInfo": False, "viewport": {"x": 0, "y": 0, "k": 1}, "graphSchemaVersion": 1}
+
+
+def _case_project_document(call: PaidCall, reference_asset_id: str, result: PaidDownload) -> dict[str, object]:
+    now = "2026-08-13T00:00:00.000Z"
+    case_id = f"paid-{call.model_id}-{call.sample_index}"
+    media_type = "video" if call.model_id == "seedance" else "image"
+    model_type = "video" if media_type == "video" else "image"
+    nodes = [
+        {"id": "prompt", "type": "text", "title": "提示词", "position": {"x": 40, "y": 40}, "width": 300, "height": 180, "metadata": {"graph": {"schemaVersion": 1, "role": "prompt", "text": "Production acceptance", "outputPortId": "prompt"}}},
+        {"id": "reference", "type": "image", "title": "参考图片", "position": {"x": 40, "y": 260}, "width": 320, "height": 240, "metadata": {"graph": {"schemaVersion": 1, "role": "media-collection", "mediaType": "image", "outputPortId": "media", "items": [{"id": "reference-1", "assetId": reference_asset_id, "displayName": "reference.png", "mimeType": "image/png", "bytes": len(reference_png()), "width": 64, "height": 64}]}}},
+        {"id": "model", "type": "config", "title": call.model_id, "position": {"x": 430, "y": 80}, "width": 340, "height": 360, "metadata": {"status": "success", "sourceJobId": result.job_id, "graph": {"schemaVersion": 1, "role": "model", "modelId": call.model_id, "operation": "video.generate" if media_type == "video" else "image.edit", "inputPorts": [{"id": "prompt", "accepts": "prompt"}, {"id": "reference_images", "accepts": "image"}], "outputPortId": "result", "parameters": {}}}},
+        {"id": "result", "type": model_type, "title": "生成视频" if media_type == "video" else "生成图片", "position": {"x": 850, "y": 80}, "width": 420 if media_type == "video" else 340, "height": 260, "metadata": {"content": result.result_url, "status": "success", "sourceJobId": result.job_id, "sourceResultIndex": 0, "graph": {"schemaVersion": 1, "role": "result", "mediaType": media_type, "inputPortId": "result", "outputPortId": "media", "jobId": result.job_id, "assetId": result.result_asset_id}}},
+    ]
+    connections = [
+        {"id": "prompt-model", "fromNodeId": "prompt", "fromPortId": "prompt", "toNodeId": "model", "toPortId": "prompt"},
+        {"id": "reference-model", "fromNodeId": "reference", "fromPortId": "media", "toNodeId": "model", "toPortId": "reference_images"},
+        {"id": "model-result", "fromNodeId": "model", "fromPortId": "result", "toNodeId": "result", "toPortId": "result"},
+    ]
+    return {"id": case_id, "title": f"{call.model_id} 真实验收 {call.sample_index}", "createdAt": now, "updatedAt": now, "nodes": nodes, "connections": connections, "chatSessions": [], "activeChatId": None, "backgroundMode": "lines", "showImageInfo": False, "viewport": {"x": 0, "y": 0, "k": 1}, "graphSchemaVersion": 1}
 
 
 def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, object], kind: str) -> PaidDownload:
@@ -1100,6 +1142,7 @@ def run_guarded_paid_acceptance(
         visible = user.json("GET", "/api/v1/models").get("models")
         if not isinstance(visible, list) or {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
             raise RuntimeError("model assignment isolation failed")
+        extra_asset_ids = tuple(user.upload_reference_png() for _ in range(2)) if plan == real_production_plan() else ()
         store = CanvasStore(data_dir)
         banana_routes = {channel for channel in channel_ids if _CHANNEL_MODELS[channel] == "banana"}
 
@@ -1112,7 +1155,7 @@ def run_guarded_paid_acceptance(
             _set_model_routes(admin, "banana", banana_routes)
 
         def execute(call: PaidCall) -> dict[str, object]:
-            payload = request_for_paid_call(call, owned_asset_id)
+            payload = request_for_paid_call(call, owned_asset_id, extra_asset_ids)
             kind = "video" if payload["operation"] == "video.generate" else "image"
             result = _poll_and_download(user, admin, payload, kind)
             item, forbidden = store.job_for_owner(result.job_id, user_id)
@@ -1123,6 +1166,10 @@ def run_guarded_paid_acceptance(
                 raise RuntimeError("stored job route contract failed")
             if item.get("idempotency_key") != payload["idempotency_key"]:
                 raise RuntimeError("stored job idempotency contract failed")
+            project = _case_project_document(call, owned_asset_id, result)
+            persisted = user.json("POST", "/api/v1/projects", project, expected=(201,))
+            if not isinstance(persisted.get("project"), dict) or admin.request("GET", f"/api/v1/projects/{project['id']}")[0] != 404:
+                raise RuntimeError("paid canvas project contract failed")
             record = sanitized_result_record(
                 phase=call.phase,
                 logical_model=call.model_id,
@@ -1135,13 +1182,22 @@ def run_guarded_paid_acceptance(
             )
             return record
 
-        return execute_paid_plan(
+        records = execute_paid_plan(
             plan,
             activate_channel=activate_channel,
             activate_banana=activate_banana,
             execute=execute,
             recorder=recorder,
         )
+        usage = user.json("GET", "/api/v1/usage")
+        expected_images = sum(1 for item in records if item["logical_model"] != "seedance")
+        expected_video_seconds = 5 * sum(1 for item in records if item["logical_model"] == "seedance")
+        if usage.get("summary", {}).get("successful_jobs") != len(records) or usage.get("summary", {}).get("image_count") != expected_images or usage.get("summary", {}).get("video_seconds") != expected_video_seconds:
+            raise RuntimeError("paid usage statistics contract failed")
+        admin_usage = admin.json("GET", "/api/v1/admin/usage")
+        if admin_usage.get("summary", {}).get("successful_jobs") != len(records):
+            raise RuntimeError("admin paid usage statistics contract failed")
+        return records
 
 
 def _serve_paid() -> None:
@@ -1210,11 +1266,13 @@ def main() -> int:
     server_log.touch(mode=0o600)
     channels = tuple(os.environ["AICC_ACCEPTANCE_CHANNEL_IDS"].split(","))
     model_ids = tuple(os.environ["AICC_ACCEPTANCE_MODEL_IDS"].split(","))
-    plan = paid_call_plan(
-        channels,
-        banana_sample_count=int(os.environ["AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT"]),
+    matrix = os.environ.get("AICC_REAL_PRODUCTION_MATRIX") == "YES"
+    plan = real_production_plan() if matrix else paid_call_plan(
+        channels, banana_sample_count=int(os.environ["AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT"]),
         maximum_paid_calls=int(os.environ["AICC_MAX_PAID_CALLS"]),
     )
+    if matrix and (channels != ("banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark") or int(os.environ["AICC_MAX_PAID_CALLS"]) != 12):
+        raise RuntimeError("real production matrix requires its exact four channels and twelve-call budget")
     pool_path = data_dir / ".credential-pools.json"
     owned_pool = write_credential_pool_config(pool_path, channels, keys)
     _owned_pool_file = owned_pool
@@ -1269,7 +1327,7 @@ if __name__ == "__main__":
             if not probe_values or any(
                 name in os.environ
                 for name in (
-                    "ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY",
+                    "ARK_API_KEY", "CHIYUN_BANANA_API_KEY", "CHIYUN_GPT_IMAGE2_API_KEY", "T8STAR_API_KEY",
                     "AICC_ACCEPTANCE_KEY_FILE", "AICC_ACCEPTANCE_POOL_FILE",
                     "AICC_CHIYUN_BASE_URL", "AICC_T8STAR_BASE_URL",
                 )

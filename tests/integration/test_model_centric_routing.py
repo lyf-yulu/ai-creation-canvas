@@ -22,6 +22,8 @@ from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
 from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.model_registry import ProviderDefinition
+from ai_creation_canvas.model_registry import OperationContract
+from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from scripts.acceptance_real_media import reference_png
@@ -47,8 +49,19 @@ def assert_decodable_png(content: bytes) -> None:
 
 
 def image_contract() -> dict[str, object]:
-    from ai_creation_canvas.trusted_routing import trusted_route_presets
-    return trusted_route_presets()[("banana", "chiyun")].operation_contracts[0].to_dict()
+    return {
+        "operation": "image.edit",
+        "input_ports": [
+            {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
+            {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
+        ],
+        "output_media_type": "image",
+        "parameter_schema": {"type": "object", "properties": {
+            "size": {"type": "string", "enum": ["auto", "1024x1024"], "default": "auto"},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
+        }, "required": ["size", "output_count"], "additionalProperties": False},
+        "parameter_mappings": {"size": "size", "output_count": "n"},
+    }
 
 
 def model_body() -> dict[str, object]:
@@ -185,18 +198,17 @@ def login(client: TestClient, username: str, password: str) -> dict[str, str]:
 
 def configure_model(admin: TestClient, headers: dict[str, str], accounts: BootstrapResult) -> None:
     assert admin.post("/api/v1/admin/logical-models", headers=headers, json=model_body()).status_code == 201
-    official = admin.post(
-        "/api/v1/admin/logical-models/nano-banana/routes",
-        headers=headers,
-        json=route_body("banana-official-route", "chiyun", "banana-official", priority=1),
-    )
-    gemini = admin.post(
-        "/api/v1/admin/logical-models/nano-banana/routes",
-        headers=headers,
-        json=route_body("banana-t8-gemini-route", "t8star", "banana-t8-gemini", priority=2),
-    )
-    assert official.status_code == 201, official.text
-    assert gemini.status_code == 201, gemini.text
+    store = admin.app.state.canvas_store
+    for body in (
+        route_body("banana-official-route", "chiyun", "banana-official", priority=1),
+        route_body("banana-t8-gemini-route", "t8star", "banana-t8-gemini", priority=2),
+    ):
+        store.create_model_route(ModelRouteDefinition(
+            body["route_id"], body["model_id"], body["provider_id"], body["provider_model_name"],
+            body["adapter_type"], body["credential_pool_ref"], body["family"],
+            tuple(OperationContract.from_dict(item) for item in body["operation_contracts"]),
+            body["priority"], body["max_concurrency"], enabled=body["enabled"],
+        ), actor_user_id=accounts.admin.user_id)
     rejected = admin.post(
         "/api/v1/admin/logical-models/nano-banana/routes",
         headers=headers,
