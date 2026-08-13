@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ProductShell } from "@/components/layout/product-shell";
 import CanvasProjectPage from "@/pages/canvas/project";
 import AdminModelsPage from "@/pages/admin/models";
-import { appendResultNode } from "@/features/generation/result-node";
+import { appendJobResults } from "@/features/generation/result-node";
 import { clearCanvasInMemory, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 import { clearStorageScope, setStorageScope } from "@/storage/scope";
@@ -390,14 +390,36 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
 
     {
         const current = useCanvasStore.getState().openProject(projectId)!;
-        const withResult = appendResultNode(
+        const withResult = appendJobResults(
             current.nodes,
+            current.connections,
             { id: "fixture-result-job", operation: "image.generate", status: "succeeded", results: [{ url: offlineResultUrl, asset_id: "job-result.fixture-result-job.0", media_type: "image" }] },
             modelNodes[0],
         );
-        useCanvasStore.getState().updateProject(projectId, { nodes: withResult.map((node) => (node.metadata?.sourceJobId === "fixture-result-job" ? { ...node, position: { x: 320, y: 330 } } : node)) });
+        useCanvasStore.getState().updateProject(projectId, {
+            nodes: withResult.nodes.map((node) => (node.metadata?.sourceJobId === "fixture-result-job" ? { ...node, position: { x: 320, y: 330 } } : node)),
+            connections: withResult.connections,
+        });
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
+    const resultNode = useCanvasStore
+        .getState()
+        .openProject(projectId)!
+        .nodes.find((node) => node.metadata?.sourceJobId === "fixture-result-job")!;
+    const resultGraph = resultNode.metadata!.graph!;
+    if (resultGraph.role !== "result") throw new Error("fixture result node must expose a result graph contract");
+    const modelResultPort = modelNodes[0].metadata!.graph!.outputPortId;
+    const resultInputPort = resultGraph.inputPortId;
+    expect(
+        useCanvasStore
+            .getState()
+            .openProject(projectId)!
+            .connections.some((edge) => edge.fromNodeId === modelNodes[0].id
+                && edge.fromPortId === modelResultPort
+                && edge.toNodeId === resultNode.id
+                && edge.toPortId === resultInputPort),
+    ).toBe(true);
+    await expect.element(page.getByRole("button", { name: `连接：${modelNodes[0].title} 结果(result) 到 ${resultNode.title} 结果(result)` })).toBeVisible();
     await expect.element(page.getByRole("img", { name: "生成结果" })).toBeVisible();
     const preview = await page.getByRole("img", { name: "生成结果" }).element() as HTMLImageElement;
     const download = page.getByRole("link", { name: "下载" });
@@ -409,10 +431,6 @@ it("runs the connected media graph editing path in desktop Chromium", async () =
     preview.src = previewUrl;
     await expect.poll(() => preview.naturalWidth).toBeGreaterThan(0);
     URL.revokeObjectURL(previewUrl);
-    const resultNode = useCanvasStore
-        .getState()
-        .openProject(projectId)!
-        .nodes.find((node) => node.metadata?.sourceJobId === "fixture-result-job")!;
     await page.getByRole("button", { name: `${resultNode.title}：媒体输出端口` }).click();
     await page.getByRole("button", { name: `${modelNodes[1].title}：参考图片输入端口` }).click();
     expect(

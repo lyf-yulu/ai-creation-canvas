@@ -314,13 +314,14 @@ def test_model_centric_offline_route_rotation_idempotency_and_owner_isolation(tm
     completed = user.get(f"/api/v1/jobs/{job_id}")
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     assert other.get(f"/api/v1/jobs/{job_id}").status_code == 404
-    assert other.get(f"/api/v1/results/{job_id}").status_code == 404
-    head = user.head(f"/api/v1/results/{job_id}")
+    result_url = f"/api/v1/results/{job_id}/0"
+    assert other.get(result_url).status_code == 404
+    head = user.head(result_url)
     assert head.status_code == 200
     assert head.headers["content-type"] == "image/png"
-    ranged = user.get(f"/api/v1/results/{job_id}", headers={"Range": "bytes=0-7"})
+    ranged = user.get(result_url, headers={"Range": "bytes=0-7"})
     assert ranged.status_code == 206 and ranged.content == PNG[:8]
-    full_result = user.get(f"/api/v1/results/{job_id}")
+    full_result = user.get(result_url)
     assert full_result.status_code == 200
     assert full_result.headers["content-type"] == "image/png"
     assert full_result.content == PNG
@@ -336,7 +337,7 @@ def test_model_centric_offline_route_rotation_idempotency_and_owner_isolation(tm
     denied = user.post("/api/v1/jobs", headers=user_headers, json={**body, "idempotency_key": "offline-after-revoke"})
     assert denied.status_code == 400
     assert len(provider_calls) == 2
-    assert user.get(f"/api/v1/results/{job_id}").status_code == 200
+    assert user.get(result_url).status_code == 200
 
     recorded = json.dumps(environment.redis.recorded_commands)
     for forbidden_value in ("offline acceptance prompt", "nano-banana", "banana-official", "official-a", "offline-fixture-secret"):
