@@ -140,10 +140,10 @@ class ChiyunGenerationAdapter:
         results = _decode_results(payload, expected=int(params["output_count"]))
         upstream_id = "chiyun_" + hashlib.sha256(f"{request.model_id}\n{request.idempotency_key}".encode()).hexdigest()
         planned = tuple(_result_id(upstream_id, index) for index in range(len(results)))
-        materialized: list[str] = []
+        materialized: list[dict[str, str]] = []
         try:
-            for index, body in enumerate(results):
-                materialized.append(self._store_result(upstream_id, index, body))
+            for index, (body, mime) in enumerate(results):
+                materialized.append({"result_id": self._store_result(upstream_id, index, body), "mime": mime})
             async with self._lock:
                 values = self._read_index()
                 values[upstream_id] = list(materialized)
@@ -152,7 +152,6 @@ class ChiyunGenerationAdapter:
             for result_id in planned:
                 _safe_unlink(self._root / result_id)
             raise
-        result_ids = tuple(materialized)
         return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
@@ -178,9 +177,17 @@ class ChiyunGenerationAdapter:
             raw = values.pop(upstream_job_id, None)
             if raw is not None:
                 self._write_index(values)
-        if not isinstance(raw, list) or not 1 <= len(raw) <= 4 or any(not isinstance(item, str) or _RESULT_ID.fullmatch(item) is None for item in raw):
+        if not isinstance(raw, list) or not 1 <= len(raw) <= 4:
             raise InvalidUpstreamResult("Chiyun result index is invalid")
-        results = tuple(AssetRef(item, "reference", "active", "image/png", "image") for item in raw)
+        normalized: list[tuple[str, str]] = []
+        for item in raw:
+            if isinstance(item, str) and _RESULT_ID.fullmatch(item) is not None:
+                normalized.append((item, "image/png"))
+            elif isinstance(item, dict) and isinstance(item.get("result_id"), str) and _RESULT_ID.fullmatch(item["result_id"]) is not None and item.get("mime") in _IMAGE_MIME:
+                normalized.append((item["result_id"], item["mime"]))
+            else:
+                raise InvalidUpstreamResult("Chiyun result index is invalid")
+        results = tuple(AssetRef(item, "reference", "active", mime, "image") for item, mime in normalized)
         return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
@@ -190,13 +197,16 @@ class ChiyunGenerationAdapter:
         path = self._root / result_id
         if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= _MAX_RESULT:
             return _empty_stream(404)
+        mime = _detect_mime(path.read_bytes()[:16])
+        if mime is None:
+            return _empty_stream(404)
         if range_header is None:
-            return _FileStream(path, "image/png", head=head)
+            return _FileStream(path, mime, head=head)
         interval = _range(range_header, path.stat().st_size)
         if interval is None:
             return _empty_stream(416, size=path.stat().st_size)
         start, end = interval
-        return _FileStream(path, "image/png", offset=start, length=end - start + 1, head=head)
+        return _FileStream(path, mime, offset=start, length=end - start + 1, head=head)
 
     async def _post(self, data: Mapping[str, str], files: list[tuple[str, tuple[str, bytes, str]]]) -> Mapping[str, object]:
         submission_error: SubmissionError | None = None
@@ -270,11 +280,11 @@ class ChiyunGenerationAdapter:
             _safe_unlink(temporary)
 
 
-def _decode_results(payload: Mapping[str, object], *, expected: int) -> tuple[bytes, ...]:
+def _decode_results(payload: Mapping[str, object], *, expected: int) -> tuple[tuple[bytes, str], ...]:
     data = payload.get("data")
     if not isinstance(data, list) or len(data) != expected or not 1 <= len(data) <= 4:
         raise InvalidUpstreamResult("Chiyun result count is invalid")
-    results: list[bytes] = []
+    results: list[tuple[bytes, str]] = []
     for item in data:
         if not isinstance(item, Mapping):
             raise InvalidUpstreamResult("Chiyun result is invalid")
@@ -286,14 +296,25 @@ def _decode_results(payload: Mapping[str, object], *, expected: int) -> tuple[by
             body = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
         except (binascii.Error, ValueError) as error:
             raise InvalidUpstreamResult("Chiyun result is invalid") from error
-        if not 8 <= len(body) <= _MAX_RESULT or not body.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = _detect_mime(body[:16])
+        if not 8 <= len(body) <= _MAX_RESULT or mime is None:
             raise InvalidUpstreamResult("Chiyun result is invalid")
-        results.append(body)
+        results.append((body, mime))
     return tuple(results)
 
 
 def _extension(mime: str) -> str:
     return {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime]
+
+
+def _detect_mime(body: bytes) -> str | None:
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _result_id(upstream_id: str, index: int) -> str:

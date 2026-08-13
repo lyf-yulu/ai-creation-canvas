@@ -15,6 +15,7 @@ _ADAPTER_TEMPLATES = frozenset({
     "ark.image.edit",
     "ark.video.generate",
     "chiyun_openai_images.image.edit",
+    "chiyun_gemini_images.image.edit",
 })
 _SAFE_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _PROVIDER_TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")

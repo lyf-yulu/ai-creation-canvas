@@ -14,6 +14,7 @@ import httpx
 
 from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
 from ai_creation_canvas.adapters.chiyun import ChiyunGenerationAdapter
+from ai_creation_canvas.adapters.chiyun_gemini import ChiyunGeminiGenerationAdapter
 from ai_creation_canvas.coordination import CredentialLease
 from ai_creation_canvas.domain.models import ModelOperation
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ModelModality, ProviderDefinition
@@ -371,11 +372,22 @@ class RouteAdapterFactory:
                 asset_loader=self._asset_loader,
                 transport=transport,
             )
+        if route.adapter_type == "chiyun_gemini_images":
+            service_id = route.route_id
+            provider = ProviderDefinition(service_id, "Managed Chiyun Gemini route", route.adapter_type, protocol.base_url, "lease")
+            model = GovernedModelDefinition(
+                route.model_id, service_id, route.provider_model_name, route.model_id, "Managed route",
+                ModelModality.IMAGE, route.operation_contracts,
+            )
+            return ChiyunGeminiGenerationAdapter(
+                provider=provider, models=(model,), api_key=lease.secret.strip(), data_dir=self._data_dir,
+                asset_loader=self._asset_loader, transport=transport,
+            )
         raise ValueError("route adapter is not allowlisted")
 
     def build_result_reader(self, route: ModelRouteDefinition):
         """Build a secret-free reader for files already materialized locally."""
-        if not isinstance(route, ModelRouteDefinition) or route.adapter_type not in {"ark", "chiyun_openai_images"}:
+        if not isinstance(route, ModelRouteDefinition) or route.adapter_type not in {"ark", "chiyun_gemini_images", "chiyun_openai_images"}:
             raise ValueError("managed result reader is unavailable")
         return _LocalRouteResultReader(self._data_dir, route.adapter_type)
 
@@ -392,17 +404,36 @@ class _LocalRouteResultReader:
     async def open_result(self, context, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
         if self._adapter_type == "chiyun_openai_images":
-            from ai_creation_canvas.adapters.chiyun import _FileStream, _RESULT_ID, _MAX_RESULT, _empty_stream, _range
+            from ai_creation_canvas.adapters.chiyun import _FileStream, _RESULT_ID, _MAX_RESULT, _detect_mime, _empty_stream, _range
             path = self._data_dir / "chiyun-results" / result_id
             if _RESULT_ID.fullmatch(result_id) is None or path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= _MAX_RESULT:
                 return _empty_stream(404)
+            mime = _detect_mime(path.read_bytes()[:16])
+            if mime is None:
+                return _empty_stream(404)
             if range_header is None:
-                return _FileStream(path, "image/png", head=head)
+                return _FileStream(path, mime, head=head)
             interval = _range(range_header, path.stat().st_size)
             if interval is None:
                 return _empty_stream(416, size=path.stat().st_size)
             start, end = interval
-            return _FileStream(path, "image/png", offset=start, length=end - start + 1, head=head)
+            return _FileStream(path, mime, offset=start, length=end - start + 1, head=head)
+        if self._adapter_type == "chiyun_gemini_images":
+            from ai_creation_canvas.adapters.chiyun_gemini import _RESULT_ID, _detect_mime
+            from ai_creation_canvas.adapters.chiyun import _FileStream, _empty_stream, _range
+            path = self._data_dir / "chiyun-gemini-results" / result_id
+            if _RESULT_ID.fullmatch(result_id) is None or path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 32 * 1024 * 1024:
+                return _empty_stream(404)
+            mime = _detect_mime(path.read_bytes()[:16])
+            if mime is None:
+                return _empty_stream(404)
+            if range_header is None:
+                return _FileStream(path, mime, head=head)
+            interval = _range(range_header, path.stat().st_size)
+            if interval is None:
+                return _empty_stream(416, size=path.stat().st_size)
+            start, end = interval
+            return _FileStream(path, mime, offset=start, length=end - start + 1, head=head)
         from ai_creation_canvas.adapters.ark import _FileStream, _RESULT_ID, _missing_stream, _range, _range_missing_stream
         result_root = self._data_dir / "ark-results"
         media, metadata = result_root / result_id, result_root / f"{result_id}.json"

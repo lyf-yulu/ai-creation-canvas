@@ -86,6 +86,26 @@ def test_chiyun_submits_ordered_multipart_and_materializes_bounded_results(tmp_p
     assert fields(request.content, "n") == [b"1"]
     assert fields(request.content, "image[]") == [PNG, JPEG]
 
+
+def test_chiyun_preserves_the_actual_returned_image_mime(tmp_path: Path) -> None:
+    adapter = ChiyunGenerationAdapter(
+        provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+        asset_loader=lambda _: (PNG, "image/png"),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(JPEG).decode()}]})),
+    )
+
+    async def scenario() -> None:
+        upstream = await adapter.submit(context(), JobRequest(
+            "image.edit", "chiyun-gpt-image-2", "x", "jpeg-key",
+            {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+        ))
+        state = await adapter.poll(context(), upstream.upstream_job_id)
+        assert state.result is not None and state.result.mime_type == "image/jpeg"
+        stream = await adapter.open_result(context(), state.result.asset_id, cookie_header="")
+        assert stream.headers["content-type"] == "image/jpeg"
+
+    asyncio.run(scenario())
+
 @pytest.mark.parametrize(
     "job_request",
     [
