@@ -10,10 +10,6 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { clearStorageScope, setScopedStoreFactoryForTest, setStorageScope } from "@/storage/scope";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
-const modelResponse = new Response(JSON.stringify({ models: [] }), {
-    headers: { "content-type": "application/json" },
-});
-
 function deferred<T>() {
     let resolve!: (value: T) => void;
     let reject!: (reason?: unknown) => void;
@@ -67,11 +63,13 @@ function resultNode(id: string, x: number): CanvasNodeData {
     };
 }
 
-async function renderProject(nodes: CanvasNodeData[] = [], connections: CanvasConnection[] = []) {
+async function renderProject(nodes: CanvasNodeData[] = [], connections: CanvasConnection[] = [], models: unknown[] = []) {
     await setStorageScope({ environment: "test", userId: "editing-user" });
     const projectId = useCanvasStore.getState().createProject("Editing Canvas");
     useCanvasStore.getState().updateProject(projectId, { nodes, connections });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(modelResponse.clone()));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ models }), {
+        headers: { "content-type": "application/json" },
+    })));
     render(
         <MemoryRouter initialEntries={[`/canvas/${projectId}`]}>
             <Routes><Route path="/canvas/:id" element={<CanvasProjectPage />} /></Routes>
@@ -494,6 +492,29 @@ describe("canvas editing shortcuts", () => {
 });
 
 describe("blank canvas creation menu", () => {
+    it("creates an image edit model node from the canvas menu when it is the assigned image capability", async () => {
+        const projectId = await renderProject([], [], [{
+            model_id: "edit-only",
+            service_id: "image-service",
+            display_name: "Edit only",
+            operations: ["image.edit"],
+            input_media: ["text", "image"],
+            parameter_schema: {},
+        }]);
+        await waitFor(() => expect(screen.getByRole("button", { name: "图片生成" })).toBeEnabled());
+
+        const canvas = screen.getByTestId("infinite-canvas");
+        fireEvent.contextMenu(canvas, { clientX: 320, clientY: 210 });
+        const menu = screen.getByRole("menu", { name: "创建节点" });
+        const imageGeneration = within(menu).getByRole("menuitem", { name: "图片生成" });
+        expect(imageGeneration).toBeEnabled();
+        fireEvent.click(imageGeneration);
+
+        const created = useCanvasStore.getState().openProject(projectId)?.nodes.find((item) => item.metadata?.graph?.role === "model");
+        expect(created?.metadata?.graph).toMatchObject({ role: "model", operation: "image.edit" });
+        expect(screen.getByTestId(`draggable-node-${created?.id}`)).toBeVisible();
+    });
+
     it("creates the chosen node at the exact world position after pan and zoom", async () => {
         const projectId = await renderProject();
         useCanvasStore.getState().updateProject(projectId, { viewport: { x: 100, y: 50, k: 2 } });

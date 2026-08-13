@@ -910,8 +910,8 @@ export default function CanvasProjectPage() {
                     {contextMenu?.type === "canvas" ? (
                         <CanvasCreateContextMenu
                             menu={contextMenu}
-                            imageModelDisabled={!models.some((model) => model.operations.includes("image.generate"))}
-                            videoModelDisabled={!models.some((model) => model.operations.includes("video.generate"))}
+                            imageModelDisabled={imageCreateOperation === null}
+                            videoModelDisabled={videoCreateOperation === null}
                             onClose={closeContextMenu}
                             onCreate={createNodeFromContextMenu}
                         />
