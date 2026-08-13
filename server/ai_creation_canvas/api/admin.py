@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
+from ai_creation_canvas.api.usage import all_usage_projection
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.domain.models import PortalRole
 
@@ -61,7 +62,7 @@ def _safe_user(row: dict[str, object], model_ids: tuple[str, ...]) -> dict[str, 
 @router.get("/usage")
 async def all_usage(request: Request) -> dict[str, object]:
     _require_admin(request)
-    return {"users": request.app.state.canvas_store.usage_for_all_users()}
+    return all_usage_projection(request.app.state.canvas_store)
 
 
 @router.get("/usage/rates")
@@ -71,8 +72,12 @@ async def get_usage_rates(request: Request) -> dict[str, int]:
 
 
 @router.put("/usage/rates")
-async def update_usage_rates(body: UsageRates, request: Request) -> dict[str, int]:
+async def update_usage_rates(request: Request) -> dict[str, int]:
     _require_admin(request)
+    try:
+        body = UsageRates.model_validate(await request.json())
+    except (ValidationError, ValueError):
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.") from None
     return request.app.state.canvas_store.set_usage_rates(
         video_price_fen=body.video_price_fen,
         image_price_fen=body.image_price_fen,

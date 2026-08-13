@@ -99,6 +99,12 @@ def test_usage_lists_only_current_owner_charged_jobs(tmp_path) -> None:
     response = client.get("/api/v1/usage", headers=identity("user-a"))
 
     assert response.status_code == 200
+    assert response.json()["summary"] == {
+        "successful_jobs": 1,
+        "image_count": 1,
+        "video_seconds": 0,
+        "total_cost_fen": 0,
+    }
     assert len(response.json()["jobs"]) == 1
     assert "request_hash" not in response.text
     assert "user-b" not in response.text
