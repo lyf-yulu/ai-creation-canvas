@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import binascii
 import json
 from pathlib import Path
+import struct
+import zlib
 
 import httpx
 import pytest
@@ -13,6 +16,14 @@ from ai_creation_canvas.errors import PortalUpstreamError
 
 def context() -> RequestContext:
     return RequestContext(PortalUser("user-a", "Alice", PortalRole.USER), "request-a", "trace-a")
+
+
+def png(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    row = b"\x00" + b"\x00\xff\x55" * width
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(row * height, 9)) + chunk(b"IEND", b"")
 
 
 def test_ark_cancel_uses_official_delete_without_a_body(tmp_path: Path) -> None:
@@ -203,17 +214,41 @@ def test_seedance_maps_named_image_roles_and_top_level_parameters_exactly(tmp_pa
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("first_frame", "image", 0, 1), ModelInputPort("last_frame", "image", 0, 1), ModelInputPort("reference_images", "image", 0, 9)),
             {"resolution": "resolution", "generate_audio": "generate_audio", "watermark": "watermark"},
         )
-        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: (asset_id.encode(), "image/png"))
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: (png(640, 640), "image/png"))
         await adapter.submit(context(), JobRequest("video.generate", "seedance", "animate", "roles", {"resolution": "720p", "generate_audio": False, "watermark": False}, inputs={"first_frame": ("first",), "last_frame": ("last",), "reference_images": ("ref-2", "ref-1")}))
 
     asyncio.run(scenario())
     assert payloads == [{"model": "seedance", "content": [
         {"type": "text", "text": "animate"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,Zmlyc3Q="}, "role": "first_frame"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,bGFzdA=="}, "role": "last_frame"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cmVmLTI="}, "role": "reference_image"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cmVmLTE="}, "role": "reference_image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "first_frame"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "last_frame"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "reference_image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "reference_image"},
     ], "resolution": "720p", "generate_audio": False, "watermark": False}]
+
+
+def test_seedance_rejects_images_below_the_official_300px_floor_before_post(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    requests: list[httpx.Request] = []
+    declaration = ArkModelDeclaration(
+        "seedance", "ark-video", "Seedance", ("video.generate",),
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 30)), {},
+    )
+
+    async def scenario() -> None:
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path, models=(declaration,),
+            transport=httpx.MockTransport(lambda request: requests.append(request) or httpx.Response(200, json={"id": "cgt-unsafe"})),
+            asset_loader=lambda _asset_id: (png(64, 64), "image/png"),
+        )
+        with pytest.raises(ValueError, match="Submission request is invalid"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "animate", "too-small", inputs={"reference_images": ("small",)}))
+
+    asyncio.run(scenario())
+    assert requests == []
 
 
 def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_closed(tmp_path: Path) -> None:
@@ -229,7 +264,7 @@ def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_clos
     )
 
     async def scenario() -> None:
-        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: ((b"RIFFaudioWAVE" if asset_id == "audio" else b"image"), "audio/wav" if asset_id == "audio" else "image/png"))
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: ((b"RIFFaudioWAVE" if asset_id == "audio" else png(640, 640)), "audio/wav" if asset_id == "audio" else "image/png"))
         await adapter.submit(context(), JobRequest("video.generate", "seedance", "speak", "audio", inputs={"first_frame": ("image",), "reference_audio": ("audio",)}))
         with pytest.raises(ValueError, match="audio inputs are invalid"):
             await adapter.submit(context(), JobRequest("video.generate", "seedance", "audio only", "audio-only", inputs={"reference_audio": ("audio",)}))
@@ -239,7 +274,7 @@ def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_clos
     asyncio.run(scenario())
     assert payloads == [{"model": "seedance", "content": [
         {"type": "text", "text": "speak"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U="}, "role": "first_frame"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "first_frame"},
         {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,UklGRmF1ZGlvV0FWRQ=="}, "role": "reference_audio"},
     ]}]
 

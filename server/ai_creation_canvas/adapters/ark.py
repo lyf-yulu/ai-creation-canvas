@@ -204,12 +204,16 @@ class ArkGenerationAdapter:
             raise ValueError("Ark image inputs are invalid")
         return [self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024) for asset_id in values]
 
-    def _asset_data_url(self, asset_id: str, allowed_mime: frozenset[str], maximum: int) -> str:
+    def _asset_data_url(self, asset_id: str, allowed_mime: frozenset[str], maximum: int, *, video_image: bool = False) -> str:
         if self._asset_loader is None:
             raise ValueError("Ark asset loader is unavailable")
         body, mime = self._asset_loader(asset_id)
         if mime not in allowed_mime or not body or len(body) > maximum:
             raise ValueError("Ark media input is invalid")
+        if video_image:
+            dimensions = _image_dimensions(body, mime)
+            if dimensions is None or not 300 <= dimensions[0] <= 6000 or not 300 <= dimensions[1] <= 6000 or not 0.4 <= dimensions[0] / dimensions[1] <= 2.5:
+                raise ValueError("Ark video image dimensions are invalid")
         return f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}"
 
     def _video_content(self, declaration: ArkModelDeclaration, request: JobRequest) -> list[dict[str, object]]:
@@ -226,7 +230,7 @@ class ArkGenerationAdapter:
             if values and (port is None or len(values) > port.max_items):
                 raise ValueError("Ark video image inputs are invalid")
             for asset_id in values:
-                content.append({"type": "image_url", "image_url": {"url": self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024)}, "role": role})
+                content.append({"type": "image_url", "image_url": {"url": self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024, video_image=True)}, "role": role})
         audio_values = tuple(request.inputs.get("reference_audio", ()))
         audio_port = declared.get("reference_audio")
         if audio_values and (audio_port is None or len(audio_values) > audio_port.max_items or len(content) == 1):
@@ -450,6 +454,44 @@ def _range(value: str, size: int) -> tuple[int, int] | None:
     if start >= size: return None
     end = min(int(right), size - 1) if right else size - 1
     return None if end < start else (start, end)
+
+
+def _image_dimensions(body: bytes, mime: str) -> tuple[int, int] | None:
+    if mime == "image/png" and len(body) >= 24 and body.startswith(b"\x89PNG\r\n\x1a\n") and body[12:16] == b"IHDR":
+        width, height = int.from_bytes(body[16:20], "big"), int.from_bytes(body[20:24], "big")
+        return (width, height) if width and height else None
+    if mime == "image/webp" and len(body) >= 30 and body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        kind, data = body[12:16], body[20:]
+        if kind == b"VP8X" and len(data) >= 10:
+            return (1 + int.from_bytes(data[4:7], "little"), 1 + int.from_bytes(data[7:10], "little"))
+        if kind == b"VP8 " and len(data) >= 10 and data[3:6] == b"\x9d\x01\x2a":
+            return (int.from_bytes(data[6:8], "little") & 0x3FFF, int.from_bytes(data[8:10], "little") & 0x3FFF)
+        if kind == b"VP8L" and len(data) >= 5 and data[0] == 0x2F:
+            bits = int.from_bytes(data[1:5], "little")
+            return (1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF))
+        return None
+    if mime == "image/jpeg" and len(body) >= 4 and body.startswith(b"\xff\xd8\xff"):
+        offset = 2
+        frame_markers = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
+        while offset + 4 <= len(body):
+            if body[offset] != 0xFF:
+                offset += 1
+                continue
+            marker = body[offset + 1]
+            offset += 2
+            if marker in {0xD8, 0xD9} or 0xD0 <= marker <= 0xD7:
+                continue
+            if offset + 2 > len(body):
+                return None
+            length = int.from_bytes(body[offset:offset + 2], "big")
+            if length < 2 or offset + length > len(body):
+                return None
+            if marker in frame_markers and length >= 7:
+                height = int.from_bytes(body[offset + 3:offset + 5], "big")
+                width = int.from_bytes(body[offset + 5:offset + 7], "big")
+                return (width, height) if width and height else None
+            offset += length
+    return None
 
 
 def _safe_unlink(path: Path) -> None:

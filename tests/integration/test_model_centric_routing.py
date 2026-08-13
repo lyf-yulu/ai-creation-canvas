@@ -43,7 +43,7 @@ def assert_decodable_png(content: bytes) -> None:
     assert content[12:16] == b"IHDR"
     width, height = struct.unpack(">II", content[16:24])
     assert width > 0 and height > 0
-    assert (width, height) == (64, 64)
+    assert (width, height) == (640, 640)
     assert b"IDAT" in content
     assert content.endswith(PNG_END)
 

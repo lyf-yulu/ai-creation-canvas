@@ -153,6 +153,19 @@ def test_acceptance_log_projection_cannot_include_sensitive_request_fields() -> 
         assert forbidden not in serialized.lower()
 
 
+def test_real_acceptance_configures_nonzero_internal_estimated_rates() -> None:
+    calls: list[tuple[str, str, object]] = []
+
+    class Admin:
+        def json(self, method, path, payload=None, expected=(200,)):
+            calls.append((method, path, payload))
+            return {"video_price_fen": 25, "image_price_fen": 120}
+
+    module.configure_acceptance_rates(Admin())
+
+    assert calls == [("PUT", "/api/v1/admin/usage/rates", {"video_price_fen": 25, "image_price_fen": 120})]
+
+
 def test_failure_class_preserves_submission_unknown_and_partial_summary_counts() -> None:
     failure = module.PaidAcceptanceFailure("submission_unknown")
     assert module._failure_class(failure) == "submission_unknown"
@@ -240,6 +253,8 @@ def _guarded_failure_dependencies(
             return owner_status, {}, b""
 
         def json(self, method, path, payload=None, expected=(200,)):
+            if method == "PUT" and path == "/api/v1/admin/usage/rates":
+                return {"video_price_fen": 25, "image_price_fen": 120}
             if method == "PUT":
                 return {"model_ids": list(assigned_models)}
             raise RuntimeError("activation-private-message")
@@ -504,10 +519,10 @@ def test_paid_reference_png_meets_provider_minimum_dimensions(tmp_path: Path) ->
     image = module.reference_png()
     assert image.startswith(b"\x89PNG\r\n\x1a\n")
     width, height = struct.unpack(">II", image[16:24])
-    assert width >= 16 and height >= 16
+    assert width >= 300 and height >= 300
     path = tmp_path / "reference.png"
     path.write_bytes(image)
-    assert module.verify_media_file(path, "image/png", "image") == {"codec_type": "video", "width": 64, "height": 64}
+    assert module.verify_media_file(path, "image/png", "image") == {"codec_type": "video", "width": 640, "height": 640}
 
 
 def test_acceptance_project_persists_a_canonical_edit_and_video_graph() -> None:
@@ -515,7 +530,7 @@ def test_acceptance_project_persists_a_canonical_edit_and_video_graph() -> None:
     assert all({"position", "width", "height", "metadata"}.issubset(node) for node in project["nodes"])
     graphs = {node["id"]: node["metadata"]["graph"] for node in project["nodes"]}
     assert graphs["prompt"] == {"schemaVersion": 1, "role": "prompt", "text": "Paid acceptance prompt", "outputPortId": "prompt"}
-    assert graphs["reference"]["items"][0] == {"id": "owned-item", "assetId": "owned-asset", "displayName": "reference.png", "mimeType": "image/png", "bytes": 123, "width": 64, "height": 64}
+    assert graphs["reference"]["items"][0] == {"id": "owned-item", "assetId": "owned-asset", "displayName": "reference.png", "mimeType": "image/png", "bytes": 123, "width": 640, "height": 640}
     assert graphs["image-model"]["operation"] == "image.edit"
     assert graphs["video-model"]["parameters"]["resolution"] == "480p"
     assert project["connections"] == [

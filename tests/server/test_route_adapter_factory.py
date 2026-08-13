@@ -20,6 +20,8 @@ from ai_creation_canvas.model_routing import ModelRouteDefinition
 
 
 PNG = b"\x89PNG\r\n\x1a\nroute-result"
+ARK_REFERENCE_ONE = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x02\x80\x00\x00\x02\x80one"
+ARK_REFERENCE_TWO = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x02\x80\x00\x00\x02\x80two"
 
 
 def _context() -> RequestContext:
@@ -93,7 +95,7 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
 
     return RouteAdapterFactory(
         data_dir=tmp_path,
-        asset_loader=lambda asset_id: ({"ref-one": b"one", "ref-two": b"two"}[asset_id], "image/png"),
+        asset_loader=lambda asset_id: ({"ref-one": ARK_REFERENCE_ONE, "ref-two": ARK_REFERENCE_TWO}[asset_id], "image/png"),
         provider_protocols={
             "ark-official": ProviderProtocol.from_readonly_deployment("ark-official", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com"),
             "chiyun": ProviderProtocol.from_readonly_deployment("chiyun", "chiyun_openai_images", "https://trusted.chiyun.example", approved_origin="https://trusted.chiyun.example"),
@@ -122,7 +124,7 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
             {"watermark": "watermark"},
             {"watermark": False},
             "/api/v3/images/generations",
-            {"model": "ep-provider-2026", "prompt": "make it", "image": ["data:image/png;base64,b25l"], "watermark": False, "response_format": "url"},
+            {"model": "ep-provider-2026", "prompt": "make it", "image": ["data:image/png;base64," + base64.b64encode(ARK_REFERENCE_ONE).decode()], "watermark": False, "response_format": "url"},
         ),
         (
             ModelOperation.VIDEO_GENERATE,
@@ -134,7 +136,7 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
             {"ratio": "ratio", "duration": "duration"},
             {"ratio": "16:9", "duration": 5},
             "/api/v3/contents/generations/tasks",
-            {"model": "ep-provider-2026", "content": [{"type": "text", "text": "make it"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,b25l"}, "role": "reference_image"}], "ratio": "16:9", "duration": 5},
+            {"model": "ep-provider-2026", "content": [{"type": "text", "text": "make it"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(ARK_REFERENCE_ONE).decode()}, "role": "reference_image"}], "ratio": "16:9", "duration": 5},
         ),
     ],
 )

@@ -505,12 +505,12 @@ def render_record(record: dict[str, object]) -> str:
 
 
 def reference_png() -> bytes:
-    """Return a tiny valid 64x64 RGB PNG above the provider's 14px floor."""
+    """Return a valid 640x640 RGB PNG above Ark video's 300px floor."""
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", binascii.crc32(kind + payload) & 0xFFFFFFFF)
-    header = struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0)
-    row = b"\x00" + b"\x00\xff\x55" * 64
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(row * 64, 9)) + chunk(b"IEND", b"")
+    header = struct.pack(">IIBBBBB", 640, 640, 8, 2, 0, 0, 0)
+    row = b"\x00" + b"\x00\xff\x55" * 640
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(row * 640, 9)) + chunk(b"IEND", b"")
 
 
 def verify_media_file(path: Path, mime: str, kind: str) -> dict[str, object]:
@@ -739,7 +739,7 @@ def _project_document(asset_id: str, image_model: str, video_model: str, asset_b
     now = "2026-08-11T00:00:00.000Z"
     nodes = [
         {"id": "prompt", "type": "text", "title": "Prompt", "position": {"x": 40, "y": 40}, "width": 300, "height": 180, "metadata": {"graph": {"schemaVersion": 1, "role": "prompt", "text": "Paid acceptance prompt", "outputPortId": "prompt"}}},
-        {"id": "reference", "type": "image", "title": "Reference", "position": {"x": 40, "y": 280}, "width": 320, "height": 240, "metadata": {"graph": {"schemaVersion": 1, "role": "media-collection", "mediaType": "image", "outputPortId": "media", "items": [{"id": "owned-item", "assetId": asset_id, "displayName": "reference.png", "mimeType": "image/png", "bytes": asset_bytes, "width": 64, "height": 64}]}}},
+        {"id": "reference", "type": "image", "title": "Reference", "position": {"x": 40, "y": 280}, "width": 320, "height": 240, "metadata": {"graph": {"schemaVersion": 1, "role": "media-collection", "mediaType": "image", "outputPortId": "media", "items": [{"id": "owned-item", "assetId": asset_id, "displayName": "reference.png", "mimeType": "image/png", "bytes": asset_bytes, "width": 640, "height": 640}]}}},
         {"id": "image-model", "type": "config", "title": "Seedream edit", "position": {"x": 440, "y": 80}, "width": 340, "height": 360, "metadata": {"graph": {"schemaVersion": 1, "role": "model", "modelId": image_model, "operation": "image.edit", "inputPorts": [{"id": "prompt", "accepts": "prompt"}, {"id": "reference_images", "accepts": "image"}], "outputPortId": "result", "parameters": {"size": "1024x1024"}}}},
         {"id": "video-model", "type": "config", "title": "Seedance video", "position": {"x": 860, "y": 80}, "width": 340, "height": 420, "metadata": {"graph": {"schemaVersion": 1, "role": "model", "modelId": video_model, "operation": "video.generate", "inputPorts": [{"id": "prompt", "accepts": "prompt"}, {"id": "reference_images", "accepts": "image"}], "outputPortId": "result", "parameters": {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False, "return_last_frame": False}}}},
     ]
@@ -758,7 +758,7 @@ def _case_project_document(call: PaidCall, reference_asset_id: str, result: Paid
     model_type = "video" if media_type == "video" else "image"
     nodes = [
         {"id": "prompt", "type": "text", "title": "提示词", "position": {"x": 40, "y": 40}, "width": 300, "height": 180, "metadata": {"graph": {"schemaVersion": 1, "role": "prompt", "text": "Production acceptance", "outputPortId": "prompt"}}},
-        {"id": "reference", "type": "image", "title": "参考图片", "position": {"x": 40, "y": 260}, "width": 320, "height": 240, "metadata": {"graph": {"schemaVersion": 1, "role": "media-collection", "mediaType": "image", "outputPortId": "media", "items": [{"id": "reference-1", "assetId": reference_asset_id, "displayName": "reference.png", "mimeType": "image/png", "bytes": len(reference_png()), "width": 64, "height": 64}]}}},
+        {"id": "reference", "type": "image", "title": "参考图片", "position": {"x": 40, "y": 260}, "width": 320, "height": 240, "metadata": {"graph": {"schemaVersion": 1, "role": "media-collection", "mediaType": "image", "outputPortId": "media", "items": [{"id": "reference-1", "assetId": reference_asset_id, "displayName": "reference.png", "mimeType": "image/png", "bytes": len(reference_png()), "width": 640, "height": 640}]}}},
         {"id": "model", "type": "config", "title": call.model_id, "position": {"x": 430, "y": 80}, "width": 340, "height": 360, "metadata": {"status": "success", "sourceJobId": result.job_id, "graph": {"schemaVersion": 1, "role": "model", "modelId": call.model_id, "operation": "video.generate" if media_type == "video" else "image.edit", "inputPorts": [{"id": "prompt", "accepts": "prompt"}, {"id": "reference_images", "accepts": "image"}], "outputPortId": "result", "parameters": {}}}},
         {"id": "result", "type": model_type, "title": "生成视频" if media_type == "video" else "生成图片", "position": {"x": 850, "y": 80}, "width": 420 if media_type == "video" else 340, "height": 260, "metadata": {"content": result.result_url, "status": "success", "sourceJobId": result.job_id, "sourceResultIndex": 0, "graph": {"schemaVersion": 1, "role": "result", "mediaType": media_type, "inputPortId": "result", "outputPortId": "media", "jobId": result.job_id, "assetId": result.result_asset_id}}},
     ]
@@ -1136,6 +1136,7 @@ def run_guarded_paid_acceptance(
             raise RuntimeError("asset upload contract missing")
         if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
             raise RuntimeError("asset owner isolation failed")
+        configure_acceptance_rates(admin)
         assigned = admin.json("PUT", f"/api/v1/admin/users/{user_id}/models", {"model_ids": list(model_ids)})
         if set(assigned.get("model_ids", [])) != set(model_ids):
             raise RuntimeError("model assignment failed")
@@ -1192,12 +1193,21 @@ def run_guarded_paid_acceptance(
         usage = user.json("GET", "/api/v1/usage")
         expected_images = sum(1 for item in records if item["logical_model"] != "seedance")
         expected_video_seconds = 5 * sum(1 for item in records if item["logical_model"] == "seedance")
-        if usage.get("summary", {}).get("successful_jobs") != len(records) or usage.get("summary", {}).get("image_count") != expected_images or usage.get("summary", {}).get("video_seconds") != expected_video_seconds:
+        expected_cost_fen = expected_images * 120 + expected_video_seconds * 25
+        if usage.get("summary", {}).get("successful_jobs") != len(records) or usage.get("summary", {}).get("image_count") != expected_images or usage.get("summary", {}).get("video_seconds") != expected_video_seconds or usage.get("summary", {}).get("total_cost_fen") != str(expected_cost_fen):
             raise RuntimeError("paid usage statistics contract failed")
         admin_usage = admin.json("GET", "/api/v1/admin/usage")
-        if admin_usage.get("summary", {}).get("successful_jobs") != len(records):
+        if admin_usage.get("summary", {}).get("successful_jobs") != len(records) or admin_usage.get("summary", {}).get("total_cost_fen") != str(expected_cost_fen):
             raise RuntimeError("admin paid usage statistics contract failed")
         return records
+
+
+def configure_acceptance_rates(admin: ApiSession) -> None:
+    """Configure fixed internal estimates; these are not provider invoices."""
+    expected = {"video_price_fen": 25, "image_price_fen": 120}
+    configured = admin.json("PUT", "/api/v1/admin/usage/rates", expected)
+    if configured != expected:
+        raise RuntimeError("paid usage rate configuration failed")
 
 
 def _serve_paid() -> None:
