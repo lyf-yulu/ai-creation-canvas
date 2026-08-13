@@ -32,13 +32,16 @@ Only explicitly selected channels with a SET key may run. Chiyun and T8Star are 
 
 | Logical model | Selected channel | Status | MIME | Bytes | Duration | User ID |
 | --- | --- | --- | --- | ---: | ---: | --- |
-| Seedream | Ark | NOT RUN | — | — | — | — |
+| Seedream | Ark (`seedream-ark`) | FAILED (`acceptance_contract`) | — | — | — | `Mibhz7fGDQaPuNH60-oaslSt` |
 | Seedance | Ark | NOT RUN | — | — | — | — |
 | Banana sample | — | NOT RUN | — | — | — | — |
 
-Provider requests so far: **0**. The table will be updated only from sanitized client records after the tooling is committed and the same offline gates pass again from a clean worktree.
+Paid smoke attempts: **1 of 2**; successes: **0**; failures: **1**; not run: **1**. The isolated store recorded exactly one Seedream job with the expected user, route, and a present idempotency value. It stopped at `submission_unknown` on attempt 1 and produced no result row. The uncertain submission was not retried, so Seedance and every batch call remained unexecuted.
+
+The job-owner isolation check completed before the failed terminal state. MIME, decode, download, result-owner isolation, and idempotency replay could not be verified because no result was produced; the acceptance therefore did not pass.
 
 ## Concerns
 
 - Chiyun and T8Star cannot be evaluated without separately supplied server-only credentials and explicit trusted HTTPS origins; the tool fails closed rather than searching for them.
-- Banana batch sampling remains disabled unless every selected representative-channel smoke succeeds.
+- The Ark Seedream submission ended in an uncertain state. The retained redacted state cannot distinguish a provider 5xx, a response/transport ambiguity, or another fail-closed submission condition, so an automatic retry would risk a duplicate paid request.
+- Seedance was not run after the Seedream failure, and Banana batch sampling remained disabled because the representative-channel smokes did not all succeed.
