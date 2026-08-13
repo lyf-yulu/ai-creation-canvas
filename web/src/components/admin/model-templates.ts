@@ -168,13 +168,6 @@ const CALLING_PRESETS: Record<ModelProfileId, readonly AdminCallingPreset[]> = {
 
 export const callingPresetsForModel = (model: AdminLogicalModel): readonly AdminCallingPreset[] => CALLING_PRESETS[templateForModel(model).id];
 
-export const routeMatchesCallingPreset = (route: { provider_id?: string; provider_model_name?: string; adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] }, preset: AdminCallingPreset) =>
-    route.provider_id === preset.providerId &&
-    route.provider_model_name === preset.providerModelName &&
-    route.adapter_type === preset.adapterType &&
-    route.family === preset.family &&
-    route.operation_contracts?.some((contract) => contract.operation === preset.contract.operation) === true;
-
 export const templateForRoute = (route: { adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] } | null) => {
     if (!route) return undefined;
     if (route.adapter_type === "ark" && route.operation_contracts?.[0]?.operation === "video.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedance");
@@ -186,7 +179,7 @@ export const templateForRoute = (route: { adapter_type?: string; family?: string
 
 const canonicalJson = (value: unknown): unknown =>
     Array.isArray(value)
-        ? value.map(canonicalJson)
+        ? value.map(canonicalJson).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
         : value && typeof value === "object"
           ? Object.fromEntries(
                 Object.entries(value as Record<string, unknown>)
@@ -196,6 +189,9 @@ const canonicalJson = (value: unknown): unknown =>
           : value;
 
 const sameJson = (left: unknown, right: unknown) => JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+
+export const routeMatchesCallingPreset = (route: { provider_id?: string; provider_model_name?: string; adapter_type?: string; family?: string; operation_contracts?: AdminOperationContract[] }, preset: AdminCallingPreset) =>
+    route.provider_id === preset.providerId && route.provider_model_name === preset.providerModelName && route.adapter_type === preset.adapterType && route.family === preset.family && sameJson(route.operation_contracts, [preset.contract]);
 
 export const routeContractForModel = (template: AdminTemplate, model: AdminLogicalModel): AdminOperationContract => {
     const publicContract = model.operation_contracts?.find((item) => item.operation === template.contract.operation);

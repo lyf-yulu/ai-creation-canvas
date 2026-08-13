@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AdminCredentialPool, AdminLogicalModel, AdminModelRoute, ModelRouteWrite } from "@/api/admin";
 import { ApiRequestError } from "@/api/client";
-import { callingPresetsForModel, routeContractForModel, routeMatchesCallingPreset, type AdminCallingPreset } from "./model-templates";
+import { callingPresetsForModel, routeMatchesCallingPreset, type AdminCallingPreset } from "./model-templates";
 
 type LifecycleAction = "enable" | "disable";
 
@@ -50,7 +50,7 @@ function CallingPresetCard({ model, preset, routes, pools, onCreate, onUpdate, o
         adapter_type: preset.adapterType,
         credential_pool_ref: form.poolId,
         family: preset.family,
-        operation_contracts: [routeContractForModel(preset.template, model)],
+        operation_contracts: [preset.contract],
         priority: form.priority,
         max_concurrency: form.maxConcurrency,
         enabled: route?.enabled ?? form.enabled,

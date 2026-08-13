@@ -230,6 +230,43 @@ it("reports duplicate routes for a preset instead of choosing one silently", () 
     expect(routes.filter((route) => routeMatchesCallingPreset(route, preset))).toHaveLength(2);
 });
 
+it("fails closed when a route has preset identity but a different trusted contract", () => {
+    const preset = callingPresetsForModel(model()).find((item) => item.id === "chiyun")!;
+    const route = (operation_contracts: AdminModelRoute["operation_contracts"]): AdminModelRoute => ({
+        route_id: "banana-chiyun",
+        model_id: "banana",
+        provider_id: "chiyun",
+        provider_model_name: "gemini-2.5-flash-image",
+        adapter_type: "chiyun_openai_images",
+        credential_pool_ref: "chiyun-banana",
+        family: "nano-banana",
+        operation_contracts,
+        priority: 1,
+        max_concurrency: 1,
+        enabled: false,
+        archived_at: null,
+        revision: 1,
+    });
+    const reordered = {
+        ...bananaContract,
+        input_ports: [...bananaContract.input_ports].reverse(),
+        parameter_schema: {
+            additionalProperties: false,
+            required: [...bananaContract.parameter_schema.required].reverse(),
+            properties: { output_count: bananaContract.parameter_schema.properties.output_count, size: bananaContract.parameter_schema.properties.size },
+            "x-aicc-profile": "banana",
+            type: "object",
+        },
+        parameter_mappings: { output_count: "n", size: "size" },
+    };
+    const wrongPorts = { ...bananaContract, input_ports: bananaContract.input_ports.slice(0, 1) };
+    const wrongSchema = { ...bananaContract, parameter_schema: { ...bananaContract.parameter_schema, properties: { ...bananaContract.parameter_schema.properties, unsafe: { type: "string" } } } };
+    const wrongMappings = { ...bananaContract, parameter_mappings: { size: "size", output_count: "images" } };
+
+    expect(routeMatchesCallingPreset(route([reordered]), preset)).toBe(true);
+    for (const contract of [wrongPorts, wrongSchema, wrongMappings]) expect(routeMatchesCallingPreset(route([contract]), preset)).toBe(false);
+});
+
 it("does not publish a pending preset save after unmount", async () => {
     let resolveSave!: (value: AdminModelRoute) => void;
     const saved = vi.fn();
