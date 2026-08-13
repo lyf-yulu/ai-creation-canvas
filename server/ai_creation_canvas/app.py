@@ -21,7 +21,7 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
 from ai_creation_canvas.adapters.demo import DemoGenerationAdapter
 from ai_creation_canvas.adapters.ark import build_ark_adapters, _local_asset_loader
-from ai_creation_canvas.adapters.factory import AdapterFactory, EnvironmentCredentialResolver, ProviderProtocol, RouteAdapterFactory
+from ai_creation_canvas.adapters.factory import AdapterFactory, EnvironmentCredentialResolver, RouteAdapterFactory
 from ai_creation_canvas.api.models import router as models_router
 from ai_creation_canvas.api.session import router as session_router
 from ai_creation_canvas.api.assets import router as assets_router
@@ -190,28 +190,13 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         if settings.environment == "production" and len(os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "").encode("utf-8")) < 32:
             raise ValueError("a server-only credential HMAC key is required for managed production routes")
         loader = CredentialPoolLoader(Path(settings.credential_pools_path), production=settings.environment == "production")
-        snapshot = loader.load()
-        providers = {
-            provider.provider_id: ProviderProtocol(provider.provider_id, provider.adapter_type, provider.base_url)
-            for provider in store.list_provider_definitions()
-            if provider.enabled and provider.adapter_type in {"ark", "chiyun_openai_images"}
-        }
-        if any(
-            route.provider_id not in providers
-            or providers[route.provider_id].adapter_type != route.adapter_type
-            for route in active_managed_routes
-        ):
-            raise ValueError("a trusted provider protocol is required for every managed route")
-        pool_map = snapshot.as_mapping()
-        from ai_creation_canvas.model_routing import validate_route_pool
-        for route in active_managed_routes:
-            pool = pool_map.get(route.credential_pool_ref)
-            if pool is None:
-                raise ValueError("a compatible credential pool is required for every managed route")
-            try:
-                validate_route_pool(route, pool)
-            except ValueError:
-                raise ValueError("a compatible credential pool is required for every managed route") from None
+        loader.load()
+        from ai_creation_canvas.trusted_routing import provider_protocol_for_definition
+        providers = {}
+        for provider in store.list_provider_definitions():
+            protocol = provider_protocol_for_definition(provider)
+            if protocol is not None:
+                providers[provider.provider_id] = protocol
         if settings.environment == "production" and injected_execution_coordinator:
             raise ValueError("production execution coordinator cannot be injected")
         route_factory = RouteAdapterFactory(
@@ -220,7 +205,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             provider_protocols=providers,
         )
         managed_routing_runtime = ManagedRoutingRuntime(
-            store, lambda: loader.reload().as_mapping(), RouteSelector(), execution_coordinator, route_factory,
+            store, lambda: loader.reload().as_mapping(), RouteSelector(trusted_routes_only=True), execution_coordinator, route_factory,
             provider_submission_budget,
         )
     if managed_routing_runtime is not None:

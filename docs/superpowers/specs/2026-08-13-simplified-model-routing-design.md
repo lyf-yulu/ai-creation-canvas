@@ -50,3 +50,13 @@
 ## 本轮边界
 
 本轮不开放管理员自定义 Provider URL、适配器、参数合同或远程代码；不把真实 Key 写入应用数据库；不新增通用插件系统。新供应商必须先在代码中增加受信调用模板和合同测试，之后才会出现在“调用设置”中。
+
+## 服务端强制边界与兼容策略
+
+调用设置的最终裁决必须发生在服务端，不能只依赖前端隐藏控件。服务端维护四个逻辑模型 profile 的精确受信注册表；Banana 的 Chiyun/T8Star 形成两个 channel 变体，因此共有五个精确 route preset。每个 preset 固定 Provider ID、供应商模型名、适配器、模型族和完整 operation contract。
+
+旧 route GET 继续提供历史审计读取。为兼容当前前端，POST/PUT 暂时仍接受原有完整请求体，但除 route/model 标识、凭据池、优先级、最大并发、生命周期状态和 revision 外，所有内部字段必须逐字段精确匹配一个服务端 preset；任何偏差均拒绝。历史非 preset route 即使标记 enabled，也不会进入受信 selector 或 adapter factory。
+
+旧 Provider GET 只返回安全审计投影，不返回 Base URL 或 credential reference。Provider POST/PUT 为只读拒绝；管理员请求不能创建或修改 origin。运行时 origin 只能来自代码受信精确声明或部署所有者注入的只读精确声明。当前代码只批准 Ark 官方 origin；Chiyun/T8Star 没有批准 origin，因此历史记录不会进入 protocol map，也不能启用。
+
+route enable 在任何存储变更前重新读取 route、逻辑模型、Provider 和当前凭据池快照，并依次执行 preset、模型合同、Provider protocol 和 pool 兼容验证。验证失败保持 enabled、revision 和审计事件不变。前端在既有 disabled route 的兼容池缺失时同步禁用启用开关并显示原因。

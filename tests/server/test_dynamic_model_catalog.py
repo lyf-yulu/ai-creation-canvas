@@ -24,7 +24,7 @@ def _catalog(tmp_path: Path):
     store.create_provider_definition(_provider(), actor_user_id="admin")
     store.create_model_definition(_model(), actor_user_id="admin")
     registry = AdapterRegistry()
-    factory = AdapterFactory(data_dir=store.data_dir, credential_resolver=MappingCredentialResolver({"chiyun-primary": "test-only-secret"}), asset_loader=lambda _: (b"\x89PNG\r\n\x1a\n", "image/png"), transport=httpx.MockTransport(lambda _: httpx.Response(500)))
+    factory = AdapterFactory(data_dir=store.data_dir, credential_resolver=MappingCredentialResolver({"chiyun-primary": "test-only-secret"}), asset_loader=lambda _: (b"\x89PNG\r\n\x1a\n", "image/png"), transport=httpx.MockTransport(lambda _: httpx.Response(500)), trusted_provider_origins={("chiyun", "chiyun_openai_images"): "https://chiyun.example"})
     governed = GovernedModelCatalog(ModelCatalog(registry), store, registry, factory)
     return store, registry, AssignedModelCatalog(governed, store)
 

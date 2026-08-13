@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.server.test_admin_logical_models import clients, image_contract, model_body, route_body
+from tests.server.test_admin_logical_models import clients, image_contract, model_body, route_body, video_contract
 
 
 def test_admin_route_round_trip_and_stale_revision(tmp_path) -> None:
@@ -32,12 +32,9 @@ def test_route_compatibility_rejects_unsafe_or_cross_domain_config_without_write
     cases.append(cc)
     crossover = route_body("video-route")
     crossover.update({
-        "provider_id": "google", "adapter_type": "ark", "credential_pool_ref": "seedance-official",
-        "family": "seedance", "provider_model_name": "seedance-2-0",
-        "operation_contracts": [{
-            "operation": "video.generate", "input_ports": [{"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}],
-            "output_media_type": "video", "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False}, "parameter_mappings": {},
-        }],
+        "provider_id": "ark", "adapter_type": "ark", "credential_pool_ref": "seedance-official",
+        "family": "seedance", "provider_model_name": "doubao-seedance-2-5-260628",
+        "operation_contracts": [video_contract()],
     })
     cases.append(crossover)
     mapping = route_body("mapping-route")
@@ -140,3 +137,54 @@ def test_stale_route_revision_wins_before_current_pool_provider_or_template_vali
 
     assert response.status_code == 409
     assert response.json()["code"] == "REVISION_CONFLICT"
+
+
+def test_enable_reloads_removed_pool_and_makes_no_route_mutation_or_success_audit(tmp_path) -> None:
+    app, accounts, admin, user, headers, user_headers, pools = clients(tmp_path)
+    del accounts, user, user_headers
+    assert admin.post("/api/v1/admin/logical-models", headers=headers, json=model_body()).status_code == 201
+    body = route_body()
+    body["enabled"] = False
+    assert admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=body).status_code == 201
+    before = tuple(app.state.canvas_store.admin_audit_events())
+    pools.pop("t8-gemini")
+
+    response = admin.post("/api/v1/admin/logical-models/banana/routes/banana-t8/enable", headers=headers, json={"revision": 1})
+
+    assert response.status_code in {400, 409}
+    stored = app.state.canvas_store.model_route("banana-t8")
+    assert stored is not None and stored.enabled is False and stored.revision == 1
+    assert tuple(app.state.canvas_store.admin_audit_events()) == before
+
+
+def test_route_write_rejects_each_tampered_preset_identity_field(tmp_path) -> None:
+    app, accounts, admin, user, headers, user_headers, pools = clients(tmp_path)
+    del app, accounts, user, user_headers, pools
+    assert admin.post("/api/v1/admin/logical-models", headers=headers, json=model_body()).status_code == 201
+    base = route_body()
+    base["enabled"] = False
+    assert admin.post(
+        "/api/v1/admin/logical-models/banana/routes", headers=headers,
+        json={**base, "route_id": "valid-disabled"},
+    ).status_code == 201
+    cases = {
+        "provider_id": "unknown",
+        "provider_model_name": "gemini-2.5-flash-image-preview",
+        "adapter_type": "ark",
+        "family": "gpt-image",
+    }
+    for field, value in cases.items():
+        body = {**base, "route_id": f"tampered-{field}", field: value}
+        assert admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=body).status_code == 400
+        update = {**base, "route_id": "valid-disabled", "revision": 1, field: value}
+        assert admin.put("/api/v1/admin/logical-models/banana/routes/valid-disabled", headers=headers, json=update).status_code == 400
+    contract = image_contract()
+    contract["parameter_mappings"] = {"size": "size", "output_count": "images"}
+    assert admin.post(
+        "/api/v1/admin/logical-models/banana/routes", headers=headers,
+        json={**base, "route_id": "tampered-contract", "operation_contracts": [contract]},
+    ).status_code == 400
+    assert admin.put(
+        "/api/v1/admin/logical-models/banana/routes/valid-disabled", headers=headers,
+        json={**base, "route_id": "valid-disabled", "revision": 1, "operation_contracts": [contract]},
+    ).status_code == 400

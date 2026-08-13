@@ -41,10 +41,24 @@ class RouteCandidate:
 
 
 class RouteSelector:
-    def __init__(self, *, unhealthy_route_ids: frozenset[str] = frozenset()) -> None:
+    def __init__(self, *, unhealthy_route_ids: frozenset[str] = frozenset(), trusted_routes_only: bool = False) -> None:
         if not isinstance(unhealthy_route_ids, frozenset) or any(not isinstance(item, str) or not item for item in unhealthy_route_ids):
             raise ValueError("unhealthy route snapshot is invalid")
+        if type(trusted_routes_only) is not bool:
+            raise ValueError("trusted route selection flag is invalid")
         self._unhealthy_route_ids = unhealthy_route_ids
+        self._trusted_routes_only = trusted_routes_only
+
+    def accepts_trusted_route(self, route: ModelRouteDefinition, model: LogicalModelDefinition) -> bool:
+        if not self._trusted_routes_only:
+            return True
+        from ai_creation_canvas.trusted_routing import validate_trusted_route
+
+        try:
+            validate_trusted_route(route, model)
+        except ValueError:
+            return False
+        return True
 
     def candidates(
         self,
@@ -79,6 +93,8 @@ class RouteSelector:
                 or route.archived_at is not None
                 or route.route_id in self._unhealthy_route_ids
             ):
+                continue
+            if not self.accepts_trusted_route(route, model):
                 continue
             pool = pools.get(route.credential_pool_ref)
             if not isinstance(pool, CredentialPool) or not pool.keys:

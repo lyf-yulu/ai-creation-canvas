@@ -94,6 +94,8 @@ class ManagedRoutingRuntime:
             provider = providers.get(route.provider_id)
             if not route.enabled or provider is None or provider.adapter_type != route.adapter_type or not isinstance(pool, CredentialPool) or not pool.keys:
                 continue
+            if not self.selector.accepts_trusted_route(route, model):
+                continue
             try:
                 validate_route_model(route, model)
                 validate_route_pool(route, pool)

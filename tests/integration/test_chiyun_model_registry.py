@@ -41,7 +41,7 @@ def _multipart_values(body: bytes, name: str) -> list[bytes]:
     return values
 
 
-def test_admin_created_chiyun_model_runs_once_and_remains_owner_isolated(tmp_path: Path) -> None:
+def test_admin_cannot_create_a_chiyun_origin_or_send_provider_traffic(tmp_path: Path) -> None:
     store = CanvasStore(tmp_path / "data")
     provider_requests: list[httpx.Request] = []
 
@@ -80,95 +80,7 @@ def test_admin_created_chiyun_model_runs_once_and_remains_owner_isolated(tmp_pat
             "enabled": True,
         },
     )
-    assert created_provider.status_code == 201
-    created_model = admin.post(
-        "/api/v1/admin/model-registry/models",
-        headers=admin_headers,
-        json={
-            "model_id": "chiyun-gpt-image-2",
-            "provider_id": "chiyun",
-            "provider_model_name": "gpt-image-2",
-            "display_name": "GPT Image 2",
-            "introduction": "多参考图编辑",
-            "template_id": "chiyun_gpt_image_edit_v1",
-            "enabled": True,
-        },
-    )
-    assert created_model.status_code == 201
-    granted = admin.put(
-        f"/api/v1/admin/users/{accounts.user.user_id}/models",
-        headers=admin_headers,
-        json={"model_ids": ["chiyun-gpt-image-2"]},
-    )
-    assert granted.status_code == 200
-
-    uploaded = user.post(
-        "/api/v1/assets",
-        headers=user_headers,
-        files={"file": ("reference.png", PNG, "image/png")},
-        data={"kind": "reference", "media_type": "image"},
-    )
-    assert uploaded.status_code == 201, uploaded.text
-    asset_id = uploaded.json()["asset_id"]
-    assert admin.get(f"/api/v1/assets/{asset_id}").status_code == 403
-
-    models = user.get("/api/v1/models")
-    assert models.status_code == 200
-    assert [(item["model_id"], item["operations"]) for item in models.json()["models"]] == [
-        ("chiyun-gpt-image-2", ["image.edit"])
-    ]
-    payload = {
-        "operation": "image.edit",
-        "model_id": "chiyun-gpt-image-2",
-        "prompt": "保留 @图片1 的主体",
-        "params": {"size": "1024x1024", "output_count": 1},
-        "asset_ids": [],
-        "inputs": {"reference_images": [asset_id]},
-        "idempotency_key": "integration-chiyun-once",
-    }
-    async def submit_concurrently() -> tuple[httpx.Response, httpx.Response]:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url=ORIGIN, cookies=user.cookies) as first_client, httpx.AsyncClient(
-            transport=transport, base_url=ORIGIN, cookies=user.cookies
-        ) as second_client:
-            first, second = await asyncio.gather(
-                first_client.post("/api/v1/jobs", headers=user_headers, json=payload),
-                second_client.post("/api/v1/jobs", headers=user_headers, json=payload),
-            )
-            return first, second
-
-    created, repeated = asyncio.run(submit_concurrently())
-    assert created.status_code == 201 and repeated.status_code == 201
-    assert created.json()["id"] == repeated.json()["id"]
-    assert len(provider_requests) == 1
-    request = provider_requests[0]
-    assert request.method == "POST" and request.url.path == "/v1/images/edits"
-    assert request.headers["authorization"] == "Bearer test-only-secret"
-    assert _multipart_values(request.content, "model") == [b"gpt-image-2"]
-    assert _multipart_values(request.content, "image[]") == [PNG]
-
-    job_id = created.json()["id"]
-    assert admin.get(f"/api/v1/jobs/{job_id}").status_code == 404
-    completed = user.get(f"/api/v1/jobs/{job_id}")
-    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
-    assert admin.get(f"/api/v1/results/{job_id}").status_code == 404
-    head = user.head(f"/api/v1/results/{job_id}")
-    ranged = user.get(f"/api/v1/results/{job_id}", headers={"Range": "bytes=0-7"})
-    full = user.get(f"/api/v1/results/{job_id}")
-    assert head.status_code == 200 and head.headers["content-type"].startswith("image/png")
-    assert ranged.status_code == 206 and ranged.content == OUTPUT[:8]
-    assert full.status_code == 200 and full.content == OUTPUT
-
-    revoked = admin.put(
-        f"/api/v1/admin/users/{accounts.user.user_id}/models",
-        headers=admin_headers,
-        json={"model_ids": []},
-    )
-    assert revoked.status_code == 200
-    rejected = user.post(
-        "/api/v1/jobs",
-        headers=user_headers,
-        json={**payload, "idempotency_key": "integration-after-revoke"},
-    )
-    assert rejected.status_code == 400
-    assert len(provider_requests) == 1
+    assert created_provider.status_code == 405
+    assert app.state.canvas_store.provider_definition("chiyun") is None
+    assert provider_requests == []
+    assert user.get("/api/v1/models", headers=user_headers).json()["models"] == []

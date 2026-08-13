@@ -95,10 +95,11 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
         data_dir=tmp_path,
         asset_loader=lambda asset_id: ({"ref-one": b"one", "ref-two": b"two"}[asset_id], "image/png"),
         provider_protocols={
-            "ark-official": ProviderProtocol("ark-official", "ark", "https://ark.cn-beijing.volces.com"),
-            "chiyun": ProviderProtocol("chiyun", "chiyun_openai_images", "https://trusted.chiyun.example"),
+            "ark-official": ProviderProtocol.from_readonly_deployment("ark-official", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com"),
+            "chiyun": ProviderProtocol.from_readonly_deployment("chiyun", "chiyun_openai_images", "https://trusted.chiyun.example", approved_origin="https://trusted.chiyun.example"),
         },
         transport=httpx.MockTransport(handler),
+        trusted_route_validator=lambda _route: None,
     )
 
 
@@ -279,8 +280,8 @@ def test_route_factory_never_reuses_an_adapter_or_previous_lease_secret(tmp_path
 
 
 def test_provider_protocol_registry_is_copied_and_ark_origin_is_fixed(tmp_path: Path) -> None:
-    protocols = {"ark-official": ProviderProtocol("ark-official", "ark", "https://ark.cn-beijing.volces.com")}
-    factory = RouteAdapterFactory(data_dir=tmp_path, asset_loader=lambda _: (b"one", "image/png"), provider_protocols=protocols)
+    protocols = {"ark-official": ProviderProtocol.from_readonly_deployment("ark-official", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com")}
+    factory = RouteAdapterFactory(data_dir=tmp_path, asset_loader=lambda _: (b"one", "image/png"), provider_protocols=protocols, trusted_route_validator=lambda _route: None)
     protocols.clear()
     assert isinstance(factory.build(_route(), _lease("route-a")), ArkGenerationAdapter)
     with pytest.raises(ValueError):

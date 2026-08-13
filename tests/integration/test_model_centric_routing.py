@@ -47,24 +47,8 @@ def assert_decodable_png(content: bytes) -> None:
 
 
 def image_contract() -> dict[str, object]:
-    return {
-        "operation": "image.edit",
-        "input_ports": [
-            {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
-            {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
-        ],
-        "output_media_type": "image",
-        "parameter_schema": {
-            "type": "object",
-            "properties": {
-                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
-                "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
-            },
-            "required": ["size", "output_count"],
-            "additionalProperties": False,
-        },
-        "parameter_mappings": {"size": "size", "output_count": "n"},
-    }
+    from ai_creation_canvas.trusted_routing import trusted_route_presets
+    return trusted_route_presets()[("banana", "chiyun")].operation_contracts[0].to_dict()
 
 
 def model_body() -> dict[str, object]:
@@ -83,7 +67,7 @@ def route_body(route_id: str, provider_id: str, pool_id: str, *, priority: int =
         "route_id": route_id,
         "model_id": "nano-banana",
         "provider_id": provider_id,
-        "provider_model_name": "gemini-image-offline",
+        "provider_model_name": "gemini-2.5-flash-image",
         "adapter_type": "chiyun_openai_images",
         "credential_pool_ref": pool_id,
         "family": "nano-banana",
@@ -117,7 +101,7 @@ class AcceptanceApp:
 def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> AcceptanceApp:
     store = CanvasStore(tmp_path / "acceptance-data")
     store.create_provider_definition(
-        ProviderDefinition("google-images", "Google Images", "chiyun_openai_images", "https://google.example", "deployment-only"),
+        ProviderDefinition("chiyun", "Chiyun", "chiyun_openai_images", "https://google.example", "deployment-only"),
         actor_user_id="bootstrap",
     )
     store.create_provider_definition(
@@ -129,7 +113,7 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
         actor_user_id="bootstrap",
     )
     pools = {
-        "banana-official": pool("banana-official", "google-images", "official", ("nano-banana",), ("official-a", "official-b")),
+        "banana-official": pool("banana-official", "chiyun", "official", ("nano-banana",), ("official-a", "official-b")),
         "banana-t8-gemini": pool("banana-t8-gemini", "t8star", "gemini", ("nano-banana",), ("gemini-a",)),
         "seedance-offline": pool("seedance-offline", "ark-video", "official", ("seedance",), ("seedance-a",)),
         "t8-cc": pool("t8-cc", "t8star", "cc", ("claude",), ("cc-a",)),
@@ -148,11 +132,12 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
         data_dir=store.data_dir,
         asset_loader=_local_asset_loader(store.data_dir),
         provider_protocols={
-            "google-images": ProviderProtocol("google-images", "chiyun_openai_images", "https://google.example"),
-            "t8star": ProviderProtocol("t8star", "chiyun_openai_images", "https://t8.example"),
-            "ark-video": ProviderProtocol("ark-video", "ark", "https://ark.cn-beijing.volces.com"),
+            "chiyun": ProviderProtocol.from_readonly_deployment("chiyun", "chiyun_openai_images", "https://google.example", approved_origin="https://google.example"),
+            "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
+            "ark-video": ProviderProtocol.from_readonly_deployment("ark-video", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com"),
         },
         transport=provider,
+        trusted_route_validator=lambda _route: None,
     )
     runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory)
     registry = AdapterRegistry()
@@ -203,7 +188,7 @@ def configure_model(admin: TestClient, headers: dict[str, str], accounts: Bootst
     official = admin.post(
         "/api/v1/admin/logical-models/nano-banana/routes",
         headers=headers,
-        json=route_body("banana-official-route", "google-images", "banana-official", priority=1),
+        json=route_body("banana-official-route", "chiyun", "banana-official", priority=1),
     )
     gemini = admin.post(
         "/api/v1/admin/logical-models/nano-banana/routes",

@@ -94,7 +94,7 @@ function CallingPresetCard({ model, preset, routes, pools, onCreate, onUpdate, o
                         aria-label={`启用 ${preset.label}`}
                         type="checkbox"
                         checked={route?.enabled ?? form.enabled}
-                        disabled={saving || (!route && compatiblePools.length === 0)}
+                        disabled={saving || (!(route?.enabled) && !hasCompatibleSelection)}
                         onChange={(event) => changeEnabled(event.target.checked)}
                         className="accent-[#58ed87]"
                     />

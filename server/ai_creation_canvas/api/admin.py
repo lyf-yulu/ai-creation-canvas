@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
+from dataclasses import replace
 from typing import Literal
 
 from ai_creation_canvas.api._common import context_for, problem
@@ -22,6 +23,7 @@ from ai_creation_canvas.model_routing import (
     validate_route_model,
     validate_route_pool,
 )
+from ai_creation_canvas.trusted_routing import provider_has_trusted_origin, validate_trusted_route
 
 
 router = APIRouter(prefix="/api/v1/admin")
@@ -189,34 +191,31 @@ async def get_model_registry(request: Request) -> dict[str, object]:
     _require_admin(request)
     store = request.app.state.canvas_store
     adapter_factory = request.app.state.adapter_factory
-    providers = [provider.admin_projection(credential_available=bool(adapter_factory and adapter_factory.credential_available(provider))) for provider in store.list_provider_definitions()]
+    providers = [
+        {
+            **provider.public_projection(),
+            "adapter_type": provider.adapter_type,
+            "trusted_origin": provider_has_trusted_origin(provider),
+            "credential_available": bool(adapter_factory and adapter_factory.credential_available(provider)),
+        }
+        for provider in store.list_provider_definitions()
+    ]
     templates = [{"template_id": "chiyun_gpt_image_edit_v1", "title": "Chiyun GPT Image 图生图", "modality": "image", "operation": "image.edit"}]
     return {"providers": providers, "models": [model.public_projection() for model in store.list_model_definitions()], "templates": templates}
 
 
 @router.post("/model-registry/providers", status_code=201)
 async def create_provider(body: ProviderCreate, request: Request) -> dict[str, object]:
-    admin = _require_admin(request)
-    try:
-        definition = ProviderDefinition(**body.model_dump(), revision=1)
-        saved = request.app.state.canvas_store.create_provider_definition(definition, actor_user_id=admin.user_id)
-    except ValueError:
-        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=400) from None
-    factory = request.app.state.adapter_factory
-    return saved.admin_projection(credential_available=bool(factory and factory.credential_available(saved)))
+    del body
+    _require_admin(request)
+    raise problem(request, "PROVIDER_REGISTRY_READ_ONLY", "Provider definitions are deployment-owned.", status=405)
 
 
 @router.put("/model-registry/providers/{provider_id}")
 async def update_provider(provider_id: str, body: ProviderUpdate, request: Request) -> dict[str, object]:
-    admin = _require_admin(request)
-    if provider_id != body.provider_id:
-        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=400)
-    try:
-        saved = request.app.state.canvas_store.update_provider_definition(ProviderDefinition(**body.model_dump(exclude={"revision"}), revision=body.revision), expected_revision=body.revision, actor_user_id=admin.user_id)
-    except ValueError:
-        raise problem(request, "REVISION_CONFLICT", "The resource changed. Reload and try again.", status=409) from None
-    factory = request.app.state.adapter_factory
-    return saved.admin_projection(credential_available=bool(factory and factory.credential_available(saved)))
+    del provider_id, body
+    _require_admin(request)
+    raise problem(request, "PROVIDER_REGISTRY_READ_ONLY", "Provider definitions are deployment-owned.", status=405)
 
 
 @router.delete("/model-registry/providers/{provider_id}", status_code=204)
@@ -451,8 +450,14 @@ def _validate_admin_route(request: Request, route: ModelRouteDefinition) -> None
         or pool is None
     ):
         raise ValueError("route dependencies are unavailable")
+    validate_trusted_route(route, model)
     validate_route_model(route, model)
     validate_route_pool(route, pool)
+    if not route.enabled:
+        return
+    protocol_available = getattr(runtime.adapter_factory, "protocol_available", None)
+    if not callable(protocol_available) or not protocol_available(provider):
+        raise ValueError("route provider protocol is unavailable")
     validator = getattr(runtime.adapter_factory, "validate_route", None)
     if not callable(validator):
         raise ValueError("trusted route validation is unavailable")
@@ -624,12 +629,15 @@ async def update_model_route(model_id: str, route_id: str, body: ModelRouteUpdat
 
 async def _route_lifecycle(model_id: str, route_id: str, body: LifecycleRevision, request: Request, action: str) -> dict[str, object]:
     admin = _require_admin(request)
-    _route_for_parent(request, model_id, route_id)
+    current = _route_for_parent(request, model_id, route_id)
     store = request.app.state.canvas_store
     try:
         if action == "disable":
             saved = store.set_model_route_enabled(route_id, enabled=False, expected_revision=body.revision, actor_user_id=admin.user_id)
         elif action == "enable":
+            if not isinstance(current, ModelRouteDefinition) or current.revision != body.revision:
+                raise RevisionConflict
+            _validate_admin_route(request, replace(current, enabled=True))
             saved = store.set_model_route_enabled(route_id, enabled=True, expected_revision=body.revision, actor_user_id=admin.user_id)
         elif action == "archive":
             saved = store.archive_model_route(route_id, expected_revision=body.revision, actor_user_id=admin.user_id)
@@ -707,10 +715,12 @@ async def list_credential_pools(request: Request) -> dict[str, object]:
                     metrics = candidate
             except Exception:
                 pass
+        protocol_available = getattr(runtime.adapter_factory, "protocol_available", None)
+        protocol_trusted = bool(isinstance(provider, ProviderDefinition) and callable(protocol_available) and protocol_available(provider))
         summaries.append({
             "pool_id": pool.pool_id,
             "provider_id": pool.provider_id,
-            "adapter_type": provider.adapter_type if isinstance(provider, ProviderDefinition) else None,
+            "adapter_type": provider.adapter_type if isinstance(provider, ProviderDefinition) and protocol_trusted else None,
             "group": pool.group,
             "allowed_families": list(pool.allowed_families),
             "revision_digest": pool.revision_digest,

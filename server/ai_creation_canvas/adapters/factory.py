@@ -76,6 +76,16 @@ class ProviderProtocol:
     provider_id: str
     adapter_type: str
     base_url: str
+    _readonly_deployment_approved: bool = False
+
+    @classmethod
+    def from_readonly_deployment(
+        cls, provider_id: str, adapter_type: str, base_url: str, *, approved_origin: str,
+    ) -> "ProviderProtocol":
+        """Construct from a deployment-owned declaration, never from registry state."""
+        if base_url != approved_origin:
+            raise ValueError("provider protocol does not match its approved origin")
+        return cls(provider_id, adapter_type, base_url, True)
 
     def __post_init__(self) -> None:
         if not isinstance(self.provider_id, str) or _PROTOCOL_ID.fullmatch(self.provider_id) is None:
@@ -99,8 +109,8 @@ class ProviderProtocol:
         ):
             raise ValueError("provider protocol origin is invalid")
         origin = f"https://{parsed.netloc}"
-        if self.adapter_type == "ark" and origin != _ARK_URL:
-            raise ValueError("Ark protocol origin is fixed")
+        if not self._readonly_deployment_approved and (self.provider_id, self.adapter_type, origin) != ("ark", "ark", _ARK_URL):
+            raise ValueError("provider protocol origin is not code-owned")
         object.__setattr__(self, "base_url", origin)
 
 
@@ -132,9 +142,10 @@ class EnvironmentCredentialResolver:
 
 
 class AdapterFactory:
-    def __init__(self, *, data_dir: Path | str, credential_resolver: CredentialResolver, asset_loader: Callable[[str], tuple[bytes, str]], transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, *, data_dir: Path | str, credential_resolver: CredentialResolver, asset_loader: Callable[[str], tuple[bytes, str]], transport: httpx.AsyncBaseTransport | None = None, trusted_provider_origins: Mapping[tuple[str, str], str] | None = None) -> None:
         self._data_dir, self._credential_resolver, self._asset_loader, self._transport = Path(data_dir), credential_resolver, asset_loader, transport
         self._cache: dict[tuple[str, int, tuple[tuple[str, int], ...]], object] = {}
+        self._trusted_provider_origins = MappingProxyType(dict(trusted_provider_origins or {}))
 
     def credential_available(self, provider: ProviderDefinition) -> bool:
         try:
@@ -151,6 +162,10 @@ class AdapterFactory:
             return self._cache[key]
         if provider.adapter_type != "chiyun_openai_images":
             raise ValueError("adapter type is not supported by the governed factory")
+        from ai_creation_canvas.trusted_routing import provider_has_trusted_origin
+        deployment_origin = self._trusted_provider_origins.get((provider.provider_id, provider.adapter_type))
+        if not provider_has_trusted_origin(provider) and provider.base_url != deployment_origin:
+            raise ValueError("provider origin is not code-owned")
         adapter = ChiyunGenerationAdapter(
             provider=provider, models=models, api_key=self._credential_resolver.resolve(provider.credential_ref),
             data_dir=self._data_dir, asset_loader=self._asset_loader, transport=self._transport,
@@ -170,23 +185,36 @@ class RouteAdapterFactory:
         provider_protocols: Mapping[str, ProviderProtocol],
         transport: httpx.AsyncBaseTransport | None = None,
         transport_factory: Callable[[ProviderProtocol], httpx.AsyncBaseTransport | None] | None = None,
+        trusted_route_validator: Callable[[ModelRouteDefinition], None] | None = None,
     ) -> None:
         if not callable(asset_loader) or (transport is not None and transport_factory is not None):
             raise ValueError("route adapter dependencies are invalid")
         protocols = dict(provider_protocols)
-        if (
-            not protocols
-            or any(not isinstance(key, str) or not isinstance(value, ProviderProtocol) or key != value.provider_id for key, value in protocols.items())
-        ):
+        if any(not isinstance(key, str) or not isinstance(value, ProviderProtocol) or key != value.provider_id for key, value in protocols.items()):
             raise ValueError("provider protocol registry is invalid")
         self._data_dir = Path(data_dir)
         self._asset_loader = asset_loader
         self._protocols = MappingProxyType(protocols)
         self._transport = transport
         self._transport_factory = transport_factory
+        if trusted_route_validator is None:
+            from ai_creation_canvas.trusted_routing import validate_trusted_route
+            trusted_route_validator = validate_trusted_route
+        if not callable(trusted_route_validator):
+            raise ValueError("trusted route validator is unavailable")
+        self._trusted_route_validator = trusted_route_validator
 
     def __repr__(self) -> str:
         return f"RouteAdapterFactory(provider_count={len(self._protocols)})"
+
+    def protocol_available(self, provider: ProviderDefinition) -> bool:
+        protocol = self._protocols.get(provider.provider_id) if isinstance(provider, ProviderDefinition) else None
+        return bool(
+            protocol is not None
+            and provider.enabled
+            and provider.adapter_type == protocol.adapter_type
+            and provider.base_url == protocol.base_url
+        )
 
     def validate_route(self, route: ModelRouteDefinition) -> None:
         """Validate against code-owned templates without reading a deployed credential."""
@@ -197,6 +225,7 @@ class RouteAdapterFactory:
             or not route.credential_pool_ref
         ):
             raise ValueError("route runtime is unavailable")
+        self._trusted_route_validator(route)
         protocol = self._protocols.get(route.provider_id)
         if protocol is None or protocol.adapter_type != route.adapter_type:
             raise ValueError("route provider protocol is unavailable")

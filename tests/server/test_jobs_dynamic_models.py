@@ -35,7 +35,7 @@ def test_dynamic_model_job_persists_an_immutable_governed_snapshot(tmp_path: Pat
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
-    factory = AdapterFactory(data_dir=store.data_dir, credential_resolver=MappingCredentialResolver({"chiyun-primary": "test-only-secret"}), asset_loader=lambda _: (PNG, "image/png"), transport=httpx.MockTransport(handler))
+    factory = AdapterFactory(data_dir=store.data_dir, credential_resolver=MappingCredentialResolver({"chiyun-primary": "test-only-secret"}), asset_loader=lambda _: (PNG, "image/png"), transport=httpx.MockTransport(handler), trusted_provider_origins={("chiyun", "chiyun_openai_images"): "https://chiyun.example"})
     app = create_app(Settings("test", 8996, store.data_dir, "unused", identity_mode="local", allowed_origins=(ORIGIN,)), static_dir=tmp_path / "dist", canvas_store=store, adapter_factory=factory)
     accounts = app.state.local_auth.bootstrap_accounts(())
     assert accounts.user is not None

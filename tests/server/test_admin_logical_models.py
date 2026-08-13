@@ -22,34 +22,13 @@ ORIGIN = "http://127.0.0.1:45996"
 
 
 def image_contract() -> dict[str, object]:
-    return {
-        "operation": "image.edit",
-        "input_ports": [
-            {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
-            {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
-        ],
-        "output_media_type": "image",
-        "parameter_schema": {
-            "type": "object",
-            "properties": {
-                "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
-                "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
-            },
-            "required": ["size", "output_count"],
-            "additionalProperties": False,
-        },
-        "parameter_mappings": {"size": "size", "output_count": "n"},
-    }
+    from ai_creation_canvas.trusted_routing import trusted_route_presets
+    return trusted_route_presets()[("banana", "t8star")].operation_contracts[0].to_dict()
 
 
 def video_contract() -> dict[str, object]:
-    return {
-        "operation": "video.generate",
-        "input_ports": [{"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}],
-        "output_media_type": "video",
-        "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "parameter_mappings": {},
-    }
+    from ai_creation_canvas.trusted_routing import trusted_route_presets
+    return trusted_route_presets()[("seedance", "ark")].operation_contracts[0].to_dict()
 
 
 def model_body(model_id: str = "banana", *, modality: str = "image", contract: dict[str, object] | None = None) -> dict[str, object]:
@@ -67,8 +46,8 @@ def route_body(route_id: str = "banana-t8", *, model_id: str = "banana", video: 
     return {
         "route_id": route_id,
         "model_id": model_id,
-        "provider_id": "google" if video else "t8star",
-        "provider_model_name": "seedance-2-0" if video else "gemini-2.5-flash-image-preview",
+        "provider_id": "ark" if video else "t8star",
+        "provider_model_name": "doubao-seedance-2-5-260628" if video else "gemini-2.5-flash-image",
         "adapter_type": "ark" if video else "chiyun_openai_images",
         "credential_pool_ref": "seedance-official" if video else "t8-gemini",
         "family": "seedance" if video else "nano-banana",
@@ -86,19 +65,19 @@ def _pool(pool_id: str, provider: str, group: str, family: str, key_id: str, sec
 def clients(tmp_path):
     store = CanvasStore(tmp_path / "data")
     store.create_provider_definition(ProviderDefinition("t8star", "T8", "chiyun_openai_images", "https://t8.example", "unused"), actor_user_id="bootstrap")
-    store.create_provider_definition(ProviderDefinition("google", "Ark", "ark", "https://ark.cn-beijing.volces.com", "unused"), actor_user_id="bootstrap")
+    store.create_provider_definition(ProviderDefinition("ark", "Ark", "ark", "https://ark.cn-beijing.volces.com", "unused"), actor_user_id="bootstrap")
     pools = {
         "t8-gemini": _pool("t8-gemini", "t8star", "gemini", "nano-banana", "gemini-key-1", "gemini-test-secret"),
         "t8-cc": _pool("t8-cc", "t8star", "cc", "claude", "cc-key-1", "cc-test-secret"),
-        "seedance-official": _pool("seedance-official", "google", "official", "seedance", "ark-key-1", "ark-test-secret", 3),
+        "seedance-official": _pool("seedance-official", "ark", "official", "seedance", "ark-key-1", "ark-test-secret", 3),
     }
     coordinator = LocalExecutionCoordinator(global_limit=8, provider_limit=8, user_limit=4)
     factory = RouteAdapterFactory(
         data_dir=tmp_path / "data",
         asset_loader=lambda asset_id: (_ for _ in ()).throw(KeyError(asset_id)),
         provider_protocols={
-            "t8star": ProviderProtocol("t8star", "chiyun_openai_images", "https://t8.example"),
-            "google": ProviderProtocol("google", "ark", "https://ark.cn-beijing.volces.com"),
+            "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
+            "ark": ProviderProtocol("ark", "ark", "https://ark.cn-beijing.volces.com"),
         },
     )
     runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory)

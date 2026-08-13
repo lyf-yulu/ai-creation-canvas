@@ -285,3 +285,17 @@ it("does not publish a pending preset save after unmount", async () => {
     await Promise.resolve();
     expect(saved).not.toHaveBeenCalled();
 });
+
+it("cannot enable an existing disabled route after its compatible pool disappears", () => {
+    const preset = callingPresetsForModel(model()).find((item) => item.id === "chiyun")!;
+    const route: AdminModelRoute = {
+        route_id: "banana-chiyun", model_id: "banana", provider_id: preset.providerId,
+        provider_model_name: preset.providerModelName, adapter_type: preset.adapterType,
+        credential_pool_ref: "removed-pool", family: preset.family,
+        operation_contracts: [preset.contract], priority: 1, max_concurrency: 1,
+        enabled: false, archived_at: null, revision: 1,
+    };
+    render(<ModelCallSettings model={model()} routes={[route]} pools={[]} onCreate={vi.fn()} onUpdate={vi.fn()} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
+    expect(screen.getByLabelText("启用 Chiyun")).toBeDisabled();
+    expect(screen.getAllByRole("alert").some((item) => item.textContent?.includes("不能启用"))).toBe(true);
+});

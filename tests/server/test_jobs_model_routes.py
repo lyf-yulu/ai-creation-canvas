@@ -126,10 +126,11 @@ def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, stor
         data_dir=store.data_dir,
         asset_loader=lambda _: (PNG, "image/png"),
         provider_protocols={
-            "google": ProviderProtocol("google", "chiyun_openai_images", "https://google.example"),
-            "t8star": ProviderProtocol("t8star", "chiyun_openai_images", "https://t8.example"),
+            "google": ProviderProtocol.from_readonly_deployment("google", "chiyun_openai_images", "https://google.example", approved_origin="https://google.example"),
+            "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
         },
         transport=httpx.MockTransport(handler),
+        trusted_route_validator=lambda _route: None,
     )
     runtime = ManagedRoutingRuntime(store, lambda: pools, RouteSelector(), coordinator, factory, submission_budget)
     registry = AdapterRegistry()
@@ -384,7 +385,7 @@ def test_production_logical_routes_require_pool_configuration_after_redis(tmp_pa
         )
 
 
-def test_production_startup_rejects_route_without_trusted_provider_protocol(tmp_path: Path, monkeypatch) -> None:
+def test_restart_keeps_historical_untrusted_provider_out_of_protocol_map(tmp_path: Path, monkeypatch) -> None:
     store = CanvasStore(tmp_path / "data")
     store.create_provider_definition(_provider(), actor_user_id="bootstrap")
     store.create_logical_model(logical())
@@ -394,13 +395,11 @@ def test_production_startup_rejects_route_without_trusted_provider_protocol(tmp_
     pools.chmod(0o600)
     monkeypatch.setenv("AICC_CREDENTIAL_HMAC_KEY", "h" * 32)
     settings = Settings(
-        "production", 8991, store.data_dir, "deployment-secret",
-        redis_url="redis://127.0.0.1:6379/0",
+        "test", 8992, store.data_dir, "deployment-secret", identity_mode="local", allowed_origins=("http://127.0.0.1:8992",),
         credential_pools_path=pools, credential_pools_root=tmp_path,
     )
-    with pytest.raises(ValueError, match="provider protocol"):
-        create_app(
-            settings, static_dir=tmp_path / "dist", canvas_store=store,
-            registry=AdapterRegistry(), model_catalog=ModelCatalog(AdapterRegistry()),
-            execution_coordinator=ScriptedCoordinator(),
-        )
+    app = create_app(
+        settings, static_dir=tmp_path / "dist", canvas_store=store,
+        registry=AdapterRegistry(), model_catalog=ModelCatalog(AdapterRegistry()),
+    )
+    assert repr(app.state.managed_routing_runtime.adapter_factory) == "RouteAdapterFactory(provider_count=0)"
