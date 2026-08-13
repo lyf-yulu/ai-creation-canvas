@@ -3,42 +3,22 @@ set -eu
 
 fail() { echo "$1" >&2; exit 64; }
 
-[ "${AICC_ALLOW_PAID_ACCEPTANCE:-}" = "YES" ] || fail "Set AICC_ALLOW_PAID_ACCEPTANCE=YES to authorize the bounded paid acceptance."
-[ -n "${ARK_API_KEY:-}" ] || fail "ARK_API_KEY is required in the server environment."
-
-# Remove the paid credential from the inherited environment before starting any
-# verifier/build subprocess. noclobber prevents following or replacing a link.
-umask 077
-aicc_key_file=${TMPDIR:-/tmp}/.aicc-paid-acceptance-key.$$
-set -C
-if ! printf '%s' "$ARK_API_KEY" > "$aicc_key_file"; then
-    set +C
-    fail "Could not create the isolated acceptance credential file."
-fi
-set +C
-unset ARK_API_KEY AICC_ACCEPTANCE_KEY_FILE
-cleanup_key() { rm -f -- "$aicc_key_file"; }
-trap cleanup_key EXIT HUP INT TERM
+[ "${AICC_RUN_PAID_ACCEPTANCE:-}" = "YES" ] || fail "Set AICC_RUN_PAID_ACCEPTANCE=YES to authorize the bounded paid acceptance."
 
 aicc_repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-AICC_ACCEPTANCE_PORT=${AICC_ACCEPTANCE_PORT:-8998}
-AICC_ACCEPTANCE_DATA=${AICC_ACCEPTANCE_DATA:-"$aicc_repo_root/.paid-acceptance/run-$$"}
-AICC_ACCEPTANCE_MODELS_CONFIG=${AICC_ACCEPTANCE_MODELS_CONFIG:-"$aicc_repo_root/server/config/ark-models.example.json"}
-AICC_ACCEPTANCE_IMAGE_MODEL_ID=${AICC_ACCEPTANCE_IMAGE_MODEL_ID:-doubao-seedream-4-0-250828}
-AICC_ACCEPTANCE_VIDEO_MODEL_ID=${AICC_ACCEPTANCE_VIDEO_MODEL_ID:-doubao-seedance-2-0-260128}
-AICC_ACCEPTANCE_IMAGE_COUNT=${AICC_ACCEPTANCE_IMAGE_COUNT:-1}
-AICC_ACCEPTANCE_VIDEO_COUNT=${AICC_ACCEPTANCE_VIDEO_COUNT:-1}
-
-[ "$AICC_ACCEPTANCE_IMAGE_MODEL_ID" = "doubao-seedream-4-0-250828" ] || fail "Image model is outside the paid acceptance allowlist."
-[ "$AICC_ACCEPTANCE_VIDEO_MODEL_ID" = "doubao-seedance-2-0-260128" ] || fail "Video model is outside the paid acceptance allowlist."
-[ "$AICC_ACCEPTANCE_IMAGE_COUNT" = "1" ] && [ "$AICC_ACCEPTANCE_VIDEO_COUNT" = "1" ] || fail "Paid acceptance requires exactly one image call and exactly one video call."
+[ -n "${AICC_ACCEPTANCE_DATA:-}" ] || fail "AICC_ACCEPTANCE_DATA must name a brand-new isolated data path."
+[ -n "${AICC_ACCEPTANCE_PORT:-}" ] || fail "AICC_ACCEPTANCE_PORT must be explicit."
+[ -n "${AICC_ACCEPTANCE_MODEL_IDS:-}" ] || fail "AICC_ACCEPTANCE_MODEL_IDS must explicitly name every selected logical model."
+[ -n "${AICC_ACCEPTANCE_CHANNEL_IDS:-}" ] || fail "AICC_ACCEPTANCE_CHANNEL_IDS must explicitly name every paid channel."
+[ -n "${AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT:-}" ] || fail "AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT must be explicit, including zero."
+[ -n "${AICC_MAX_PAID_CALLS:-}" ] || fail "AICC_MAX_PAID_CALLS must be an explicit integer from 1 through 20."
 
 case "$AICC_ACCEPTANCE_PORT" in
     ''|*[!0-9]*) fail "AICC_ACCEPTANCE_PORT must be numeric." ;;
-    8991|8992|8994|9090|8787|8797|8798|8788|9190) fail "Refusing to use a reserved production or development port." ;;
+    8991|8992|8994|9003|9090|8787|8797|8798|8788|8891|8892|9190) fail "Refusing to use a reserved production, development, or acceptance port." ;;
 esac
+[ "$AICC_ACCEPTANCE_PORT" -ge 1024 ] 2>/dev/null && [ "$AICC_ACCEPTANCE_PORT" -le 65535 ] 2>/dev/null || fail "AICC_ACCEPTANCE_PORT is outside the safe range."
 [ ! -e "$AICC_ACCEPTANCE_DATA" ] && [ ! -L "$AICC_ACCEPTANCE_DATA" ] || fail "AICC_ACCEPTANCE_DATA must be a brand-new path."
-[ -f "$AICC_ACCEPTANCE_MODELS_CONFIG" ] && [ ! -L "$AICC_ACCEPTANCE_MODELS_CONFIG" ] || fail "Model declarations must be a regular administrator-owned file."
 
 if [ -n "${AICC_PYTHON:-}" ]; then
     aicc_python=$AICC_PYTHON
@@ -82,37 +62,140 @@ elif [ "$aicc_data_scope" != "external" ]; then
     fail "Acceptance data path is unsafe."
 fi
 
-AICC_ACCEPTANCE_MODELS_CONFIG="$AICC_ACCEPTANCE_MODELS_CONFIG" "$aicc_python" - <<'PY' || exit 64
-import json, os, pathlib, sys
-path = pathlib.Path(os.environ["AICC_ACCEPTANCE_MODELS_CONFIG"])
-try:
-    models = json.loads(path.read_text(encoding="utf-8"))["models"]
-except (OSError, ValueError, KeyError, TypeError):
-    print("Model allowlist declaration is invalid.", file=sys.stderr); raise SystemExit(1)
-expected = {"doubao-seedream-4-0-250828", "doubao-seedance-2-0-260128"}
-ids = [item.get("model_id") for item in models if isinstance(item, dict)] if isinstance(models, list) else []
-if not isinstance(models, list) or not 2 <= len(models) <= 16 or len(ids) != len(models) or len(set(ids)) != len(ids) or not expected.issubset(ids):
-    print("Model declaration does not exactly match the paid acceptance allowlist.", file=sys.stderr); raise SystemExit(1)
-video = next(item for item in models if item["model_id"] == "doubao-seedance-2-0-260128")
-image = next(item for item in models if item["model_id"] == "doubao-seedream-4-0-250828")
-properties = video.get("parameter_schema", {}).get("properties", {})
-if "480p" not in properties.get("resolution", {}).get("enum", []) or not properties.get("duration", {}).get("minimum", 99) <= 5 <= properties.get("duration", {}).get("maximum", -1):
-    print("The reviewed video model does not support 5s/480p; refusing to increase cost.", file=sys.stderr); raise SystemExit(1)
-def supports_reference(item):
-    return any(port.get("port_id") == "reference_images" and port.get("max_items", 0) >= 1 for port in item.get("input_ports", []) if isinstance(port, dict))
-if "image.edit" not in image.get("operations", []) or "video.generate" not in video.get("operations", []) or not supports_reference(image) or not supports_reference(video):
-    print("The reviewed models do not support the required reference chain.", file=sys.stderr); raise SystemExit(1)
-PY
+export AICC_ACCEPTANCE_MODEL_IDS AICC_ACCEPTANCE_CHANNEL_IDS
+export AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT AICC_MAX_PAID_CALLS
+export AICC_CHIYUN_BASE_URL="${AICC_CHIYUN_BASE_URL:-}"
+export AICC_T8STAR_BASE_URL="${AICC_T8STAR_BASE_URL:-}"
 
-if [ "${AICC_ACCEPTANCE_ENV_PROBE:-}" = "YES" ]; then
-    [ -z "${ARK_API_KEY+x}" ] || fail "Offline environment still contains the paid credential."
-    [ -z "${AICC_ACCEPTANCE_KEY_FILE+x}" ] || fail "Offline environment can locate the paid credential file."
-    AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py" --probe-key-boundary
-    exit 0
-fi
+"$aicc_python" - <<'PY' || exit 64
+import os
+import re
+import sys
+from urllib.parse import urlsplit
+
+channels = {
+    "banana-chiyun": ("banana", "CHIYUN_API_KEY", "AICC_CHIYUN_BASE_URL"),
+    "banana-t8star": ("banana", "T8STAR_API_KEY", "AICC_T8STAR_BASE_URL"),
+    "gpt-image2-chiyun": ("gpt-image2", "CHIYUN_API_KEY", "AICC_CHIYUN_BASE_URL"),
+    "seedream-ark": ("seedream", "ARK_API_KEY", None),
+    "seedance-ark": ("seedance", "ARK_API_KEY", None),
+}
+
+def reject(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+def values(name: str) -> list[str]:
+    raw = os.environ[name]
+    parsed = raw.split(",")
+    if any(not item or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item) is None for item in parsed):
+        reject(f"{name} is invalid.")
+    if len(parsed) != len(set(parsed)):
+        reject(f"{name} contains a duplicate channel or model.")
+    return parsed
+
+model_ids = values("AICC_ACCEPTANCE_MODEL_IDS")
+channel_ids = values("AICC_ACCEPTANCE_CHANNEL_IDS")
+unknown = set(channel_ids) - set(channels)
+if unknown:
+    reject("AICC_ACCEPTANCE_CHANNEL_IDS contains a channel outside the reviewed allowlist.")
+expected_models = {channels[channel][0] for channel in channel_ids}
+if set(model_ids) != expected_models:
+    reject("The explicit model allowlist does not exactly cover the selected channels.")
+
+try:
+    maximum = int(os.environ["AICC_MAX_PAID_CALLS"])
+    banana_samples = int(os.environ["AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT"])
+except ValueError:
+    reject("AICC_MAX_PAID_CALLS and the Banana sample count must be integers.")
+if not 1 <= maximum <= 20:
+    reject("AICC_MAX_PAID_CALLS must be between 1 and 20.")
+if not 0 <= banana_samples <= 20:
+    reject("The Banana sample count must be between 0 and 20.")
+if banana_samples and "banana" not in expected_models:
+    reject("A Banana sample requires an explicitly selected Banana channel.")
+planned = len(channel_ids) + banana_samples
+if planned > maximum:
+    reject("The paid call plan exceeds the explicit AICC_MAX_PAID_CALLS budget.")
+
+selected_key_names = {channels[channel][1] for channel in channel_ids}
+selected_origin_names = {name for channel in channel_ids if (name := channels[channel][2]) is not None}
+for name in sorted(selected_key_names):
+    value = os.environ.get(name, "")
+    if not 8 <= len(value) <= 4096 or any(char in value for char in "\r\n\0"):
+        reject(f"{name} is required for the selected channel.")
+for name in sorted(selected_origin_names):
+    value = os.environ.get(name, "")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        reject(f"{name} must be an HTTPS origin.")
+    if parsed.scheme != "https" or not parsed.hostname or port not in {None, 443} or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        reject(f"{name} must be an HTTPS origin.")
+
+print(f"Paid acceptance plan: models={','.join(model_ids)} channels={','.join(channel_ids)} calls={planned}/{maximum}.")
+for name in ("CHIYUN_API_KEY", "T8STAR_API_KEY", "ARK_API_KEY"):
+    print(f"{name}={'SET' if bool(os.environ.get(name)) else 'UNSET'}")
+PY
 
 if [ "${AICC_ACCEPTANCE_GUARD_ONLY:-}" = "YES" ]; then
     echo "Paid acceptance guard ready. No provider request was made."
+    exit 0
+fi
+
+# Move selected paid credentials out of the inherited environment before any
+# verifier/build subprocess. The bundle is mode 0600 and is consumed exactly
+# once by the acceptance runner.
+umask 077
+aicc_key_file=$(mktemp "${TMPDIR:-/tmp}/.aicc-paid-acceptance-keys.XXXXXX") || fail "Could not create the isolated acceptance credential file."
+aicc_release_parent=""
+cleanup_acceptance() {
+    rm -f -- "$aicc_key_file"
+    if [ -n "$aicc_release_parent" ] && [ -d "$aicc_release_parent" ]; then
+        rm -rf -- "$aicc_release_parent"
+    fi
+}
+trap cleanup_acceptance EXIT HUP INT TERM
+
+AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" "$aicc_python" - <<'PY' || fail "Could not isolate the selected paid credentials."
+import json
+import os
+from pathlib import Path
+import stat
+
+channel_keys = {
+    "banana-chiyun": "CHIYUN_API_KEY",
+    "banana-t8star": "T8STAR_API_KEY",
+    "gpt-image2-chiyun": "CHIYUN_API_KEY",
+    "seedream-ark": "ARK_API_KEY",
+    "seedance-ark": "ARK_API_KEY",
+}
+selected = {channel_keys[channel] for channel in os.environ["AICC_ACCEPTANCE_CHANNEL_IDS"].split(",")}
+payload = {name: os.environ[name] for name in sorted(selected)}
+path = Path(os.environ["AICC_ACCEPTANCE_KEY_FILE"])
+initial = path.lstat()
+flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    opened = os.fstat(handle.fileno())
+    current = path.lstat()
+    if (
+        not stat.S_ISREG(initial.st_mode)
+        or initial.st_mode & 0o077
+        or (initial.st_dev, initial.st_ino) != (opened.st_dev, opened.st_ino)
+        or (initial.st_dev, initial.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise RuntimeError("unsafe acceptance credential file")
+    json.dump(payload, handle, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+unset ARK_API_KEY CHIYUN_API_KEY T8STAR_API_KEY
+
+if [ "${AICC_ACCEPTANCE_ENV_PROBE:-}" = "YES" ]; then
+    [ -z "${ARK_API_KEY+x}" ] && [ -z "${CHIYUN_API_KEY+x}" ] && [ -z "${T8STAR_API_KEY+x}" ] || fail "Offline environment still contains a paid credential."
+    AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py" --probe-key-boundary
     exit 0
 fi
 
@@ -126,7 +209,8 @@ bash "$aicc_repo_root/scripts/security-scan.sh"
 PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" -m pytest -q "$aicc_repo_root/tests"
 npm ci --prefix "$aicc_repo_root/web"
 npm run verify:release --prefix "$aicc_repo_root/web"
-aicc_release_parent=$("$aicc_python" -c 'import tempfile; from pathlib import Path; print(Path(tempfile.mkdtemp(prefix="aicc-paid-acceptance-release.")).resolve())')
+command -v ffprobe >/dev/null 2>&1 || fail "ffprobe is required for paid result decode verification."
+aicc_release_parent=$(mktemp -d "${TMPDIR:-/tmp}/aicc-paid-acceptance-release.XXXXXX") || fail "Could not create an isolated release directory."
 bash "$aicc_repo_root/scripts/build-release.sh" "$aicc_release_parent/full"
 bash "$aicc_repo_root/scripts/build-release.sh" --skip-web-build "$aicc_release_parent/skip"
 
@@ -134,5 +218,6 @@ mkdir -m 700 -p "$(dirname -- "$AICC_ACCEPTANCE_DATA")"
 mkdir -m 700 "$AICC_ACCEPTANCE_DATA"
 git status --porcelain --untracked-files=normal | grep -q . && fail "Acceptance data creation changed the worktree."
 bash "$aicc_repo_root/scripts/security-scan.sh"
-export AICC_ACCEPTANCE_PORT AICC_ACCEPTANCE_DATA AICC_ACCEPTANCE_MODELS_CONFIG AICC_ACCEPTANCE_IMAGE_MODEL_ID AICC_ACCEPTANCE_VIDEO_MODEL_ID
-AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" exec "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py"
+
+export AICC_ACCEPTANCE_PORT AICC_ACCEPTANCE_DATA
+AICC_ACCEPTANCE_KEY_FILE="$aicc_key_file" PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" "$aicc_repo_root/scripts/acceptance_real_media.py"

@@ -9,21 +9,404 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import stat
 import zlib
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPCookieProcessor, Request, build_opener
-from typing import Callable
+from typing import Callable, NamedTuple
 
 
 _SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 _credential_path: str | None = None
+_pool_path: str | None = None
 _child_process: subprocess.Popen[bytes] | None = None
+
+
+_CHANNEL_MODELS = {
+    "banana-chiyun": "banana",
+    "banana-t8star": "banana",
+    "gpt-image2-chiyun": "gpt-image2",
+    "seedream-ark": "seedream",
+    "seedance-ark": "seedance",
+}
+
+_PROMPT_PORT = {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}
+_CHIYUN_CONTRACT = {
+    "operation": "image.edit",
+    "input_ports": [
+        _PROMPT_PORT,
+        {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
+    ],
+    "output_media_type": "image",
+    "parameter_schema": {
+        "type": "object",
+        "properties": {
+            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+            "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
+        },
+        "required": ["size", "output_count"],
+        "additionalProperties": False,
+    },
+    "parameter_mappings": {"size": "size", "output_count": "n"},
+}
+_ARK_IMAGE_CONTRACT = {
+    "operation": "image.edit",
+    "input_ports": [
+        _PROMPT_PORT,
+        {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 14},
+    ],
+    "output_media_type": "image",
+    "parameter_schema": {
+        "type": "object",
+        "properties": {
+            "size": {
+                "type": "string",
+                "default": "2K",
+                "x-ark-size": {
+                    "presets": ["1K", "1.5K", "2K", "3K", "4K"],
+                    "min_pixels": 921600,
+                    "max_pixels": 16777216,
+                    "min_ratio": 0.0625,
+                    "max_ratio": 16,
+                },
+            },
+            "watermark": {"type": "boolean", "default": False},
+            "output_format": {"type": "string", "enum": ["png", "jpeg"], "default": "png"},
+            "prompt_optimization": {"type": "string", "enum": ["standard", "fast"], "default": "standard"},
+        },
+        "additionalProperties": False,
+    },
+    "parameter_mappings": {
+        "size": "size",
+        "watermark": "watermark",
+        "output_format": "output_format",
+        "prompt_optimization": "optimize_prompt_options.mode",
+    },
+}
+_ARK_VIDEO_CONTRACT = {
+    "operation": "video.generate",
+    "input_ports": [_PROMPT_PORT],
+    "output_media_type": "video",
+    "parameter_schema": {
+        "type": "object",
+        "properties": {
+            "ratio": {"type": "string", "enum": ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "default": "16:9"},
+            "resolution": {"type": "string", "enum": ["480p", "720p", "1080p", "4k"], "default": "720p"},
+            "duration": {"type": "integer", "minimum": 4, "maximum": 30, "default": 5},
+            "generate_audio": {"type": "boolean", "default": True},
+            "return_last_frame": {"type": "boolean", "default": False},
+            "watermark": {"type": "boolean", "default": False},
+        },
+        "additionalProperties": False,
+    },
+    "parameter_mappings": {
+        "ratio": "ratio",
+        "resolution": "resolution",
+        "duration": "duration",
+        "generate_audio": "generate_audio",
+        "return_last_frame": "return_last_frame",
+        "watermark": "watermark",
+    },
+}
+_CHANNEL_DEFINITIONS = {
+    "banana-chiyun": ("banana", "chiyun", "gemini-2.5-flash-image", "chiyun_openai_images", "nano-banana", _CHIYUN_CONTRACT),
+    "banana-t8star": ("banana", "t8star", "gemini-2.5-flash-image", "chiyun_openai_images", "nano-banana", _CHIYUN_CONTRACT),
+    "gpt-image2-chiyun": ("gpt-image2", "chiyun", "gpt-image-2", "chiyun_openai_images", "gpt-image", _CHIYUN_CONTRACT),
+    "seedream-ark": ("seedream", "ark", "doubao-seedream-5-0-pro-260628", "ark", "seedream", _ARK_IMAGE_CONTRACT),
+    "seedance-ark": ("seedance", "ark", "doubao-seedance-2-5-260628", "ark", "seedance", _ARK_VIDEO_CONTRACT),
+}
+
+
+class PaidCall(NamedTuple):
+    phase: str
+    channel_id: str | None
+    model_id: str
+    sample_index: int | None = None
+
+
+def paid_call_plan(
+    channel_ids: tuple[str, ...],
+    *,
+    banana_sample_count: int,
+    maximum_paid_calls: int,
+) -> tuple[PaidCall, ...]:
+    if (
+        not channel_ids
+        or len(channel_ids) != len(set(channel_ids))
+        or any(channel not in _CHANNEL_MODELS for channel in channel_ids)
+    ):
+        raise ValueError("paid channel allowlist is invalid")
+    if type(maximum_paid_calls) is not int or not 1 <= maximum_paid_calls <= 20:
+        raise ValueError("paid call budget must be between one and twenty")
+    if type(banana_sample_count) is not int or not 0 <= banana_sample_count <= 20:
+        raise ValueError("Banana sample count is invalid")
+    if banana_sample_count and not any(_CHANNEL_MODELS[channel] == "banana" for channel in channel_ids):
+        raise ValueError("Banana sample requires a selected Banana channel")
+    calls = tuple(PaidCall("smoke", channel, _CHANNEL_MODELS[channel]) for channel in channel_ids) + tuple(
+        PaidCall("banana_sample", None, "banana", index + 1)
+        for index in range(banana_sample_count)
+    )
+    if len(calls) > maximum_paid_calls:
+        raise ValueError("paid call plan exceeds the explicit budget")
+    return calls
+
+
+def execute_paid_plan(
+    plan: tuple[PaidCall, ...],
+    *,
+    activate_channel: Callable[[str], None],
+    activate_banana: Callable[[], None],
+    execute: Callable[[PaidCall], dict[str, object]],
+) -> tuple[dict[str, object], ...]:
+    records: list[dict[str, object]] = []
+    batch_enabled = False
+    for call in plan:
+        if call.phase == "smoke":
+            if call.channel_id is None:
+                raise RuntimeError("paid smoke channel is missing")
+            activate_channel(call.channel_id)
+        elif call.phase == "banana_sample":
+            if not batch_enabled:
+                activate_banana()
+                batch_enabled = True
+        else:
+            raise RuntimeError("paid call phase is invalid")
+        record = execute(call)
+        if record.get("status") != "succeeded":
+            raise RuntimeError("paid acceptance call failed")
+        records.append(record)
+    return tuple(records)
+
+
+def acceptance_definitions(
+    channel_ids: tuple[str, ...],
+    *,
+    chiyun_origin: str,
+    t8star_origin: str,
+) -> dict[str, list[dict[str, object]]]:
+    paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
+    origins = {
+        "chiyun": chiyun_origin,
+        "t8star": t8star_origin,
+        "ark": "https://ark.cn-beijing.volces.com",
+    }
+    providers: list[dict[str, object]] = []
+    models: list[dict[str, object]] = []
+    routes: list[dict[str, object]] = []
+    seen_providers: set[str] = set()
+    seen_models: set[str] = set()
+    active_models: set[str] = set()
+    for priority, channel_id in enumerate(channel_ids, start=1):
+        model_id, provider_id, provider_model_name, adapter_type, family, contract = _CHANNEL_DEFINITIONS[channel_id]
+        if provider_id not in seen_providers:
+            origin = origins[provider_id]
+            if not origin:
+                raise ValueError(f"{provider_id} origin is required")
+            providers.append({
+                "provider_id": provider_id,
+                "display_name": f"Paid acceptance {provider_id}",
+                "adapter_type": adapter_type,
+                "base_url": origin,
+                "credential_ref": "acceptance-only",
+                "enabled": True,
+            })
+            seen_providers.add(provider_id)
+        if model_id not in seen_models:
+            models.append({
+                "model_id": model_id,
+                "display_name": model_id,
+                "introduction": "Bounded paid acceptance model.",
+                "modality": str(contract["output_media_type"]),
+                "operation_contracts": [json.loads(json.dumps(contract))],
+                "enabled": True,
+            })
+            seen_models.add(model_id)
+        routes.append({
+            "route_id": channel_id,
+            "model_id": model_id,
+            "provider_id": provider_id,
+            "provider_model_name": provider_model_name,
+            "adapter_type": adapter_type,
+            "credential_pool_ref": f"paid-{channel_id}",
+            "family": family,
+            "operation_contracts": [json.loads(json.dumps(contract))],
+            "priority": priority,
+            "max_concurrency": 1,
+            "enabled": model_id not in active_models,
+        })
+        active_models.add(model_id)
+    return {"providers": providers, "models": models, "routes": routes}
+
+
+def request_for_paid_call(call: PaidCall, owned_asset_id: str) -> dict[str, object]:
+    if not isinstance(call, PaidCall) or call.model_id not in set(_CHANNEL_MODELS.values()):
+        raise ValueError("paid call is invalid")
+    common: dict[str, object] = {
+        "model_id": call.model_id,
+        "asset_ids": [],
+        "idempotency_key": secrets.token_urlsafe(24),
+    }
+    if call.model_id in {"banana", "gpt-image2"}:
+        return {
+            **common,
+            "operation": "image.edit",
+            "prompt": "Keep the green circle and place it on a clean black background.",
+            "params": {"size": "1024x1024", "output_count": 1},
+            "inputs": {"reference_images": [owned_asset_id]},
+        }
+    if call.model_id == "seedream":
+        return {
+            **common,
+            "operation": "image.edit",
+            "prompt": "Keep the green circle and place it on a clean black background.",
+            "params": {"size": "1K", "watermark": False, "output_format": "png", "prompt_optimization": "fast"},
+            "inputs": {"reference_images": [owned_asset_id]},
+        }
+    return {
+        **common,
+        "operation": "video.generate",
+        "prompt": "A green circle moves slowly across a black background.",
+        "params": {"ratio": "16:9", "resolution": "480p", "duration": 5, "generate_audio": False, "watermark": False, "return_last_frame": False},
+        "inputs": {},
+    }
+
+
+def write_credential_pool_config(
+    path: Path,
+    channel_ids: tuple[str, ...],
+    keys: dict[str, str],
+) -> None:
+    paid_call_plan(channel_ids, banana_sample_count=0, maximum_paid_calls=len(channel_ids))
+    key_names = {
+        "banana-chiyun": "CHIYUN_API_KEY",
+        "banana-t8star": "T8STAR_API_KEY",
+        "gpt-image2-chiyun": "CHIYUN_API_KEY",
+        "seedream-ark": "ARK_API_KEY",
+        "seedance-ark": "ARK_API_KEY",
+    }
+    groups = {"chiyun": "chiyun", "t8star": "gemini", "ark": "official"}
+    selected = {key_names[channel] for channel in channel_ids}
+    if (
+        not selected <= set(keys)
+        or any(
+            not isinstance(keys[name], str)
+            or not 8 <= len(keys[name]) <= 4096
+            or any(char in keys[name] for char in "\r\n\0")
+            for name in selected
+        )
+    ):
+        raise RuntimeError("selected paid credential is unavailable")
+    pools: dict[str, object] = {}
+    for channel in channel_ids:
+        _model_id, provider_id, _provider_model, _adapter, family, _contract = _CHANNEL_DEFINITIONS[channel]
+        pools[f"paid-{channel}"] = {
+            "provider": provider_id,
+            "group": groups[provider_id],
+            "allowed_families": [family],
+            "keys": [{"id": "acceptance-credential", "api_key": keys[key_names[channel]], "max_concurrency": 1}],
+        }
+    candidate = Path(path)
+    if candidate.exists() or candidate.is_symlink() or not candidate.parent.is_dir() or candidate.parent.is_symlink():
+        raise RuntimeError("acceptance credential pool path is unsafe")
+    temporary = candidate.with_name(f".{candidate.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            os.chmod(temporary, 0o600)
+            json.dump({"version": 1, "pools": pools}, handle, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, candidate)
+        os.chmod(candidate, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def create_acceptance_app(
+    *,
+    data_dir: Path,
+    static_dir: Path,
+    port: int,
+    credential_pool_path: Path,
+    channel_ids: tuple[str, ...],
+    chiyun_origin: str,
+    t8star_origin: str,
+):
+    from ai_creation_canvas.app import create_app
+    from ai_creation_canvas.config import Settings
+    from ai_creation_canvas.domain.models import ModelInputPort
+    from ai_creation_canvas.model_registry import OperationContract, ProviderDefinition
+    from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition
+    from ai_creation_canvas.storage.sqlite import CanvasStore
+
+    definitions = acceptance_definitions(
+        channel_ids,
+        chiyun_origin=chiyun_origin,
+        t8star_origin=t8star_origin,
+    )
+    store = CanvasStore(data_dir)
+
+    def contract(value: dict[str, object]) -> OperationContract:
+        raw_ports = value["input_ports"]
+        assert isinstance(raw_ports, list)
+        ports = tuple(
+            ModelInputPort(
+                str(item["port_id"]), str(item["media_type"]), int(item["min_items"]), int(item["max_items"]),
+            )
+            for item in raw_ports
+            if isinstance(item, dict)
+        )
+        schema = value["parameter_schema"]
+        mappings = value["parameter_mappings"]
+        assert isinstance(schema, dict) and isinstance(mappings, dict)
+        return OperationContract(str(value["operation"]), ports, str(value["output_media_type"]), schema, mappings)
+
+    for item in definitions["providers"]:
+        store.create_provider_definition(ProviderDefinition(**item), actor_user_id="paid-acceptance")
+    for item in definitions["models"]:
+        raw_contracts = item["operation_contracts"]
+        assert isinstance(raw_contracts, list)
+        store.create_logical_model(LogicalModelDefinition(
+            str(item["model_id"]), str(item["display_name"]), str(item["introduction"]), str(item["modality"]),
+            tuple(contract(value) for value in raw_contracts if isinstance(value, dict)), bool(item["enabled"]),
+        ), actor_user_id="paid-acceptance")
+    for item in definitions["routes"]:
+        raw_contracts = item["operation_contracts"]
+        assert isinstance(raw_contracts, list)
+        store.create_model_route(ModelRouteDefinition(
+            str(item["route_id"]), str(item["model_id"]), str(item["provider_id"]), str(item["provider_model_name"]),
+            str(item["adapter_type"]), str(item["credential_pool_ref"]), str(item["family"]),
+            tuple(contract(value) for value in raw_contracts if isinstance(value, dict)),
+            int(item["priority"]), int(item["max_concurrency"]), bool(item["enabled"]),
+        ), actor_user_id="paid-acceptance")
+    origin = f"http://127.0.0.1:{port}"
+    app = create_app(
+        Settings(
+            environment="development",
+            port=port,
+            data_dir=data_dir,
+            portal_internal_token="paid-acceptance-local-secret",
+            identity_mode="local",
+            allowed_origins=(origin,),
+            credential_pools_path=credential_pool_path,
+            credential_pools_root=credential_pool_path.parent,
+        ),
+        static_dir=static_dir,
+        canvas_store=store,
+    )
+    runtime = app.state.managed_routing_runtime
+    if runtime is None:
+        raise RuntimeError("paid managed routing runtime is unavailable")
+    for route in store.list_model_routes(include_archived=False):
+        runtime.adapter_factory.validate_route(route)
+    accounts = app.state.local_auth.bootstrap_accounts(())
+    return app, accounts
 
 
 def _stop_child() -> None:
@@ -39,11 +422,22 @@ def _stop_child() -> None:
 
 
 def _remove_credential_file() -> None:
-    global _credential_path
-    path_text = _credential_path or os.environ.get("AICC_ACCEPTANCE_KEY_FILE", "")
+    global _credential_path, _pool_path
+    paths = {
+        path
+        for path in (
+            _credential_path,
+            _pool_path,
+            os.environ.get("AICC_ACCEPTANCE_KEY_FILE", ""),
+            os.environ.get("AICC_ACCEPTANCE_POOL_FILE", ""),
+        )
+        if path
+    }
     _credential_path = None
+    _pool_path = None
     os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", None)
-    if path_text:
+    os.environ.pop("AICC_ACCEPTANCE_POOL_FILE", None)
+    for path_text in paths:
         Path(path_text).unlink(missing_ok=True)
 
 
@@ -54,8 +448,9 @@ def _signal_cleanup(signum: int, _frame: object) -> None:
 
 
 def _install_signal_cleanup() -> None:
-    global _credential_path
+    global _credential_path, _pool_path
     _credential_path = os.environ.get("AICC_ACCEPTANCE_KEY_FILE")
+    _pool_path = os.environ.get("AICC_ACCEPTANCE_POOL_FILE")
     for item in _SIGNALS:
         signal.signal(item, _signal_cleanup)
 
@@ -82,8 +477,27 @@ def paid_job_requests(image_model: str, video_model: str, owned_asset_id: str, i
     return paid_image_request(image_model, owned_asset_id), paid_video_request(video_model, image_result_asset_id)
 
 
-def sanitized_result_record(*, kind: str, job_id: str, model_id: str, status: str, mime: str, byte_count: int, duration_seconds: float) -> dict[str, object]:
-    return {"kind": kind, "job_id": job_id, "model_id": model_id, "status": status, "mime": mime, "bytes": byte_count, "duration_seconds": round(duration_seconds, 2)}
+def sanitized_result_record(
+    *,
+    phase: str,
+    logical_model: str,
+    selected_channel: str,
+    status: str,
+    mime: str,
+    byte_count: int,
+    duration_seconds: float,
+    user_id: str,
+) -> dict[str, object]:
+    return {
+        "phase": phase,
+        "logical_model": logical_model,
+        "selected_channel": selected_channel,
+        "status": status,
+        "mime": mime,
+        "bytes": byte_count,
+        "duration_seconds": round(duration_seconds, 2),
+        "user_id": user_id,
+    }
 
 
 def render_record(record: dict[str, object]) -> str:
@@ -99,24 +513,108 @@ def reference_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(row * 64, 9)) + chunk(b"IEND", b"")
 
 
-def consume_server_key() -> str:
+def verify_media_file(path: Path, mime: str, kind: str) -> dict[str, object]:
+    allowed = {
+        "image": {"image/png", "image/jpeg", "image/webp"},
+        "video": {"video/mp4", "video/webm", "video/quicktime"},
+    }
+    candidate = Path(path)
+    if kind not in allowed or mime not in allowed[kind] or candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size < 8:
+        raise RuntimeError("paid result media contract failed")
+    executable = shutil.which("ffprobe")
+    if executable is None:
+        raise RuntimeError("paid result decoder is unavailable")
+    result = subprocess.run(
+        [
+            executable,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=codec_type,width,height:format=duration",
+            "-of", "json",
+            str(candidate),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    try:
+        payload = json.loads(result.stdout) if result.returncode == 0 else {}
+        streams = payload["streams"]
+        stream = streams[0]
+        projection = {
+            "codec_type": stream["codec_type"],
+            "width": int(stream["width"]),
+            "height": int(stream["height"]),
+        }
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        raise RuntimeError("paid result decode failed") from None
+    if projection["codec_type"] != "video" or projection["width"] <= 0 or projection["height"] <= 0:
+        raise RuntimeError("paid result decode failed")
+    if kind == "video":
+        try:
+            duration = float(payload["format"]["duration"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("paid result decode failed") from None
+        if duration <= 0:
+            raise RuntimeError("paid result decode failed")
+    return projection
+
+
+def consume_server_keys() -> dict[str, str]:
     global _credential_path
-    if "ARK_API_KEY" in os.environ:
+    allowed = {"ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY"}
+    if any(name in os.environ for name in allowed):
         raise RuntimeError("paid credential leaked into acceptance environment")
     path_text = os.environ.pop("AICC_ACCEPTANCE_KEY_FILE", "") or _credential_path or ""
     path = Path(path_text)
     try:
         details = path.lstat()
-        if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077:
+        if not stat.S_ISREG(details.st_mode) or details.st_mode & 0o077 or not 1 <= details.st_size <= 16 * 1024:
             raise RuntimeError("unsafe acceptance credential file")
-        value = path.read_text(encoding="utf-8")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            current = path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_mode & 0o077
+                or (details.st_dev, details.st_ino) != (opened.st_dev, opened.st_ino)
+                or (details.st_dev, details.st_ino) != (current.st_dev, current.st_ino)
+            ):
+                raise RuntimeError("unsafe acceptance credential file")
+            raw = handle.read(16 * 1024 + 1)
     finally:
         if path_text:
             path.unlink(missing_ok=True)
         _credential_path = None
-    if len(value) < 8 or len(value) > 4096 or any(char in value for char in "\r\n\0"):
-        raise RuntimeError("invalid acceptance credential")
-    return value
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, ValueError, UnboundLocalError):
+        raise RuntimeError("invalid acceptance credential bundle") from None
+    if (
+        not isinstance(payload, dict)
+        or not payload
+        or not set(payload) <= allowed
+        or any(
+            not isinstance(value, str)
+            or not 8 <= len(value) <= 4096
+            or any(char in value for char in "\r\n\0")
+            for value in payload.values()
+        )
+    ):
+        raise RuntimeError("invalid acceptance credential bundle")
+    return dict(payload)
+
+
+def consume_server_key() -> str:
+    """Compatibility wrapper for the pre-routing Ark-only probe."""
+    values = consume_server_keys()
+    if set(values) != {"ARK_API_KEY"}:
+        raise RuntimeError("invalid Ark-only acceptance credential")
+    return values["ARK_API_KEY"]
 
 
 def server_environment(api_key: str) -> dict[str, str]:
@@ -125,6 +623,21 @@ def server_environment(api_key: str) -> dict[str, str]:
     environment["ARK_API_KEY"] = api_key
     environment["PYTHONUNBUFFERED"] = "1"
     return environment
+
+
+class PaidDownload(NamedTuple):
+    job_id: str
+    result_asset_id: str
+    result_url: str
+    mime: str
+    byte_count: int
+    duration_seconds: float
+
+
+class ApiStatusError(RuntimeError):
+    def __init__(self, status: int) -> None:
+        super().__init__("acceptance API request failed")
+        self.status = status
 
 
 class ApiSession:
@@ -153,7 +666,7 @@ class ApiSession:
     def json(self, method: str, path: str, payload: object | None = None, expected: tuple[int, ...] = (200,)) -> dict[str, object]:
         status, _headers, body = self.request(method, path, payload)
         if status not in expected:
-            raise RuntimeError(f"api status {status}")
+            raise ApiStatusError(status)
         value = json.loads(body) if body else {}
         if not isinstance(value, dict):
             raise RuntimeError("invalid api response")
@@ -192,15 +705,31 @@ class ApiSession:
         if not path.startswith("/api/v1/results/") or path.startswith("//"):
             raise RuntimeError("unsafe result path")
         request = Request(self.origin + path, headers={"Accept": "*/*", "Origin": self.origin}, method="GET")
-        with self.opener.open(request, timeout=180) as response:
-            mime = response.headers.get_content_type()
-            total = 0
-            while True:
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
+        temporary_path: Path | None = None
+        try:
+            with self.opener.open(request, timeout=180) as response:
+                mime = response.headers.get_content_type()
+                suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}.get(mime, ".media")
+                with tempfile.NamedTemporaryFile(prefix="aicc-paid-result.", suffix=suffix, delete=False) as output:
+                    temporary_path = Path(output.name)
+                    os.chmod(temporary_path, 0o600)
+                    total = 0
+                    while True:
+                        chunk = response.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > 256 * 1024 * 1024:
+                            raise RuntimeError("paid result exceeded the acceptance limit")
+                        output.write(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+            kind = "image" if mime.startswith("image/") else "video" if mime.startswith("video/") else ""
+            verify_media_file(temporary_path, mime, kind)
             return mime, total
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
 
 def _project_document(asset_id: str, image_model: str, video_model: str, asset_bytes: int) -> dict[str, object]:
@@ -219,7 +748,7 @@ def _project_document(asset_id: str, image_model: str, video_model: str, asset_b
     return {"id": "paid-acceptance-canvas", "title": "Paid acceptance", "createdAt": now, "updatedAt": now, "nodes": nodes, "connections": connections, "chatSessions": [], "activeChatId": None, "backgroundMode": "lines", "showImageInfo": False, "viewport": {"x": 0, "y": 0, "k": 1}, "graphSchemaVersion": 1}
 
 
-def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, object], kind: str) -> tuple[dict[str, object], str, str]:
+def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, object], kind: str) -> PaidDownload:
     started = time.monotonic()
     created = user.json("POST", "/api/v1/jobs", payload, expected=(201,))
     job_id = str(created["id"])
@@ -235,6 +764,8 @@ def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, o
     results = state.get("results")
     if not isinstance(results, list) or len(results) < 1 or not isinstance(results[0], dict):
         raise RuntimeError("result contract missing")
+    if results[0].get("media_type") != kind:
+        raise RuntimeError("result media type contract failed")
     result_url, result_asset_id = str(results[0].get("url", "")), str(results[0].get("asset_id", ""))
     if other.request("GET", result_url)[0] != 404:
         raise RuntimeError("result owner isolation failed")
@@ -243,10 +774,13 @@ def _poll_and_download(user: ApiSession, other: ApiSession, payload: dict[str, o
     if head_status != 200 or range_status != 206 or not range_body or "content-range" not in range_headers:
         raise RuntimeError("result streaming contract failed")
     mime, byte_count = user.download(result_url)
-    if head_headers.get("content-type", "").split(";", 1)[0] != mime:
+    allowed_mime = {"image": {"image/png", "image/jpeg", "image/webp"}, "video": {"video/mp4", "video/webm", "video/quicktime"}}
+    if kind not in allowed_mime or mime not in allowed_mime[kind] or head_headers.get("content-type", "").split(";", 1)[0] != mime:
         raise RuntimeError("result MIME contract failed")
-    record = sanitized_result_record(kind=kind, job_id=job_id, model_id=str(payload["model_id"]), status="succeeded", mime=mime, byte_count=byte_count, duration_seconds=time.monotonic() - started)
-    return record, result_asset_id, result_url
+    replayed = user.json("POST", "/api/v1/jobs", payload, expected=(201,))
+    if str(replayed.get("id", "")) != job_id or replayed.get("status") != "succeeded":
+        raise RuntimeError("job idempotency contract failed")
+    return PaidDownload(job_id, result_asset_id, result_url, mime, byte_count, time.monotonic() - started)
 
 
 def _credentials(log_path: Path, process: subprocess.Popen[bytes]) -> tuple[str, str]:
@@ -280,6 +814,180 @@ def run_paid_graph(user: ApiSession, admin: ApiSession, model_ids: list[str], em
     emit(render_record(video_record))
 
 
+def _set_model_routes(admin: ApiSession, model_id: str, enabled_route_ids: set[str]) -> None:
+    payload = admin.json("GET", f"/api/v1/admin/logical-models/{model_id}/routes")
+    routes = payload.get("routes")
+    if not isinstance(routes, list):
+        raise RuntimeError("acceptance route list is invalid")
+    observed = {str(item.get("route_id")) for item in routes if isinstance(item, dict)}
+    if not enabled_route_ids <= observed:
+        raise RuntimeError("acceptance route is unavailable")
+    for raw in routes:
+        if not isinstance(raw, dict):
+            raise RuntimeError("acceptance route is invalid")
+        route_id = str(raw.get("route_id", ""))
+        want = route_id in enabled_route_ids
+        if bool(raw.get("enabled")) == want:
+            continue
+        revision = raw.get("revision")
+        if type(revision) is not int:
+            raise RuntimeError("acceptance route revision is invalid")
+        action = "enable" if want else "disable"
+        updated = admin.json(
+            "POST",
+            f"/api/v1/admin/logical-models/{model_id}/routes/{route_id}/{action}",
+            {"revision": revision},
+        )
+        if updated.get("enabled") is not want:
+            raise RuntimeError("acceptance route lifecycle failed")
+
+
+def _failure_class(error: Exception) -> str:
+    if isinstance(error, ApiStatusError):
+        if error.status in {408, 429}:
+            return "retryable_http"
+        if 400 <= error.status < 500:
+            return "business_4xx"
+        if error.status >= 500:
+            return "service_5xx"
+    if isinstance(error, (URLError, TimeoutError)):
+        return "transport"
+    return "acceptance_contract"
+
+
+def _failure_record(call: PaidCall, *, selected_channel: str, user_id: str, error: Exception) -> dict[str, object]:
+    return {
+        "phase": call.phase,
+        "logical_model": call.model_id,
+        "selected_channel": selected_channel,
+        "status": "failed",
+        "failure_class": _failure_class(error),
+        "user_id": user_id,
+    }
+
+
+def _summary_record(records: tuple[dict[str, object], ...], *, user_id: str) -> dict[str, object]:
+    distribution: dict[str, int] = {}
+    durations: list[float] = []
+    total_bytes = 0
+    for record in records:
+        channel = str(record["selected_channel"])
+        distribution[channel] = distribution.get(channel, 0) + 1
+        durations.append(float(record["duration_seconds"]))
+        total_bytes += int(record["bytes"])
+    return {
+        "phase": "summary",
+        "status": "succeeded",
+        "calls": len(records),
+        "channel_distribution": distribution,
+        "failure_classes": {},
+        "latency_seconds": {
+            "minimum": round(min(durations), 2),
+            "maximum": round(max(durations), 2),
+            "total": round(sum(durations), 2),
+        },
+        "bytes": total_bytes,
+        "user_id": user_id,
+    }
+
+
+def run_guarded_paid_acceptance(
+    *,
+    admin: ApiSession,
+    user: ApiSession,
+    data_dir: Path,
+    channel_ids: tuple[str, ...],
+    model_ids: tuple[str, ...],
+    plan: tuple[PaidCall, ...],
+    user_id: str,
+    emit: Callable[[str], None],
+) -> tuple[dict[str, object], ...]:
+    from ai_creation_canvas.storage.sqlite import CanvasStore
+
+    owned_asset_id = user.upload_reference_png()
+    if admin.request("GET", f"/api/v1/assets/{owned_asset_id}")[0] not in {403, 404}:
+        raise RuntimeError("asset owner isolation failed")
+    assigned = admin.json("PUT", f"/api/v1/admin/users/{user_id}/models", {"model_ids": list(model_ids)})
+    if set(assigned.get("model_ids", [])) != set(model_ids):
+        raise RuntimeError("model assignment failed")
+    visible = user.json("GET", "/api/v1/models").get("models")
+    if not isinstance(visible, list) or {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
+        raise RuntimeError("model assignment isolation failed")
+    store = CanvasStore(data_dir)
+    banana_routes = {channel for channel in channel_ids if _CHANNEL_MODELS[channel] == "banana"}
+
+    def activate_channel(channel_id: str) -> None:
+        _set_model_routes(admin, _CHANNEL_MODELS[channel_id], {channel_id})
+
+    def activate_banana() -> None:
+        if not banana_routes:
+            raise RuntimeError("Banana batch route is unavailable")
+        _set_model_routes(admin, "banana", banana_routes)
+
+    def execute(call: PaidCall) -> dict[str, object]:
+        expected_channel = call.channel_id or "unresolved"
+        try:
+            payload = request_for_paid_call(call, owned_asset_id)
+            kind = "video" if payload["operation"] == "video.generate" else "image"
+            result = _poll_and_download(user, admin, payload, kind)
+            item, forbidden = store.job_for_owner(result.job_id, user_id)
+            if forbidden or item is None or item.get("user_id") != user_id or item.get("logical_model_id") != call.model_id:
+                raise RuntimeError("stored job owner contract failed")
+            selected_channel = str(item.get("route_id", ""))
+            if selected_channel not in channel_ids or call.channel_id is not None and selected_channel != call.channel_id:
+                raise RuntimeError("stored job route contract failed")
+            if item.get("idempotency_key") != payload["idempotency_key"]:
+                raise RuntimeError("stored job idempotency contract failed")
+            record = sanitized_result_record(
+                phase=call.phase,
+                logical_model=call.model_id,
+                selected_channel=selected_channel,
+                status="succeeded",
+                mime=result.mime,
+                byte_count=result.byte_count,
+                duration_seconds=result.duration_seconds,
+                user_id=user_id,
+            )
+            emit(render_record(record))
+            return record
+        except Exception as error:
+            emit(render_record(_failure_record(call, selected_channel=expected_channel, user_id=user_id, error=error)))
+            raise
+
+    records = execute_paid_plan(
+        plan,
+        activate_channel=activate_channel,
+        activate_banana=activate_banana,
+        execute=execute,
+    )
+    emit(render_record(_summary_record(records, user_id=user_id)))
+    return records
+
+
+def _serve_paid() -> None:
+    import uvicorn
+
+    root = Path(__file__).resolve().parents[1]
+    data_dir = Path(os.environ["AICC_ACCEPTANCE_DATA"])
+    pool_path = Path(os.environ["AICC_ACCEPTANCE_POOL_FILE"])
+    port = int(os.environ["AICC_ACCEPTANCE_PORT"])
+    channels = tuple(os.environ["AICC_ACCEPTANCE_CHANNEL_IDS"].split(","))
+    app, accounts = create_acceptance_app(
+        data_dir=data_dir,
+        static_dir=root / "web/dist",
+        port=port,
+        credential_pool_path=pool_path,
+        channel_ids=channels,
+        chiyun_origin=os.environ.get("AICC_CHIYUN_BASE_URL", ""),
+        t8star_origin=os.environ.get("AICC_T8STAR_BASE_URL", ""),
+    )
+    if not accounts.created:
+        raise RuntimeError("isolated acceptance accounts were not created")
+    print(f"{accounts.admin_username}: {accounts.admin_password}", flush=True)
+    print(f"{accounts.user_username}: {accounts.user_password}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+
 def _probe_file(value: str) -> None:
     path = Path(os.environ["AICC_ACCEPTANCE_SIGNAL_PROBE_FILE"])
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -311,20 +1019,34 @@ def _probe_signal_server() -> None:
 
 
 def main() -> int:
-    api_key = consume_server_key()
+    global _pool_path
+    keys = consume_server_keys()
     root = Path(__file__).resolve().parents[1]
     data_dir = Path(os.environ["AICC_ACCEPTANCE_DATA"])
     port = int(os.environ["AICC_ACCEPTANCE_PORT"])
     origin = f"http://127.0.0.1:{port}"
     server_log = data_dir / ".server-bootstrap.log"
     server_log.touch(mode=0o600)
-    environment = server_environment(api_key)
+    channels = tuple(os.environ["AICC_ACCEPTANCE_CHANNEL_IDS"].split(","))
+    model_ids = tuple(os.environ["AICC_ACCEPTANCE_MODEL_IDS"].split(","))
+    plan = paid_call_plan(
+        channels,
+        banana_sample_count=int(os.environ["AICC_ACCEPTANCE_BANANA_SAMPLE_COUNT"]),
+        maximum_paid_calls=int(os.environ["AICC_MAX_PAID_CALLS"]),
+    )
+    pool_path = data_dir / ".credential-pools.json"
+    write_credential_pool_config(pool_path, channels, keys)
+    _pool_path = str(pool_path)
+    environment = dict(os.environ)
+    environment.pop("AICC_ACCEPTANCE_KEY_FILE", None)
+    environment["AICC_ACCEPTANCE_POOL_FILE"] = str(pool_path)
+    environment["PYTHONUNBUFFERED"] = "1"
     with server_log.open("ab", buffering=0) as output:
         process = _spawn_child(
-            [sys.executable, "-m", "ai_creation_canvas", "serve-local", "--port", str(port), "--data-dir", str(data_dir), "--static-dir", str(root / "web/dist"), "--ark-models", os.environ["AICC_ACCEPTANCE_MODELS_CONFIG"], "--bootstrap-if-empty"],
+            [sys.executable, str(Path(__file__).resolve()), "--serve-paid"],
             cwd=root, environment=environment, stdout=output, stderr=output,
         )
-        del api_key, environment
+        del keys, environment
         try:
             admin_password, user_password = _credentials(server_log, process)
             admin, user = ApiSession(origin), ApiSession(origin)
@@ -333,12 +1055,16 @@ def main() -> int:
             server_log.unlink(missing_ok=True)
             users = admin.json("GET", "/api/v1/admin/users").get("users", [])
             user_id = next(str(item["user_id"]) for item in users if isinstance(item, dict) and item.get("username") == "canvas-user")
-            model_ids = [os.environ["AICC_ACCEPTANCE_IMAGE_MODEL_ID"], os.environ["AICC_ACCEPTANCE_VIDEO_MODEL_ID"]]
-            admin.json("PUT", f"/api/v1/admin/users/{user_id}/models", {"model_ids": model_ids})
-            visible = user.json("GET", "/api/v1/models").get("models", [])
-            if {item.get("model_id") for item in visible if isinstance(item, dict)} != set(model_ids):
-                raise RuntimeError("model assignment isolation failed")
-            run_paid_graph(user, admin, model_ids, lambda line: print(line, flush=True))
+            run_guarded_paid_acceptance(
+                admin=admin,
+                user=user,
+                data_dir=data_dir,
+                channel_ids=channels,
+                model_ids=model_ids,
+                plan=plan,
+                user_id=user_id,
+                emit=lambda line: print(line, flush=True),
+            )
             del user_info
             return 0
         except (KeyError, StopIteration, ValueError, RuntimeError, URLError, json.JSONDecodeError):
@@ -347,17 +1073,18 @@ def main() -> int:
         finally:
             server_log.unlink(missing_ok=True)
             _stop_child()
+            pool_path.unlink(missing_ok=True)
+            _pool_path = None
 
 
 if __name__ == "__main__":
     _install_signal_cleanup()
     try:
         if sys.argv[1:] == ["--probe-key-boundary"]:
-            probe_key = consume_server_key()
-            probe_environment = server_environment(probe_key)
-            if "ARK_API_KEY" in os.environ or probe_environment.get("ARK_API_KEY") != probe_key:
+            probe_values = consume_server_keys()
+            if not probe_values or any(name in os.environ for name in ("ARK_API_KEY", "CHIYUN_API_KEY", "T8STAR_API_KEY")):
                 raise RuntimeError("paid credential boundary failed")
-            del probe_key, probe_environment
+            del probe_values
             print("Paid acceptance key boundary ready. No provider request was made.")
             result = 0
         elif sys.argv[1:] == ["--probe-signal-before-key"]:
@@ -366,6 +1093,9 @@ if __name__ == "__main__":
         elif sys.argv[1:] == ["--probe-signal-server"]:
             _probe_signal_server()
             result = 1
+        elif sys.argv[1:] == ["--serve-paid"]:
+            _serve_paid()
+            result = 0
         elif sys.argv[1:]:
             raise RuntimeError("unsupported acceptance argument")
         else:
@@ -373,4 +1103,7 @@ if __name__ == "__main__":
     except Exception:
         print('{"status":"failed","stage":"paid_acceptance"}', file=sys.stderr, flush=True)
         result = 1
+    finally:
+        _stop_child()
+        _remove_credential_file()
     raise SystemExit(result)
