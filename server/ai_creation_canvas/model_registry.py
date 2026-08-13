@@ -19,7 +19,7 @@ from ai_creation_canvas.parameter_schema import validate_parameter_schema
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _CREDENTIAL_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-_ADAPTER_TYPES = frozenset({"ark", "chiyun_openai_images", "portal_jobs", "portal_portrait", "demo"})
+_ADAPTER_TYPES = frozenset({"ark", "chiyun_gemini_images", "chiyun_openai_images", "portal_jobs", "portal_portrait", "demo"})
 _PARAMETER_TARGET = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)?\Z")
 
 

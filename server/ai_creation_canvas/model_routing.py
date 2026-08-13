@@ -15,7 +15,7 @@ from ai_creation_canvas.model_registry import ModelModality, OperationContract
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _REFERENCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-_ADAPTER_TYPES = frozenset({"ark", "chiyun_openai_images", "portal_jobs", "portal_portrait", "demo"})
+_ADAPTER_TYPES = frozenset({"ark", "chiyun_gemini_images", "chiyun_openai_images", "portal_jobs", "portal_portrait", "demo"})
 _MAX_CONTRACT_BYTES = 64 * 1024
 _MAX_PARAMETERS = 64
 

@@ -23,7 +23,7 @@ ORIGIN = "http://127.0.0.1:45996"
 
 def image_contract() -> dict[str, object]:
     from ai_creation_canvas.trusted_routing import trusted_route_presets
-    return trusted_route_presets()[("banana", "t8star")].operation_contracts[0].to_dict()
+    return trusted_route_presets()[("banana", "chiyun")].operation_contracts[0].to_dict()
 
 
 def video_contract() -> dict[str, object]:
@@ -46,9 +46,9 @@ def route_body(route_id: str = "banana-t8", *, model_id: str = "banana", video: 
     return {
         "route_id": route_id,
         "model_id": model_id,
-        "provider_id": "ark" if video else "t8star",
+        "provider_id": "ark" if video else "chiyun-banana",
         "provider_model_name": "doubao-seedance-2-5-260628" if video else "gemini-2.5-flash-image",
-        "adapter_type": "ark" if video else "chiyun_openai_images",
+        "adapter_type": "ark" if video else "chiyun_gemini_images",
         "credential_pool_ref": "seedance-official" if video else "t8-gemini",
         "family": "seedance" if video else "nano-banana",
         "operation_contracts": [video_contract() if video else image_contract()],
@@ -64,10 +64,11 @@ def _pool(pool_id: str, provider: str, group: str, family: str, key_id: str, sec
 
 def clients(tmp_path):
     store = CanvasStore(tmp_path / "data")
+    store.create_provider_definition(ProviderDefinition("chiyun-banana", "Chiyun Banana", "chiyun_gemini_images", "https://chiyun.work", "unused"), actor_user_id="bootstrap")
     store.create_provider_definition(ProviderDefinition("t8star", "T8", "chiyun_openai_images", "https://t8.example", "unused"), actor_user_id="bootstrap")
     store.create_provider_definition(ProviderDefinition("ark", "Ark", "ark", "https://ark.cn-beijing.volces.com", "unused"), actor_user_id="bootstrap")
     pools = {
-        "t8-gemini": _pool("t8-gemini", "t8star", "gemini", "nano-banana", "gemini-key-1", "gemini-test-secret"),
+        "t8-gemini": _pool("t8-gemini", "chiyun-banana", "banana", "nano-banana", "gemini-key-1", "gemini-test-secret"),
         "t8-cc": _pool("t8-cc", "t8star", "cc", "claude", "cc-key-1", "cc-test-secret"),
         "seedance-official": _pool("seedance-official", "ark", "official", "seedance", "ark-key-1", "ark-test-secret", 3),
     }
@@ -76,6 +77,7 @@ def clients(tmp_path):
         data_dir=tmp_path / "data",
         asset_loader=lambda asset_id: (_ for _ in ()).throw(KeyError(asset_id)),
         provider_protocols={
+            "chiyun-banana": ProviderProtocol("chiyun-banana", "chiyun_gemini_images", "https://chiyun.work"),
             "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
             "ark": ProviderProtocol("ark", "ark", "https://ark.cn-beijing.volces.com"),
         },
@@ -117,7 +119,9 @@ def test_admin_logical_model_round_trip_for_image_and_video(tmp_path) -> None:
 
     listed = admin.get("/api/v1/admin/logical-models")
     assert [item["model_id"] for item in listed.json()["models"]] == ["banana", "seedance"]
-    assert admin.get("/api/v1/admin/logical-models/banana").json()["operation_contracts"][0]["parameter_mappings"]["size"] == "size"
+    assert admin.get("/api/v1/admin/logical-models/banana").json()["operation_contracts"][0]["parameter_mappings"] == {
+        "aspect_ratio": "aspectRatio", "image_size": "imageSize",
+    }
 
     update = model_body()
     update.update({"display_name": "Banana Updated", "revision": 1})
@@ -170,7 +174,7 @@ def test_pool_summaries_are_safe_and_use_live_local_capacity(tmp_path) -> None:
     assert {item["pool_id"] for item in summaries} == set(pools)
     gemini = next(item for item in summaries if item["pool_id"] == "t8-gemini")
     seedance = next(item for item in summaries if item["pool_id"] == "seedance-official")
-    assert gemini["adapter_type"] == "chiyun_openai_images"
+    assert gemini["adapter_type"] == "chiyun_gemini_images"
     assert seedance["adapter_type"] == "ark"
     assert gemini["total_capacity"] == 2
     assert gemini["available_count"] == 2

@@ -345,7 +345,7 @@ class ModelRouteCreate(BaseModel):
     model_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
     provider_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
     provider_model_name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-    adapter_type: Literal["ark", "chiyun_openai_images"]
+    adapter_type: Literal["ark", "chiyun_gemini_images", "chiyun_openai_images"]
     credential_pool_ref: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     family: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     operation_contracts: list[OperationContractBody] = Field(min_length=1, max_length=8)

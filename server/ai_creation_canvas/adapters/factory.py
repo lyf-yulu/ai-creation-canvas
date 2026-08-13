@@ -21,6 +21,11 @@ from ai_creation_canvas.model_routing import ModelRouteDefinition
 
 
 _ARK_URL = "https://ark.cn-beijing.volces.com"
+_CODE_OWNED_PROTOCOLS = frozenset({
+    ("ark", "ark", _ARK_URL),
+    ("chiyun-banana", "chiyun_gemini_images", "https://chiyun.work"),
+    ("chiyun-gpt-image2", "chiyun_openai_images", "https://chiyun.work"),
+})
 _PROTOCOL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _ARK_IMAGE_TARGETS = frozenset({
     "size", "quality", "n", "strength", "watermark", "output_format",
@@ -66,6 +71,10 @@ _CHIYUN_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProx
     "size": ("size", {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"}),
     "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 4, "default": 1}),
 })
+_CHIYUN_GEMINI_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
+    "aspect_ratio": ("aspectRatio", {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1"}),
+    "image_size": ("imageSize", {"type": "string", "enum": ["1K", "2K", "4K"], "default": "2K"}),
+})
 _RULE_KEYS = frozenset({"type", "enum", "minimum", "maximum", "default", "x-ark-size", "title", "description", "x-ui-visible-when"})
 
 
@@ -90,7 +99,7 @@ class ProviderProtocol:
     def __post_init__(self) -> None:
         if not isinstance(self.provider_id, str) or _PROTOCOL_ID.fullmatch(self.provider_id) is None:
             raise ValueError("provider protocol ID is invalid")
-        if self.adapter_type not in {"ark", "chiyun_openai_images"}:
+        if self.adapter_type not in {"ark", "chiyun_gemini_images", "chiyun_openai_images"}:
             raise ValueError("provider protocol adapter is unsupported")
         parsed = urlsplit(self.base_url)
         try:
@@ -109,7 +118,7 @@ class ProviderProtocol:
         ):
             raise ValueError("provider protocol origin is invalid")
         origin = f"https://{parsed.netloc}"
-        if not self._readonly_deployment_approved and (self.provider_id, self.adapter_type, origin) != ("ark", "ark", _ARK_URL):
+        if not self._readonly_deployment_approved and (self.provider_id, self.adapter_type, origin) not in _CODE_OWNED_PROTOCOLS:
             raise ValueError("provider protocol origin is not code-owned")
         object.__setattr__(self, "base_url", origin)
 
@@ -274,6 +283,19 @@ class RouteAdapterFactory:
             raise ValueError("Ark route operation is unsupported")
         references = ports.get("reference_images")
         if (
+            route.adapter_type == "chiyun_gemini_images"
+            and contract.operation is ModelOperation.IMAGE_EDIT
+            and contract.output_media_type == "image"
+            and set(ports) == {"prompt", "reference_images"}
+            and _is_prompt_port(ports.get("prompt"))
+            and references is not None
+            and references.media_type == "image"
+            and references.min_items >= 1
+            and references.max_items <= 10
+            and dict(contract.parameter_mappings) == {"aspect_ratio": "aspectRatio", "image_size": "imageSize"}
+        ):
+            return
+        if (
             route.adapter_type != "chiyun_openai_images"
             or contract.operation is not ModelOperation.IMAGE_EDIT
             or contract.output_media_type != "image"
@@ -424,6 +446,9 @@ def _validate_parameter_contract(
     elif adapter_type == "chiyun_openai_images" and operation is ModelOperation.IMAGE_EDIT:
         template = _CHIYUN_PARAMETERS
         required_template = frozenset({"size", "output_count"})
+    elif adapter_type == "chiyun_gemini_images" and operation is ModelOperation.IMAGE_EDIT:
+        template = _CHIYUN_GEMINI_PARAMETERS
+        required_template = frozenset({"aspect_ratio", "image_size"})
     else:
         raise ValueError("route parameter template is unsupported")
     if set(schema) - {"type", "properties", "required", "additionalProperties", "x-aicc-profile"}:
@@ -451,7 +476,7 @@ def _validate_parameter_contract(
     required = frozenset(raw_required)
     if len(required) != len(raw_required) or not required <= set(properties) or required != required_template:
         raise ValueError("route parameter required fields are unsupported")
-    if adapter_type == "chiyun_openai_images" and set(properties) != set(template):
+    if adapter_type in {"chiyun_openai_images", "chiyun_gemini_images"} and set(properties) != set(template):
         raise ValueError("Chiyun parameter schema must include its fixed fields")
     if set(properties) - set(template) or set(mappings) != set(properties):
         raise ValueError("route parameter names are unsupported")

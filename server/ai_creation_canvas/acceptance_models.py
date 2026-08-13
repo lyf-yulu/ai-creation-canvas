@@ -10,13 +10,13 @@ from ai_creation_canvas.adapters.ark import ArkModelDeclaration, load_ark_model_
 
 _PROMPT = {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}
 _REFERENCE = {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10}
-_CHIYUN_PROPERTIES = {
+_CHIYUN_OPENAI_PROPERTIES = {
     "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
     "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
 }
 
 
-def _chiyun(profile: str, family: str, provider_model_name: str) -> dict[str, object]:
+def _chiyun_openai(profile: str, family: str, provider_model_name: str) -> dict[str, object]:
     return {
         "adapter_type": "chiyun_openai_images",
         "family": family,
@@ -25,15 +25,42 @@ def _chiyun(profile: str, family: str, provider_model_name: str) -> dict[str, ob
             "operation": "image.edit",
             "input_ports": [_PROMPT, _REFERENCE],
             "output_media_type": "image",
-            "parameter_schema": {"type": "object", "x-aicc-profile": profile, "properties": _CHIYUN_PROPERTIES, "required": ["size", "output_count"], "additionalProperties": False},
+            "parameter_schema": {"type": "object", "x-aicc-profile": profile, "properties": _CHIYUN_OPENAI_PROPERTIES, "required": ["size", "output_count"], "additionalProperties": False},
             "parameter_mappings": {"size": "size", "output_count": "n"},
         },
     }
 
 
+def _chiyun_gemini() -> dict[str, object]:
+    return {
+        "adapter_type": "chiyun_gemini_images",
+        "family": "nano-banana",
+        "provider_model_name": "gemini-2.5-flash-image",
+        "contract": {
+            "operation": "image.edit",
+            "input_ports": [_PROMPT, _REFERENCE],
+            "output_media_type": "image",
+            "parameter_schema": {
+                "type": "object",
+                "x-aicc-profile": "banana",
+                "properties": {
+                    "aspect_ratio": {"type": "string", "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1"},
+                    "image_size": {"type": "string", "enum": ["1K", "2K", "4K"], "default": "2K"},
+                },
+                "required": ["aspect_ratio", "image_size"],
+                "additionalProperties": False,
+            },
+            "parameter_mappings": {
+                "aspect_ratio": "aspectRatio",
+                "image_size": "imageSize",
+            },
+        },
+    }
+
+
 _CHIYUN_PROFILES: dict[str, object] = {
-    "banana": _chiyun("banana", "nano-banana", "gemini-2.5-flash-image"),
-    "gpt-image2": _chiyun("gpt_image2", "gpt-image", "gpt-image-2"),
+    "banana": _chiyun_gemini(),
+    "gpt-image2": _chiyun_openai("gpt_image2", "gpt-image", "gpt-image-2"),
 }
 
 

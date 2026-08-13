@@ -46,7 +46,7 @@ def test_four_profiles_have_exact_code_owned_positive_presets() -> None:
     presets = trusted_route_presets()
     assert {profile for profile, _channel in presets} == {"banana", "gpt_image2", "seedream", "seedance"}
     assert set(presets) == {
-        ("banana", "chiyun"), ("banana", "t8star"),
+        ("banana", "chiyun"),
         ("gpt_image2", "chiyun"), ("seedream", "ark"), ("seedance", "ark"),
     }
     for profile_id, channel_id in (("banana", "chiyun"), ("gpt_image2", "chiyun"), ("seedream", "ark"), ("seedance", "ark")):
@@ -54,12 +54,42 @@ def test_four_profiles_have_exact_code_owned_positive_presets() -> None:
         assert validate_trusted_route(route, _model(route)).profile_id == profile_id
 
 
+def test_chiyun_banana_and_gpt_image2_use_separate_protocols_and_provider_ids() -> None:
+    presets = trusted_route_presets()
+    banana = presets[("banana", "chiyun")]
+    gpt = presets[("gpt_image2", "chiyun")]
+
+    assert banana.provider_id == "chiyun-banana"
+    assert banana.adapter_type == "chiyun_gemini_images"
+    assert banana.family == "nano-banana"
+    assert gpt.provider_id == "chiyun-gpt-image2"
+    assert gpt.adapter_type == "chiyun_openai_images"
+    assert gpt.family == "gpt-image"
+    assert banana.operation_contracts != gpt.operation_contracts
+
+
+def test_each_chiyun_protocol_accepts_only_its_fixed_origin_and_adapter() -> None:
+    banana = ProviderDefinition(
+        "chiyun-banana", "Chiyun Banana", "chiyun_gemini_images",
+        "https://chiyun.work", "banana-key",
+    )
+    gpt = ProviderDefinition(
+        "chiyun-gpt-image2", "Chiyun GPT", "chiyun_openai_images",
+        "https://chiyun.work", "gpt-key",
+    )
+    assert provider_protocol_for_definition(banana).adapter_type == "chiyun_gemini_images"
+    assert provider_protocol_for_definition(gpt).adapter_type == "chiyun_openai_images"
+    assert provider_protocol_for_definition(replace(banana, adapter_type="chiyun_openai_images")) is None
+    assert provider_protocol_for_definition(replace(gpt, adapter_type="chiyun_gemini_images")) is None
+    assert provider_protocol_for_definition(replace(banana, base_url="https://other.example")) is None
+
+
 def test_every_internal_route_field_must_match_one_exact_preset() -> None:
     route = _route("banana", "chiyun")
     model = _model(route)
     contract = route.operation_contracts[0]
     body = contract.to_dict()
-    body["parameter_mappings"] = {"size": "size", "output_count": "images"}
+    body["parameter_mappings"] = {"aspect_ratio": "ratio", "image_size": "imageSize"}
     from ai_creation_canvas.model_registry import OperationContract
     tampered_contract = OperationContract.from_dict(body)
     tampered = (

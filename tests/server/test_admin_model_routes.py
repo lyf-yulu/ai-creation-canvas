@@ -49,7 +49,7 @@ def test_route_compatibility_rejects_unsafe_or_cross_domain_config_without_write
         response = admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=body)
         assert response.status_code == 400, (body["route_id"], response.text)
     app.state.canvas_store.update_provider_definition(
-        app.state.canvas_store.provider_definition("t8star").__class__("t8star", "T8", "chiyun_openai_images", "https://t8.example", "unused", False, 1),
+        app.state.canvas_store.provider_definition("chiyun-banana").__class__("chiyun-banana", "Chiyun Banana", "chiyun_gemini_images", "https://chiyun.work", "unused", False, 1),
         expected_revision=1,
         actor_user_id="bootstrap",
     )
@@ -67,7 +67,7 @@ def test_missing_pool_and_provider_with_routes_are_rejected(tmp_path) -> None:
     missing["credential_pool_ref"] = "not-there"
     assert admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=missing).status_code == 400
     assert admin.post("/api/v1/admin/logical-models/banana/routes", headers=headers, json=route_body()).status_code == 201
-    blocked = admin.delete("/api/v1/admin/model-registry/providers/t8star?revision=1", headers=headers)
+    blocked = admin.delete("/api/v1/admin/model-registry/providers/chiyun-banana?revision=1", headers=headers)
     assert blocked.status_code == 409
     assert blocked.json()["references"] == {"route": 1}
 
@@ -126,7 +126,7 @@ def test_stale_route_revision_wins_before_current_pool_provider_or_template_vali
     update.update({"revision": 1, "priority": 7})
     assert admin.put("/api/v1/admin/logical-models/banana/routes/banana-t8", headers=headers, json=update).status_code == 200
     app.state.canvas_store.update_provider_definition(
-        app.state.canvas_store.provider_definition("t8star").__class__("t8star", "T8", "chiyun_openai_images", "https://t8.example", "unused", False, 1),
+        app.state.canvas_store.provider_definition("chiyun-banana").__class__("chiyun-banana", "Chiyun Banana", "chiyun_gemini_images", "https://chiyun.work", "unused", False, 1),
         expected_revision=1,
         actor_user_id="bootstrap",
     )

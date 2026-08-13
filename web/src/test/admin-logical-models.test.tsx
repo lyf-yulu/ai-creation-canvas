@@ -101,10 +101,11 @@ it("cross-checks Ark templates against formal config and keeps trusted Chiyun co
         },
         parameter_mappings: { size: "size", output_count: "n" },
     };
-    for (const profileId of ["banana", "gpt_image2"] as const) {
-        const contract = ADMIN_MODEL_TEMPLATES.find((item) => item.id === profileId)!.contract;
-        expect(contract.input_ports).toEqual(expectedChiyun.input_ports);
-        expect({ ...contract.parameter_schema, "x-aicc-profile": undefined }).toEqual({ ...expectedChiyun.parameter_schema, "x-aicc-profile": undefined });
-        expect(contract.parameter_mappings).toEqual(expectedChiyun.parameter_mappings);
-    }
+    const gptContract = ADMIN_MODEL_TEMPLATES.find((item) => item.id === "gpt_image2")!.contract;
+    expect(gptContract.input_ports).toEqual(expectedChiyun.input_ports);
+    expect({ ...gptContract.parameter_schema, "x-aicc-profile": undefined }).toEqual({ ...expectedChiyun.parameter_schema, "x-aicc-profile": undefined });
+    expect(gptContract.parameter_mappings).toEqual(expectedChiyun.parameter_mappings);
+    const bananaContract = ADMIN_MODEL_TEMPLATES.find((item) => item.id === "banana")!.contract;
+    expect(bananaContract.parameter_mappings).toEqual({ aspect_ratio: "aspectRatio", image_size: "imageSize" });
+    expect(bananaContract.parameter_schema.required).toEqual(["aspect_ratio", "image_size"]);
 });

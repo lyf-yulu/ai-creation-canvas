@@ -13,6 +13,8 @@ from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteD
 
 
 _TRUSTED_PROVIDER_ORIGINS: Mapping[tuple[str, str], str] = MappingProxyType({
+    ("chiyun-banana", "chiyun_gemini_images"): "https://chiyun.work",
+    ("chiyun-gpt-image2", "chiyun_openai_images"): "https://chiyun.work",
     ("ark", "ark"): "https://ark.cn-beijing.volces.com",
 })
 
@@ -33,8 +35,8 @@ def trusted_route_presets() -> Mapping[tuple[str, str], TrustedRoutePreset]:
     raw_profiles = acceptance_model_profiles()["profiles"]
     assert isinstance(raw_profiles, dict)
     channels = {
-        "banana": (("chiyun", "chiyun"), ("t8star", "t8star")),
-        "gpt_image2": (("chiyun", "chiyun"),),
+        "banana": (("chiyun", "chiyun-banana"),),
+        "gpt_image2": (("chiyun", "chiyun-gpt-image2"),),
         "seedream": (("ark", "ark"),),
         "seedance": (("ark", "ark"),),
     }

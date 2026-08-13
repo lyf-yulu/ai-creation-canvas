@@ -21,6 +21,10 @@ const chiyunProperties = {
     size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" },
     output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },
 };
+const chiyunGeminiProperties = {
+    aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"], default: "1:1", title: "画面比例" },
+    image_size: { type: "string", enum: ["1K", "2K", "4K"], default: "2K", title: "图片尺寸" },
+};
 const videoProperties = {
     ratio: { type: "string", enum: ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], default: "16:9", title: "画面比例" },
     resolution: { type: "string", enum: ["480p", "720p"], default: "720p", title: "分辨率" },
@@ -40,7 +44,7 @@ export type AdminTemplate = {
     label: string;
     routeLabel: string;
     modality: "image" | "video";
-    adapter_type: "ark" | "chiyun_openai_images";
+    adapter_type: "ark" | "chiyun_gemini_images" | "chiyun_openai_images";
     familyHint: string;
     contract: AdminOperationContract;
 };
@@ -81,17 +85,17 @@ export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
     {
         id: "banana",
         capability: "multi_image",
-        label: "Banana（Chiyun / T8Star）",
-        routeLabel: "Banana · Chiyun 兼容",
+        label: "Banana（Chiyun）",
+        routeLabel: "Banana · Chiyun Gemini",
         modality: "image",
-        adapter_type: "chiyun_openai_images",
+        adapter_type: "chiyun_gemini_images",
         familyHint: "nano-banana",
         contract: {
             operation: "image.edit",
             input_ports: [prompt, { port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
             output_media_type: "image",
-            parameter_schema: objectSchema(chiyunProperties, ["size", "output_count"], "banana"),
-            parameter_mappings: { size: "size", output_count: "n" },
+            parameter_schema: objectSchema(chiyunGeminiProperties, ["aspect_ratio", "image_size"], "banana"),
+            parameter_mappings: { aspect_ratio: "aspectRatio", image_size: "imageSize" },
         },
     },
     {
@@ -158,8 +162,8 @@ const callingPreset = (id: string, label: string, providerId: string, providerMo
 };
 
 const CALLING_PRESETS: Record<ModelProfileId, readonly AdminCallingPreset[]> = {
-    banana: [callingPreset("chiyun", "Chiyun", "chiyun", "gemini-2.5-flash-image", "banana", "nano-banana"), callingPreset("t8star", "T8Star", "t8star", "gemini-2.5-flash-image", "banana", "nano-banana")],
-    gpt_image2: [callingPreset("chiyun", "Chiyun", "chiyun", "gpt-image-2", "gpt_image2", "gpt-image")],
+    banana: [callingPreset("chiyun", "Chiyun", "chiyun-banana", "gemini-2.5-flash-image", "banana", "nano-banana")],
+    gpt_image2: [callingPreset("chiyun", "Chiyun", "chiyun-gpt-image2", "gpt-image-2", "gpt_image2", "gpt-image")],
     seedream: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedream-5-0-pro-260628", "seedream", "seedream")],
     seedance: [callingPreset("ark", "Ark 官方", "ark", "doubao-seedance-2-5-260628", "seedance", "seedance")],
 };
@@ -171,7 +175,7 @@ export const templateForRoute = (route: { adapter_type?: string; family?: string
     if (route.adapter_type === "ark" && route.operation_contracts?.[0]?.operation === "video.generate") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedance");
     if (route.adapter_type === "ark") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "seedream");
     if (route.adapter_type === "chiyun_openai_images" && route.family === "gpt-image") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "gpt_image2");
-    if (route.adapter_type === "chiyun_openai_images") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "banana");
+    if (route.adapter_type === "chiyun_gemini_images") return ADMIN_MODEL_TEMPLATES.find((item) => item.id === "banana");
     return undefined;
 };
 

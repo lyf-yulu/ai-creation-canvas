@@ -21,13 +21,13 @@ const bananaContract = {
         type: "object",
         "x-aicc-profile": "banana",
         properties: {
-            size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" },
-            output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },
+            aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4"], default: "1:1", title: "画面比例" },
+            image_size: { type: "string", enum: ["1K", "2K", "4K"], default: "2K", title: "图片尺寸" },
         },
-        required: ["size", "output_count"],
+        required: ["aspect_ratio", "image_size"],
         additionalProperties: false,
     },
-    parameter_mappings: { size: "size", output_count: "n" },
+    parameter_mappings: { aspect_ratio: "aspectRatio", image_size: "imageSize" },
 };
 
 const model = (profile: "banana" | "gpt_image2" | "seedream" | "seedance" = "banana"): AdminLogicalModel => ({
@@ -52,8 +52,8 @@ const model = (profile: "banana" | "gpt_image2" | "seedream" | "seedance" = "ban
 const pools: AdminCredentialPool[] = [
     {
         pool_id: "chiyun-banana",
-        provider_id: "chiyun",
-        adapter_type: "chiyun_openai_images",
+        provider_id: "chiyun-banana",
+        adapter_type: "chiyun_gemini_images",
         group: "banana",
         allowed_families: ["nano-banana"],
         revision_digest: "a".repeat(64),
@@ -97,7 +97,7 @@ const pools: AdminCredentialPool[] = [
     },
     {
         pool_id: "chiyun-gpt",
-        provider_id: "chiyun",
+        provider_id: "chiyun-gpt-image2",
         adapter_type: "chiyun_openai_images",
         group: "gpt-image",
         allowed_families: ["gpt-image"],
@@ -147,7 +147,7 @@ const renderSettings = (logicalModel = model(), routes: AdminModelRoute[] = [], 
 it("shows only the trusted calling cards for each logical model", () => {
     const view = renderSettings();
     expect(screen.getByRole("heading", { name: "Chiyun" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "T8Star" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "T8Star" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Ark 官方" })).toBeNull();
 
     view.rerender(<ModelCallSettings model={model("gpt_image2")} routes={[]} pools={pools} onCreate={vi.fn()} onUpdate={vi.fn()} onLifecycle={vi.fn()} onSaved={vi.fn()} />);
@@ -177,8 +177,6 @@ it("offers only pools that exactly match each preset provider, adapter and famil
     renderSettings();
     expect(screen.getByLabelText("Chiyun 凭据池")).toHaveTextContent("chiyun-banana");
     expect(screen.getByLabelText("Chiyun 凭据池")).not.toHaveTextContent(/t8-gemini|t8-cc/);
-    expect(screen.getByLabelText("T8Star 凭据池")).toHaveTextContent("t8-gemini");
-    expect(screen.getByLabelText("T8Star 凭据池")).not.toHaveTextContent(/chiyun-banana|t8-cc/);
 });
 
 it("saves only administrator choices while compiling trusted preset identity", async () => {
@@ -194,9 +192,9 @@ it("saves only administrator choices while compiling trusted preset identity", a
         expect.objectContaining({
             route_id: "banana-chiyun",
             model_id: "banana",
-            provider_id: "chiyun",
+            provider_id: "chiyun-banana",
             provider_model_name: "gemini-2.5-flash-image",
-            adapter_type: "chiyun_openai_images",
+            adapter_type: "chiyun_gemini_images",
             family: "nano-banana",
             credential_pool_ref: "chiyun-banana",
             priority: 9,
@@ -211,9 +209,9 @@ it("reports duplicate routes for a preset instead of choosing one silently", () 
     const routes: AdminModelRoute[] = [1, 2].map((revision) => ({
         route_id: `banana-chiyun-${revision}`,
         model_id: "banana",
-        provider_id: "chiyun",
+        provider_id: "chiyun-banana",
         provider_model_name: "gemini-2.5-flash-image",
-        adapter_type: "chiyun_openai_images",
+        adapter_type: "chiyun_gemini_images",
         credential_pool_ref: "chiyun-banana",
         family: "nano-banana",
         operation_contracts: [bananaContract],
@@ -235,9 +233,9 @@ it("fails closed when a route has preset identity but a different trusted contra
     const route = (operation_contracts: AdminModelRoute["operation_contracts"]): AdminModelRoute => ({
         route_id: "banana-chiyun",
         model_id: "banana",
-        provider_id: "chiyun",
+        provider_id: "chiyun-banana",
         provider_model_name: "gemini-2.5-flash-image",
-        adapter_type: "chiyun_openai_images",
+        adapter_type: "chiyun_gemini_images",
         credential_pool_ref: "chiyun-banana",
         family: "nano-banana",
         operation_contracts,
@@ -253,15 +251,15 @@ it("fails closed when a route has preset identity but a different trusted contra
         parameter_schema: {
             additionalProperties: false,
             required: [...bananaContract.parameter_schema.required].reverse(),
-            properties: { output_count: bananaContract.parameter_schema.properties.output_count, size: bananaContract.parameter_schema.properties.size },
+            properties: { image_size: bananaContract.parameter_schema.properties.image_size, aspect_ratio: bananaContract.parameter_schema.properties.aspect_ratio },
             "x-aicc-profile": "banana",
             type: "object",
         },
-        parameter_mappings: { output_count: "n", size: "size" },
+        parameter_mappings: { image_size: "imageSize", aspect_ratio: "aspectRatio" },
     };
     const wrongPorts = { ...bananaContract, input_ports: bananaContract.input_ports.slice(0, 1) };
     const wrongSchema = { ...bananaContract, parameter_schema: { ...bananaContract.parameter_schema, properties: { ...bananaContract.parameter_schema.properties, unsafe: { type: "string" } } } };
-    const wrongMappings = { ...bananaContract, parameter_mappings: { size: "size", output_count: "images" } };
+    const wrongMappings = { ...bananaContract, parameter_mappings: { aspect_ratio: "ratio", image_size: "imageSize" } };
 
     expect(routeMatchesCallingPreset(route([reordered]), preset)).toBe(true);
     for (const contract of [wrongPorts, wrongSchema, wrongMappings]) expect(routeMatchesCallingPreset(route([contract]), preset)).toBe(false);

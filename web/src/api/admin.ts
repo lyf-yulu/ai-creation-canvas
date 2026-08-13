@@ -24,12 +24,12 @@ export type AdminLogicalModel = {
 };
 export type AdminModelRoute = {
     route_id: string; model_id: string; provider_id?: string; provider_model_name?: string;
-    adapter_type?: "ark" | "chiyun_openai_images"; credential_pool_ref?: string; family?: string;
+    adapter_type?: "ark" | "chiyun_gemini_images" | "chiyun_openai_images"; credential_pool_ref?: string; family?: string;
     operation_contracts?: AdminOperationContract[]; priority?: number; max_concurrency?: number;
     enabled: boolean; archived_at: string | null; revision: number;
 };
 export type AdminCredentialPool = {
-    pool_id: string; provider_id: string; adapter_type?: "ark" | "chiyun_openai_images"; group: string; allowed_families: string[];
+    pool_id: string; provider_id: string; adapter_type?: "ark" | "chiyun_gemini_images" | "chiyun_openai_images"; group: string; allowed_families: string[];
     revision_digest: string; key_count: number; total_capacity: number;
     capacity_status: "available" | "unavailable"; available_count: number | null; busy_count: number | null;
     circuit_status: "unsupported"; circuit_open_count: number | null;
@@ -42,7 +42,7 @@ export type LogicalModelWrite = {
 };
 export type ModelRouteWrite = {
     route_id: string; model_id: string; provider_id: string; provider_model_name: string;
-    adapter_type: "ark" | "chiyun_openai_images"; credential_pool_ref: string; family: string;
+    adapter_type: "ark" | "chiyun_gemini_images" | "chiyun_openai_images"; credential_pool_ref: string; family: string;
     operation_contracts: AdminOperationContract[]; priority: number; max_concurrency: number; enabled: boolean; revision?: number;
 };
 
