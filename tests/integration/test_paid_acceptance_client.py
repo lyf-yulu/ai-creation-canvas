@@ -328,6 +328,111 @@ def test_guarded_paid_run_preserves_unexpected_execution_exception_and_summarize
     assert "unexpected private" not in json.dumps(summaries[0]).lower()
 
 
+def _fallback_summary_from_stderr(capfd) -> dict[str, object]:
+    lines = [line for line in capfd.readouterr().err.splitlines() if line]
+    assert len(lines) == 1
+    return json.loads(lines[0])
+
+
+def test_summary_construction_failure_preserves_original_exception_and_uses_fixed_fallback(monkeypatch, capfd) -> None:
+    plan = module.paid_call_plan(("seedream-ark",), banana_sample_count=0, maximum_paid_calls=1)
+    original = RuntimeError("private business prompt")
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=lambda _line: None)
+    monkeypatch.setattr(module, "_summary_record", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("summary construction failed")))
+
+    with pytest.raises(RuntimeError) as caught:
+        with recorder:
+            raise original
+
+    assert caught.value is original
+    assert _fallback_summary_from_stderr(capfd) == {
+        "failure_class": "summary_pipeline_failed", "phase": "summary", "status": "failed",
+    }
+
+
+def test_summary_render_failure_preserves_original_exception_and_uses_fixed_fallback(monkeypatch, capfd) -> None:
+    plan = module.paid_call_plan(("seedream-ark",), banana_sample_count=0, maximum_paid_calls=1)
+    original = RuntimeError("private business prompt")
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=lambda _line: None)
+    real_render = module.render_record
+
+    def fail_summary_render(record: dict[str, object]) -> str:
+        if record.get("phase") == "summary":
+            raise ValueError("summary render failed")
+        return real_render(record)
+
+    monkeypatch.setattr(module, "render_record", fail_summary_render)
+    with pytest.raises(RuntimeError) as caught:
+        with recorder:
+            raise original
+
+    assert caught.value is original
+    assert _fallback_summary_from_stderr(capfd)["failure_class"] == "summary_pipeline_failed"
+
+
+def test_summary_emit_failure_preserves_original_exception_and_uses_independent_fallback(capfd) -> None:
+    plan = module.paid_call_plan(("seedream-ark",), banana_sample_count=0, maximum_paid_calls=1)
+    original = RuntimeError("private business prompt")
+    attempted: list[str] = []
+
+    def fail_emit(line: str) -> None:
+        attempted.append(line)
+        raise OSError("primary summary sink failed")
+
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=fail_emit)
+    with pytest.raises(RuntimeError) as caught:
+        with recorder:
+            raise original
+
+    assert caught.value is original
+    assert len(attempted) == 1 and json.loads(attempted[0])["phase"] == "summary"
+    assert _fallback_summary_from_stderr(capfd)["status"] == "failed"
+
+
+def test_fail_current_failure_preserves_original_exception_and_uses_fixed_fallback(monkeypatch, capfd) -> None:
+    plan = module.paid_call_plan(("seedream-ark",), banana_sample_count=0, maximum_paid_calls=1)
+    original = RuntimeError("private provider prompt")
+    recorder = module.PaidRunRecorder(plan, user_id="user-safe", emit=lambda _line: None)
+    attempts = 0
+
+    def fail_current(*_args, **_kwargs) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("failure recorder failed")
+
+    monkeypatch.setattr(recorder, "fail_current", fail_current)
+
+    with pytest.raises(RuntimeError) as caught, recorder:
+        module.execute_paid_plan(
+            plan,
+            activate_channel=lambda _channel: None,
+            activate_banana=lambda: None,
+            execute=lambda _call: (_ for _ in ()).throw(original),
+            recorder=recorder,
+        )
+
+    assert caught.value is original
+    assert attempts == 1
+    assert _fallback_summary_from_stderr(capfd)["failure_class"] == "summary_pipeline_failed"
+
+
+def test_all_summary_sinks_can_fail_without_masking_original_exception(monkeypatch) -> None:
+    plan = module.paid_call_plan(("seedream-ark",), banana_sample_count=0, maximum_paid_calls=1)
+    original = RuntimeError("private business prompt")
+    recorder = module.PaidRunRecorder(
+        plan,
+        user_id="user-safe",
+        emit=lambda _line: (_ for _ in ()).throw(OSError("primary sink failed")),
+    )
+    monkeypatch.setattr(module.os, "write", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fallback sink failed")))
+
+    with pytest.raises(RuntimeError) as caught:
+        with recorder:
+            raise original
+
+    assert caught.value is original
+
+
 def test_paid_call_plan_runs_every_channel_smoke_before_the_banana_sample() -> None:
     plan = module.paid_call_plan(
         ("banana-chiyun", "banana-t8star", "seedance-ark"),

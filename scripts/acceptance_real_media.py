@@ -117,13 +117,13 @@ def execute_paid_plan(
             else:
                 raise RuntimeError("paid call phase is invalid")
         except Exception as error:
-            recorder.fail_current(error, failure_class="activation_failed")
+            recorder.try_fail_current(error, failure_class="activation_failed")
             raise
         recorder.mark_attempted()
         try:
             record = execute(call)
         except Exception as error:
-            recorder.fail_current(error)
+            recorder.try_fail_current(error)
             raise
         recorder.record_current(record)
         records.append(record)
@@ -844,6 +844,15 @@ _SAFE_RUN_FAILURE_CLASSES = frozenset({
     "transport", "timeout", "generation_failed", "acceptance_contract",
     "upload_failed", "preflight_failed", "activation_failed", "blocked_after_failure",
 })
+_SUMMARY_PIPELINE_FALLBACK = b'{"failure_class":"summary_pipeline_failed","phase":"summary","status":"failed"}\n'
+
+
+def _emit_summary_pipeline_fallback() -> None:
+    """Best-effort fixed stderr record; reporting must never mask run failures."""
+    try:
+        os.write(2, _SUMMARY_PIPELINE_FALLBACK)
+    except BaseException:
+        pass
 
 
 def _failure_record(
@@ -941,7 +950,7 @@ def _summary_record(
 
 
 class PaidRunRecorder:
-    """Account for every planned call and emit exactly one redacted summary."""
+    """Account for every planned call and attempt one redacted summary pipeline."""
 
     def __init__(
         self,
@@ -962,6 +971,7 @@ class PaidRunRecorder:
         self._preflight_failure_class = "preflight_failed"
         self._stage = "preflight"
         self._finalized = False
+        self._reporting_failed = False
 
     def __enter__(self) -> "PaidRunRecorder":
         return self
@@ -1011,6 +1021,14 @@ class PaidRunRecorder:
         self._emit(render_record(record))
         self._advance()
 
+    def try_fail_current(self, error: Exception, *, failure_class: str | None = None) -> bool:
+        try:
+            self.fail_current(error, failure_class=failure_class)
+        except BaseException:
+            self._reporting_failed = True
+            return False
+        return True
+
     def _advance(self) -> None:
         self._next_index += 1
         self._current_index = None
@@ -1032,20 +1050,27 @@ class PaidRunRecorder:
     def __exit__(self, error_type: object, error: BaseException | None, _traceback: object) -> bool:
         if self._finalized:
             return False
-        if error is not None:
-            if self._current_index is not None and self._outcomes[self._current_index] is None:
-                safe_error = error if isinstance(error, Exception) else RuntimeError()
-                failure_class = "activation_failed" if self._stage == "activation" else _failure_class(safe_error)
-                self.fail_current(safe_error, failure_class=failure_class)
-            if all(outcome is None for outcome in self._outcomes):
-                self._fill_not_run(self._preflight_failure_class)
+        self._finalized = True
+        try:
+            if error is not None:
+                if not self._reporting_failed and self._current_index is not None and self._outcomes[self._current_index] is None:
+                    safe_error = error if isinstance(error, Exception) else RuntimeError()
+                    failure_class = "activation_failed" if self._stage == "activation" else _failure_class(safe_error)
+                    self.try_fail_current(safe_error, failure_class=failure_class)
+                if self._reporting_failed:
+                    raise RuntimeError("paid acceptance failure reporting failed")
+                if all(outcome is None for outcome in self._outcomes):
+                    self._fill_not_run(self._preflight_failure_class)
+                else:
+                    self._fill_not_run("blocked_after_failure")
             else:
                 self._fill_not_run("blocked_after_failure")
-        else:
-            self._fill_not_run("blocked_after_failure")
-        outcomes = tuple(item for item in self._outcomes if item is not None)
-        self._emit(render_record(_summary_record(outcomes, user_id=self._user_id, attempted_calls=self._attempted_calls)))
-        self._finalized = True
+            outcomes = tuple(item for item in self._outcomes if item is not None)
+            self._emit(render_record(_summary_record(outcomes, user_id=self._user_id, attempted_calls=self._attempted_calls)))
+        except BaseException:
+            _emit_summary_pipeline_fallback()
+            if error is None:
+                raise
         return False
 
 
