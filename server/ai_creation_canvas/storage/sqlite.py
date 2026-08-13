@@ -605,7 +605,10 @@ class CanvasStore:
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token:
                 return dict(row)
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, _now(), job_id))
+            now = _now()
+            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, now, job_id))
+            if status == "succeeded":
+                self._capture_usage_snapshot(db, job_id, now)
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:

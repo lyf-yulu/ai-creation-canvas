@@ -170,3 +170,38 @@ def test_failed_and_repeated_completion_do_not_charge(tmp_path):
     assert claim is not None
     store.record_polled_job("image", token=str(claim["submission_token"]), status="failed", error_code="TASK_FAILED")
     assert store.usage_for_owner("user-a")["total_cost_fen"] == 0
+
+
+def test_synchronous_submission_success_captures_current_rates(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="sync", service_id="image", operation="image.generate", idempotency_key="sync-key", request_hash="s" * 64, image_count=1)
+    store.mark_submitted("sync", "up-sync", "succeeded", str(reserved.job["submission_token"]))
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 120
+    assert len(usage["jobs"]) == 1
+    job = usage["jobs"][0]
+    assert job["operation"] == "image.generate"
+    assert job["status"] == "succeeded"
+    assert job["image_count"] == 1
+    assert job["image_price_fen"] == 120
+    assert job["cost_fen"] == 120
+    assert job["charged_at"] is not None
+
+
+def test_duplicate_successful_poll_callback_keeps_one_cost_snapshot(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(user_id="user-a", job_id="video", service_id="video", operation="video.generate", idempotency_key="duplicate-key", request_hash="d" * 64, video_seconds=5)
+    store.mark_submitted("video", "up-video", "running", str(reserved.job["submission_token"]))
+    claim = store.claim_pollable_job()
+    assert claim is not None
+    token = str(claim["submission_token"])
+    store.record_polled_job("video", token=token, status="succeeded", result_id="result")
+    store.set_usage_rates(video_price_fen=99, image_price_fen=999)
+    store.record_polled_job("video", token=token, status="succeeded", result_id="result")
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 125
+    assert len(usage["jobs"]) == 1
+    assert usage["jobs"][0]["video_price_fen"] == 25
