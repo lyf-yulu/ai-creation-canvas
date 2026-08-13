@@ -263,7 +263,7 @@ git diff --exit-code
 git diff --cached --exit-code
 [ -z "$(git status --porcelain --untracked-files=normal)" ] || fail "Paid acceptance requires a clean committed worktree."
 bash "$aicc_repo_root/scripts/security-scan.sh"
-PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" -m pytest -q "$aicc_repo_root/tests"
+AICC_REAL_PRODUCTION_MATRIX= PYTHONPATH="$aicc_repo_root:$aicc_repo_root/server" "$aicc_python" -m pytest -q "$aicc_repo_root/tests"
 npm ci --prefix "$aicc_repo_root/web"
 npm run verify:release --prefix "$aicc_repo_root/web"
 npm audit --prefix "$aicc_repo_root/web" --omit=dev --audit-level=high
