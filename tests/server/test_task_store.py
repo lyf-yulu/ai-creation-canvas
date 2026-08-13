@@ -190,6 +190,73 @@ def test_synchronous_submission_success_captures_current_rates(tmp_path):
     assert job["charged_at"] is not None
 
 
+def test_success_without_a_billable_quantity_keeps_every_snapshot_empty(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reserved = store.reserve_job(
+        user_id="user-a",
+        job_id="unmetered-video",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="unmetered-key",
+        request_hash="u" * 64,
+    )
+
+    completed = store.mark_submitted(
+        "unmetered-video",
+        "up-unmetered",
+        "succeeded",
+        str(reserved.job["submission_token"]),
+    )
+
+    assert completed["video_seconds"] == completed["image_count"] == 0
+    assert completed["video_price_fen"] is None
+    assert completed["image_price_fen"] is None
+    assert completed["cost_fen"] is None
+    assert completed["charged_at"] is None
+    assert store.usage_for_owner("user-a") == {
+        "user_id": "user-a",
+        "total_cost_fen": 0,
+        "jobs": (),
+    }
+
+
+@pytest.mark.parametrize("scope", ("owner", "all_users"))
+def test_usage_totals_can_exceed_sqlite_signed_integer_range(tmp_path, scope):
+    store = CanvasStore(tmp_path / scope)
+    with store._connection(immediate=True) as db:
+        db.execute(
+            """
+            WITH digits(d) AS (
+                VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+            ), numbers(n) AS (
+                SELECT a.d + 10*b.d + 100*c.d + 1000*d.d + 10000*e.d + 100000*f.d
+                FROM digits a CROSS JOIN digits b CROSS JOIN digits c
+                CROSS JOIN digits d CROSS JOIN digits e CROSS JOIN digits f
+            )
+            INSERT INTO canvas_jobs (
+                id,user_id,service_id,operation,status,idempotency_key,request_hash,
+                video_seconds,image_count,video_price_fen,image_price_fen,cost_fen,
+                charged_at,created_at,updated_at
+            )
+            SELECT
+                printf('maximum-video-%06d', n),'user-a','video','video.generate','succeeded',
+                printf('maximum-key-%06d', n),'hash',86400,0,1000000000,0,86400000000000,
+                'charged','created','updated'
+            FROM numbers WHERE n < 106752
+            """
+        )
+
+    usage = (
+        store.usage_for_owner("user-a")
+        if scope == "owner"
+        else store.usage_for_all_users()[0]
+    )
+
+    assert usage["total_cost_fen"] == 9_223_372_800_000_000_000
+    assert len(usage["jobs"]) == 106_752
+
+
 def test_duplicate_successful_poll_callback_keeps_one_cost_snapshot(tmp_path):
     store = CanvasStore(tmp_path / "data")
     store.set_usage_rates(video_price_fen=25, image_price_fen=120)

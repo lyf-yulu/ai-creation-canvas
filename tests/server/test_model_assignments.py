@@ -34,6 +34,18 @@ class AssignmentAdapter:
                     "additionalProperties": False,
                 },
             ),
+            ModelSpec(
+                "wide-duration-model",
+                self.service_id,
+                "宽时长模型",
+                ("video.generate",),
+                ("text",),
+                {
+                    "type": "object",
+                    "properties": {"duration": {"type": "integer", "minimum": 1, "maximum": 90_000}},
+                    "additionalProperties": False,
+                },
+            ),
         )
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
@@ -163,3 +175,44 @@ def test_video_duration_uses_only_declared_integer_billing_quantity(tmp_path) ->
     assert charged_forbidden is unmetered_forbidden is False
     assert charged_job is not None and charged_job["video_seconds"] == 5
     assert unmetered_job is not None and unmetered_job["video_seconds"] == 0
+
+
+def test_catalog_duration_beyond_store_limit_creates_an_unmetered_job(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(
+        tmp_path, user_model_ids=("wide-duration-model",)
+    )
+    del admin, admin_headers
+    assert accounts.user is not None
+
+    response = user.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        json=job_payload(
+            "wide-duration-model",
+            operation="video.generate",
+            params={"duration": 90_000},
+            idempotency_key="duration-beyond-store-limit",
+        ),
+    )
+    maximum = user.post(
+        "/api/v1/jobs",
+        headers=user_headers,
+        json=job_payload(
+            "wide-duration-model",
+            operation="video.generate",
+            params={"duration": 86_400},
+            idempotency_key="duration-at-store-limit",
+        ),
+    )
+
+    assert response.status_code == maximum.status_code == 201
+    job, forbidden = app.state.canvas_store.job_for_owner(
+        response.json()["id"], accounts.user.user_id
+    )
+    assert forbidden is False
+    assert job is not None and job["video_seconds"] == 0
+    maximum_job, maximum_forbidden = app.state.canvas_store.job_for_owner(
+        maximum.json()["id"], accounts.user.user_id
+    )
+    assert maximum_forbidden is False
+    assert maximum_job is not None and maximum_job["video_seconds"] == 86_400

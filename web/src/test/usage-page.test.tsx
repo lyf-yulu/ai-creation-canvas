@@ -5,8 +5,8 @@ import UsagePage from "@/pages/usage";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 
 const ownerUsage = {
-    summary: { successful_jobs: 1, image_count: 1, video_seconds: 5, total_cost_fen: 245 },
-    jobs: [{ operation: "video.generate", status: "succeeded", video_seconds: 5, image_count: 1, video_price_fen: 25, image_price_fen: 120, cost_fen: 245, charged_at: "2026-08-13T00:00:00Z" }],
+    summary: { successful_jobs: 1, image_count: 1, video_seconds: 5, total_cost_fen: "245" },
+    jobs: [{ operation: "video.generate", status: "succeeded", video_seconds: 5, image_count: 1, video_price_fen: "25", image_price_fen: "120", cost_fen: "245", charged_at: "2026-08-13T00:00:00Z" }],
 };
 
 beforeEach(() => {
@@ -35,6 +35,68 @@ it("shows an owner's charged total without exposing administrator rate controls"
     expect(screen.queryByRole("button", { name: "保存价格" })).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenLastCalledWith("/api/v1/usage", expect.any(Object));
+});
+
+it("formats a cost beyond the JavaScript safe-integer limit without losing fen", async () => {
+    const exactUsage = {
+        summary: { ...ownerUsage.summary, total_cost_fen: "9007199254740993" },
+        jobs: [{ ...ownerUsage.jobs[0], cost_fen: "9007199254740993" }],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(JSON.stringify(exactUsage), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+
+    render(<UsagePage />);
+
+    expect((await screen.findAllByText("¥90071992547409.93")).length).toBe(2);
+});
+
+it("shows data unavailable instead of fabricated zero usage when the owner load fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: "internal_error" }), { status: 500, headers: { "content-type": "application/json" } }),
+    );
+
+    render(<UsagePage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("统计暂时无法完整加载，请稍后重试。");
+    expect(screen.getByText("统计数据暂时不可用。")).toBeVisible();
+    expect(screen.queryByText("已完成任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无已计费的生成任务。")).not.toBeInTheDocument();
+});
+
+it("retains prior owner usage when a later owner reload fails", async () => {
+    const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify(ownerUsage), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ code: "internal_error" }), { status: 500, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ summary: ownerUsage.summary, users: [], jobs: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 10, image_price_fen: 100 }), { status: 200, headers: { "content-type": "application/json" } }));
+    render(<UsagePage />);
+    await screen.findByText("video.generate");
+
+    useSessionStore.setState({ session: { user_id: "user-1", username: "普通用户", role: "admin", must_change_password: false } });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(screen.getByRole("alert")).toHaveTextContent("统计暂时无法完整加载，请稍后重试。");
+    expect(screen.getByText("video.generate")).toBeVisible();
+    expect((screen.getAllByText("¥2.45")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("统计数据暂时不可用。")).not.toBeInTheDocument();
+});
+
+it("keeps administrator data loads independent when owner usage is unavailable", async () => {
+    useSessionStore.setState({ session: { user_id: "admin-1", username: "管理员", role: "admin", must_change_password: false } });
+    vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ code: "internal_error" }), { status: 500, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(
+            new Response(JSON.stringify({ summary: ownerUsage.summary, users: [{ user_id: "user-1", summary: ownerUsage.summary }], jobs: [{ ...ownerUsage.jobs[0], user_id: "user-1" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 10, image_price_fen: 100 }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<UsagePage />);
+
+    expect(await screen.findByText("统计数据暂时不可用。")).toBeVisible();
+    expect(screen.getByText("全局汇总：已完成任务 1 · 图片 1 · 视频 5 秒 · ¥2.45")).toBeVisible();
+    expect(screen.getByRole("button", { name: "保存价格" })).toBeVisible();
 });
 
 it("converts an administrator's decimal-yuan rates to integer fen before saving", async () => {

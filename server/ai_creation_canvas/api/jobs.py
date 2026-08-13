@@ -18,6 +18,7 @@ from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
 _MAX_ITEMS = 64
+_MAX_BILLABLE_VIDEO_SECONDS = 86_400
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 
 
@@ -85,6 +86,8 @@ def _billing_quantities(
         or type(minimum) is not int
         or type(maximum) is not int
         or minimum > maximum
+        or duration < 0
+        or duration > _MAX_BILLABLE_VIDEO_SECONDS
         or duration < minimum
         or duration > maximum
     ):

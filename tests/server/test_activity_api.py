@@ -12,16 +12,16 @@ from ai_creation_canvas.config import Settings
 from ai_creation_canvas.storage.sqlite import CanvasStore
 
 
-def identity(user_id: str, username: str = "Test User") -> dict[str, str]:
+def identity(user_id: str, username: str = "Test User", role: str = "user") -> dict[str, str]:
     timestamp = str(int(time.time()))
-    payload = f"v2\n{timestamp}\n{user_id}\nuser\n{quote(username, safe='')}"
+    payload = f"v2\n{timestamp}\n{user_id}\n{role}\n{quote(username, safe='')}"
     signature = hmac.new(b"test-secret", payload.encode(), hashlib.sha256).hexdigest()
     return {
         "X-Portal-Sig-Version": "2",
         "X-Portal-Timestamp": timestamp,
         "X-Portal-User-Id": user_id,
         "X-Portal-Username": username,
-        "X-Portal-Role": "user",
+        "X-Portal-Role": role,
         "X-Portal-Signature": signature,
     }
 
@@ -103,8 +103,83 @@ def test_usage_lists_only_current_owner_charged_jobs(tmp_path) -> None:
         "successful_jobs": 1,
         "image_count": 1,
         "video_seconds": 0,
-        "total_cost_fen": 0,
+        "total_cost_fen": "0",
     }
     assert len(response.json()["jobs"]) == 1
+    assert response.json()["jobs"][0]["video_price_fen"] == "0"
+    assert response.json()["jobs"][0]["image_price_fen"] == "0"
+    assert response.json()["jobs"][0]["cost_fen"] == "0"
     assert "request_hash" not in response.text
     assert "user-b" not in response.text
+
+
+def test_usage_excludes_a_successful_job_without_any_billable_quantity(tmp_path) -> None:
+    store = CanvasStore(tmp_path / "data")
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        static_dir=tmp_path / "missing-static",
+        canvas_store=store,
+    )
+    client = TestClient(app)
+    reserved = store.reserve_job(
+        user_id="user-a",
+        job_id="unmetered",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="unmetered-key",
+        request_hash="unmetered-hash",
+    )
+    store.mark_submitted(
+        "unmetered",
+        "upstream-unmetered",
+        "succeeded",
+        str(reserved.job["submission_token"]),
+    )
+
+    response = client.get("/api/v1/usage", headers=identity("user-a"))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "summary": {
+            "successful_jobs": 0,
+            "image_count": 0,
+            "video_seconds": 0,
+            "total_cost_fen": "0",
+        },
+        "jobs": [],
+    }
+
+
+def test_usage_serializes_an_aggregate_beyond_javascript_safe_integer_exactly(tmp_path) -> None:
+    store = CanvasStore(tmp_path / "data")
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        static_dir=tmp_path / "missing-static",
+        canvas_store=store,
+    )
+    client = TestClient(app)
+    store.set_usage_rates(video_price_fen=1_000_000_000, image_price_fen=0)
+    for index in range(105):
+        job_id = f"maximum-video-{index}"
+        reserved = store.reserve_job(
+            user_id="user-a",
+            job_id=job_id,
+            service_id="video",
+            operation="video.generate",
+            idempotency_key=f"maximum-key-{index}",
+            request_hash=f"maximum-hash-{index}",
+            video_seconds=86_400,
+        )
+        store.mark_submitted(
+            job_id,
+            f"upstream-{index}",
+            "succeeded",
+            str(reserved.job["submission_token"]),
+        )
+
+    response = client.get("/api/v1/usage", headers=identity("user-a"))
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["total_cost_fen"] == "9072000000000000"
+    assert response.json()["jobs"][0]["cost_fen"] == "86400000000000"
+    assert response.json()["jobs"][0]["video_price_fen"] == "1000000000"

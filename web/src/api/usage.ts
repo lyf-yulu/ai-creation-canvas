@@ -4,7 +4,7 @@ export type UsageSummary = {
     successful_jobs: number;
     image_count: number;
     video_seconds: number;
-    total_cost_fen: number;
+    total_cost_fen: string;
 };
 
 export type ChargedUsageJob = {
@@ -12,9 +12,9 @@ export type ChargedUsageJob = {
     status: string;
     video_seconds: number;
     image_count: number;
-    video_price_fen: number;
-    image_price_fen: number;
-    cost_fen: number;
+    video_price_fen: string;
+    image_price_fen: string;
+    cost_fen: string;
     charged_at: string;
 };
 

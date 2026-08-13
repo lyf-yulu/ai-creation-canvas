@@ -213,7 +213,7 @@ git commit -m "feat: expose protected generation usage APIs"
 
 - [ ] **Step 1: Write failing UI tests**
 
-Create `web/src/test/usage-page.test.tsx` with a normal-user mock response containing `total_cost_fen: 245`, one job, and assertions for `¥2.45` and absence of “保存价格”. Add an admin test that changes `0.25` and `1.20`, clicks “保存价格”, and asserts:
+Create `web/src/test/usage-page.test.tsx` with a normal-user mock response containing `total_cost_fen: "245"`, one job, and assertions for `¥2.45` and absence of “保存价格”. Add an admin test that changes `0.25` and `1.20`, clicks “保存价格”, and asserts:
 
 ```ts
 expect(fetchMock).toHaveBeenLastCalledWith(
@@ -232,7 +232,7 @@ Expected: FAIL because the client, route, page and navigation do not exist.
 
 - [ ] **Step 3: Implement the page and navigation**
 
-Use `apiFetch` in `web/src/api/usage.ts`; expose only safe summary and charged-job types. Implement integer-safe formatting as `const formatFen = (fen: number) => "¥" + (fen / 100).toFixed(2);`. The page renders cards for successful tasks, images, video seconds and total cost, followed by charged-job rows or an empty state.
+Use `apiFetch` in `web/src/api/usage.ts`; expose only safe summary and charged-job types. Keep usage money fields as decimal strings and format them with `BigInt` so values beyond JavaScript's safe-integer range retain exact fen. The page renders cards for successful tasks, images, video seconds and total cost, followed by charged-job rows or an empty state.
 
 For administrators, add decimal-yuan inputs labeled “每秒视频价格（元）” and “每张图片价格（元）”, validate with `/^\\d+(\\.\\d{1,2})?$/`, convert to integer fen, and show an alert without a request for invalid input. Loading or saving failure shows an alert; a save failure preserves displayed prior rates. Add `BarChart3` “统计” to shared navigation and the `/usage` child route.
 
@@ -289,4 +289,3 @@ git commit -m "test: cover generation cost statistics flow"
 - Task 3 covers both roles’ UI and integer-fen handling.
 - Task 4 covers the agreed two-user acceptance path.
 - Token accounting, multi-result billing, refunds, exports, per-model prices, quotas and payments remain deliberately out of scope.
-

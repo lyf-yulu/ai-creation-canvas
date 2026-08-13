@@ -3,7 +3,11 @@ import { useEffect, useState } from "react";
 import { fetchAdminUsage, fetchUsage, fetchUsageRates, updateUsageRates, type AdminUsage, type Usage, type UsageRates } from "@/api/usage";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 
-const formatFen = (fen: number) => "¥" + (fen / 100).toFixed(2);
+const formatFen = (fen: string) => {
+    const value = BigInt(fen);
+    const hundred = BigInt(100);
+    return `¥${value / hundred}.${(value % hundred).toString().padStart(2, "0")}`;
+};
 const isYuanAmount = (value: string) => /^\d+(\.\d{1,2})?$/.test(value);
 const yuanToFen = (value: string) => {
     const [yuan, decimal = ""] = value.split(".");
@@ -166,7 +170,6 @@ export default function UsagePage() {
             })
             .catch(() => {
                 if (active) {
-                    setUsage({ summary: { successful_jobs: 0, image_count: 0, video_seconds: 0, total_cost_fen: 0 }, jobs: [] });
                     setOwnerFailed(true);
                 }
             });
@@ -234,7 +237,9 @@ export default function UsagePage() {
                     计费价格暂时无法加载，请稍后重试。
                 </p>
             )}
-            {usage === null ? (
+            {usage === null && ownerFailed ? (
+                <p className="mt-7 text-sm text-[#829889]">统计数据暂时不可用。</p>
+            ) : usage === null ? (
                 <p className="mt-7 text-sm text-[#829889]">正在加载统计…</p>
             ) : (
                 <>

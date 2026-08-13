@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
+from ai_creation_canvas.app import create_app
+from ai_creation_canvas.config import Settings
+from tests.server.test_activity_api import identity
 from tests.server.test_model_assignments import local_clients
 
 
@@ -57,6 +62,21 @@ def test_only_admin_can_read_and_change_usage_rates(tmp_path):
     assert response.json() == {"video_price_fen": 25, "image_price_fen": 120}
 
 
+def test_signed_portal_admin_cannot_access_local_usage_admin_endpoints(tmp_path) -> None:
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        static_dir=tmp_path / "missing-static",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/admin/usage",
+        headers=identity("portal-admin", role="admin"),
+    )
+
+    assert response.status_code == 404
+
+
 def test_admin_usage_returns_global_summary_users_and_jobs(tmp_path) -> None:
     app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
     del user, admin_headers, user_headers
@@ -92,8 +112,46 @@ def test_admin_usage_returns_global_summary_users_and_jobs(tmp_path) -> None:
         "successful_jobs": 2,
         "image_count": 1,
         "video_seconds": 5,
-        "total_cost_fen": 245,
+        "total_cost_fen": "245",
     }
     assert {item["user_id"] for item in response.json()["users"]} == {accounts.admin.user_id, accounts.user.user_id}
     assert {item["user_id"] for item in response.json()["jobs"]} == {accounts.admin.user_id, accounts.user.user_id}
+    assert all(
+        isinstance(job[field], str)
+        for job in response.json()["jobs"]
+        for field in ("video_price_fen", "image_price_fen", "cost_fen")
+    )
     assert "request_hash" not in response.text
+
+
+def test_admin_usage_includes_every_local_account_when_no_jobs_are_charged(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, user, admin_headers, user_headers
+    assert accounts.admin is not None
+    assert accounts.user is not None
+
+    response = admin.get("/api/v1/admin/usage")
+
+    assert response.status_code == 200
+    assert response.json()["summary"] == {
+        "successful_jobs": 0,
+        "image_count": 0,
+        "video_seconds": 0,
+        "total_cost_fen": "0",
+    }
+    assert response.json()["jobs"] == []
+    assert {item["user_id"] for item in response.json()["users"]} == {
+        accounts.admin.user_id,
+        accounts.user.user_id,
+    }
+    assert all(set(item) == {"user_id", "summary"} for item in response.json()["users"])
+    assert all(
+        item["summary"]
+        == {
+            "successful_jobs": 0,
+            "image_count": 0,
+            "video_seconds": 0,
+            "total_cost_fen": "0",
+        }
+        for item in response.json()["users"]
+    )

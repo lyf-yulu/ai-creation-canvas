@@ -488,24 +488,22 @@ class CanvasStore:
 
     def usage_for_owner(self, user_id: str) -> dict[str, object]:
         with self._connection() as db:
-            total = db.execute(
-                "SELECT COALESCE(SUM(cost_fen),0) FROM canvas_jobs WHERE user_id=? AND charged_at IS NOT NULL",
-                (user_id,),
-            ).fetchone()[0]
             jobs = self._usage_jobs(db, user_id)
-        return {"user_id": user_id, "total_cost_fen": int(total), "jobs": jobs}
+        total = sum(int(job["cost_fen"]) for job in jobs)
+        return {"user_id": user_id, "total_cost_fen": total, "jobs": jobs}
 
     def usage_for_all_users(self) -> tuple[dict[str, object], ...]:
         with self._connection() as db:
-            user_ids = db.execute("SELECT DISTINCT user_id FROM canvas_jobs ORDER BY user_id").fetchall()
+            user_ids = db.execute(
+                "SELECT user_id FROM canvas_users "
+                "UNION SELECT DISTINCT user_id FROM canvas_jobs ORDER BY user_id"
+            ).fetchall()
             usage = []
             for row in user_ids:
                 user_id = str(row["user_id"])
-                total = db.execute(
-                    "SELECT COALESCE(SUM(cost_fen),0) FROM canvas_jobs WHERE user_id=? AND charged_at IS NOT NULL",
-                    (user_id,),
-                ).fetchone()[0]
-                usage.append({"user_id": user_id, "total_cost_fen": int(total), "jobs": self._usage_jobs(db, user_id)})
+                jobs = self._usage_jobs(db, user_id)
+                total = sum(int(job["cost_fen"]) for job in jobs)
+                usage.append({"user_id": user_id, "total_cost_fen": total, "jobs": jobs})
         return tuple(usage)
 
     def create_project(self, *, user_id: str, project_id: str, title: str, document_json: str) -> tuple[dict[str, object], bool, bool]:
@@ -645,6 +643,8 @@ class CanvasStore:
     def _capture_usage_snapshot(db: sqlite3.Connection, job_id: str, now: str) -> None:
         job = db.execute("SELECT video_seconds,image_count,charged_at FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
         if job is None or job["charged_at"] is not None:
+            return
+        if int(job["video_seconds"]) == 0 and int(job["image_count"]) == 0:
             return
         rates = db.execute("SELECT video_price_fen,image_price_fen FROM canvas_usage_rates WHERE singleton=1").fetchone()
         assert rates is not None
