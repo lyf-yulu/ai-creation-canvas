@@ -122,8 +122,10 @@ git commit -m "refactor: share managed job resolution"
 - Modify: `server/ai_creation_canvas/job_worker.py`
 - Modify: `server/ai_creation_canvas/adapters/ark.py`
 - Modify: `server/ai_creation_canvas/app.py`
+- Modify: `server/ai_creation_canvas/api/jobs.py`
 - Modify: `tests/server/test_job_worker.py`
 - Modify: `tests/contracts/test_ark_adapter.py`
+- Modify: `tests/contracts/test_generation_flow.py`
 
 **Interfaces:**
 - Consumes: Task 1 lease API, Task 2 managed adapter resolver, direct `AdapterRegistry`, adapter `JobState.results`.
@@ -132,6 +134,8 @@ git commit -m "refactor: share managed job resolution"
 - [ ] **Step 1: Write failing worker tests**
 
 Cover ordered two-result completion; managed polling through the saved route/fingerprint; missing credential delaying without key rotation; retryable `PortalUpstreamError` releasing the lease; non-retryable error terminating safely; invalid/empty/duplicate/over-limit success failing terminally; `submission_unknown` never claimed; stale token never acknowledging Ark pending; and successful CAS acknowledging once.
+
+Also cover direct and managed queued jobs through `GET /api/v1/jobs/{job_id}` and assert the endpoint returns stored state without calling either provider adapter. Preserve the local stale `submitting/in_flight` to `submission_unknown` transition.
 
 - [ ] **Step 2: Run RED**
 
@@ -147,50 +151,32 @@ Create a server-owned `RequestContext` from `user_id`. Resolve direct adapters f
 
 - [ ] **Step 4: Reduce `JobWorker` to scheduling**
 
-Inject `JobPollingService`. Keep start/stop idempotence, event-loop ownership protection, heartbeat renewal, cancellation release, and loop-level isolation. Construct service/worker once in `create_app`. Call Ark `acknowledge_poll_result` only after the current token successfully persisted matching ordered results.
+Inject `JobPollingService`. Keep start/stop idempotence, event-loop ownership protection, heartbeat renewal, cancellation release, and loop-level isolation. Construct service/worker once in `create_app`. Call Ark `acknowledge_poll_result` only after the current token successfully persisted matching ordered results. Remove provider polling from the GET path so it only performs the safe local in-flight expiry check and returns persisted state; cancel and result endpoints remain unchanged.
 
 - [ ] **Step 5: Run GREEN**
 
 ```bash
-PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/server/test_submission_unknown.py
+PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/server/test_submission_unknown.py
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
-### Task 4: Read-Only Job API and Frontend Waiting
+### Task 4: Frontend Long-Running Job Waiting
 
 **Files:**
-- Modify: `server/ai_creation_canvas/api/jobs.py`
-- Modify: `tests/contracts/test_generation_flow.py`
 - Modify: `web/src/api/jobs.ts`
 - Modify: `web/src/test/jobs.test.ts`
 
 **Interfaces:**
 - Consumes: persisted state advanced by `JobWorker`.
-- Produces: read-only `GET /api/v1/jobs/{job_id}` and abortable exponential-backoff `waitForJob(...)`.
+- Produces: abortable exponential-backoff `waitForJob(...)` consuming the read-only job endpoint completed in Task 3.
 
-- [ ] **Step 1: Write failing API tests**
-
-For direct and managed queued jobs, call GET and assert provider poll count stays zero while stored state is returned. Preserve local expiry of stale `submitting/in_flight` into `submission_unknown`.
-
-- [ ] **Step 2: Run RED**
-
-```bash
-PYTHONPATH=.:server .venv/bin/pytest -q tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py
-```
-
-Expected: managed GET still calls the provider.
-
-- [ ] **Step 3: Make GET read-only**
-
-Remove provider I/O from `_poll`; retain only the safe local in-flight expiry transition. Keep cancel and result endpoints unchanged.
-
-- [ ] **Step 4: Verify frontend behavior with tests first**
+- [ ] **Step 1: Verify frontend behavior with tests first**
 
 Tests must prove request time counts toward an explicit deadline, AbortSignal reaches fetch and sleep, no default two-minute timeout exists, invalid intervals reject, and delays back off from 1 to at most 10 seconds.
 
@@ -198,7 +184,7 @@ Tests must prove request time counts toward an explicit deadline, AbortSignal re
 npm test --prefix web -- --run src/test/jobs.test.ts
 ```
 
-- [ ] **Step 5: Implement minimal frontend waiting and run GREEN**
+- [ ] **Step 2: Implement minimal frontend waiting and run GREEN**
 
 Use `fetchJob(id, signal)`, monotonic `now`, abortable sleep, bounded exponential backoff, and no provider-specific frontend state.
 
@@ -207,10 +193,10 @@ npm test --prefix web -- --run src/test/jobs.test.ts
 npm run typecheck --prefix web
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add server/ai_creation_canvas/api/jobs.py tests/contracts/test_generation_flow.py web/src/api/jobs.ts web/src/test/jobs.test.ts
+git add web/src/api/jobs.ts web/src/test/jobs.test.ts
 git commit -m "feat: decouple completion from browser polling"
 ```
 
