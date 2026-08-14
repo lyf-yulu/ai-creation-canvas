@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -187,6 +189,122 @@ def test_direct_in_flight_submission_crossing_lease_and_restart_never_replays(tm
     assert stored is not None
     assert stored["submission_state"] == "submission_unknown"
     assert stored["submission_token"] is None
+
+
+def test_legacy_direct_null_submission_migrates_unknown_and_never_calls_provider(tmp_path: Path) -> None:
+    data_dir = tmp_path / "legacy-direct-null"
+    data_dir.mkdir()
+    database = sqlite3.connect(data_dir / "canvas.sqlite3")
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "operation": "image.generate",
+                "model_id": "model-1",
+                "prompt": "safe prompt",
+                "params": {},
+                "asset_ids": [],
+                "inputs": {},
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    database.execute(
+        """CREATE TABLE canvas_jobs (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, service_id TEXT NOT NULL,
+            upstream_job_id TEXT, operation TEXT NOT NULL, status TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
+            error_code TEXT, result_id TEXT, submission_token TEXT, lease_until REAL,
+            attempt INTEGER NOT NULL DEFAULT 0, logical_model_id TEXT,
+            submission_state TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(user_id, idempotency_key)
+        )"""
+    )
+    database.execute(
+        "INSERT INTO canvas_jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "legacy-job",
+            "u-a",
+            "images",
+            None,
+            "image.generate",
+            "submitting",
+            "legacy-null",
+            request_hash,
+            None,
+            None,
+            "legacy-token",
+            9999999999.0,
+            1,
+            None,
+            None,
+            "2026-08-14T00:00:00+00:00",
+            "2026-08-14T00:00:00+00:00",
+        ),
+    )
+    database.execute(
+        "INSERT INTO canvas_jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "legacy-managed-job",
+            "u-a",
+            "managed-model",
+            None,
+            "image.generate",
+            "submitting",
+            "legacy-managed-null",
+            "b" * 64,
+            None,
+            None,
+            "managed-token",
+            9999999999.0,
+            1,
+            "managed-model",
+            None,
+            "2026-08-14T00:00:00+00:00",
+            "2026-08-14T00:00:00+00:00",
+        ),
+    )
+    database.commit()
+    database.close()
+
+    adapter = FakeGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    store = CanvasStore(data_dir)
+    migrated, _ = store.job_for_owner("legacy-job", "u-a")
+    assert migrated is not None
+    assert migrated["status"] == "submission_unknown"
+    assert migrated["submission_state"] == "submission_unknown"
+    assert migrated["submission_token"] is None
+    assert migrated["lease_until"] is None
+    assert store.claim_pollable_job(lease_seconds=30) is None
+    managed, _ = store.job_for_owner("legacy-managed-job", "u-a")
+    assert managed is not None
+    assert managed["status"] == "submitting"
+    assert managed["submission_state"] is None
+    assert managed["submission_token"] == "managed-token"
+
+    app = create_app(
+        Settings("test", 8992, data_dir, "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=store,
+    )
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.generate",
+            "model_id": "model-1",
+            "prompt": "safe prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "legacy-null",
+        },
+        headers=direct_headers(),
+    )
+    assert response.status_code == 201
+    assert response.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 0
 
 
 def test_get_expires_stale_in_flight_to_submission_unknown(tmp_path: Path) -> None:

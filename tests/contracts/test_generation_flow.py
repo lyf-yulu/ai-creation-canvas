@@ -906,17 +906,13 @@ def test_direct_cancelled_submission_is_unknown_and_never_replayed(tmp_path):
     assert app.state.canvas_store.claim_pollable_job(lease_seconds=30) is None
 
 
-@pytest.mark.parametrize(
-    "disposition",
-    (SubmissionDisposition.NOT_SUBMITTED, SubmissionDisposition.TEMPORARY_UNAVAILABLE),
-)
-def test_direct_explicit_safe_submission_outcome_can_be_retried(tmp_path, disposition):
+def test_direct_explicit_not_submitted_outcome_can_be_retried(tmp_path):
     class SafelyRetryableGeneration(FakeGeneration):
         async def submit(self, context, request):
             self.submit_count += 1
             if self.submit_count == 1:
                 raise SubmissionError(
-                    disposition,
+                    SubmissionDisposition.NOT_SUBMITTED,
                     "TEMPORARY_UNAVAILABLE",
                     adapter_template="ark.image.generate",
                     status_code=503,
@@ -937,7 +933,7 @@ def test_direct_explicit_safe_submission_outcome_can_be_retried(tmp_path, dispos
         "prompt": "safe prompt",
         "params": {},
         "asset_ids": [],
-        "idempotency_key": f"direct-safe-{disposition.value}",
+        "idempotency_key": "direct-safe-not-submitted",
     }
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -948,6 +944,48 @@ def test_direct_explicit_safe_submission_outcome_can_be_retried(tmp_path, dispos
     assert repeated.status_code == 201
     assert repeated.json()["status"] == "queued"
     assert adapter.submit_count == 2
+
+
+def test_direct_explicit_temporary_unavailable_is_unknown_and_never_replayed(tmp_path):
+    class TemporarilyUnavailableGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            raise SubmissionError(
+                SubmissionDisposition.TEMPORARY_UNAVAILABLE,
+                "TEMPORARY_UNAVAILABLE",
+                adapter_template="ark.image.generate",
+                status_code=503,
+            )
+
+    adapter = TemporarilyUnavailableGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-temporary-unavailable",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code in {502, 503}
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    stored, _ = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["submission_state"] == "submission_unknown"
+    assert stored["submission_token"] is None
 
 
 def test_direct_explicit_rejected_submission_is_terminal_failed(tmp_path):

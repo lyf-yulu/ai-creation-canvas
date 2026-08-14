@@ -561,10 +561,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                         "The request was rejected.",
                         status=422,
                     ) from None
-                if error.disposition in {
-                    SubmissionDisposition.NOT_SUBMITTED,
-                    SubmissionDisposition.TEMPORARY_UNAVAILABLE,
-                }:
+                if error.disposition is SubmissionDisposition.NOT_SUBMITTED:
                     store.fail_reservation(job_id, error.code, token)
                     raise problem(
                         request,

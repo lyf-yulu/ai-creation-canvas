@@ -30,6 +30,7 @@ def test_direct_submission_begin_is_single_owner_cas_and_expires_unknown(tmp_pat
     )
     token = str(reservation.job["submission_token"])
 
+    assert reservation.job["submission_state"] == "reserved"
     assert store.begin_direct_submission("job-a", token) is True
     assert store.begin_direct_submission("job-a", token) is False
     assert store.begin_direct_submission("job-a", "stale-token") is False
