@@ -32,6 +32,7 @@ _MAX_ITEMS = 64
 _MAX_BILLABLE_VIDEO_SECONDS = 86_400
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _RESULT_ASSET = re.compile(r"job-result\.([A-Za-z0-9_-]{1,128})\.([0-9]{1,2})\Z")
+_UPSTREAM_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
 def _result_ids(item: Mapping[str, object]) -> tuple[str, ...]:
@@ -177,6 +178,11 @@ def _route_snapshot(route: ModelRouteDefinition, pool_revision_digest: str) -> s
 
 def _adapter_template(route: ModelRouteDefinition, operation: str) -> str:
     return f"{route.adapter_type}.{operation}"
+
+
+def _known_upstream_job_id(upstream: object) -> str | None:
+    value = getattr(upstream, "upstream_job_id", None)
+    return value if isinstance(value, str) and _UPSTREAM_JOB_ID.fullmatch(value) else None
 
 
 async def _submit_managed(request: Request, context, domain_request: JobRequest, reservation, upstream_asset_ids: list[str], upstream_inputs: dict[str, tuple[str, ...]]) -> dict[str, object]:
@@ -481,34 +487,114 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     try:
         adapter = selected_adapter
         async with request.app.state.execution_coordinator.acquire(str(reservation.job["id"]), context.user.user_id, str(binding.provider.provider_id if binding is not None else model.service_id), domain_request.model_id):
-            submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
-            if callable(submit_with_cookie):
-                upstream_request = JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs)
-                upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
-            else:
-                upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
-        state = _validated_submission_state(request, store, reservation, upstream)
-        if _sync_only_adapter_returned_nonterminal(adapter, state.status):
-            store.mark_submission_unknown(
-                str(reservation.job["id"]),
-                str(reservation.job["submission_token"]),
-                upstream_job_id=upstream.upstream_job_id,
-            )
-            raise problem(
-                request,
-                "UPSTREAM_INVALID",
-                "The generation service returned an invalid response.",
-                status=502,
-            )
-        item = store.mark_submitted(
-            str(reservation.job["id"]),
-            upstream.upstream_job_id,
-            state.status.value,
-            str(reservation.job["submission_token"]),
-            result_ids=state.result_ids or None,
-            error_code=state.error_code,
-        )
-        return _response(item, request)
+            job_id = str(reservation.job["id"])
+            token = str(reservation.job["submission_token"])
+            upstream = None
+            try:
+                upstream_request = JobRequest(
+                    domain_request.operation,
+                    domain_request.model_id,
+                    domain_request.prompt,
+                    domain_request.idempotency_key,
+                    domain_request.params,
+                    tuple(upstream_asset_ids) if not upstream_inputs else (),
+                    upstream_inputs,
+                )
+                submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
+                if callable(submit_with_cookie):
+                    upstream = await submit_with_cookie(
+                        context, upstream_request, request.headers.get("cookie", "")
+                    )
+                else:
+                    upstream = await adapter.submit(context, upstream_request)
+                state = validated_provider_job_state(upstream.state)
+                if _sync_only_adapter_returned_nonterminal(adapter, state.status):
+                    store.mark_submission_unknown(
+                        job_id, token, upstream_job_id=upstream.upstream_job_id
+                    )
+                    raise problem(
+                        request,
+                        "UPSTREAM_INVALID",
+                        "The generation service returned an invalid response.",
+                        status=502,
+                    )
+                item = store.mark_submitted(
+                    job_id,
+                    upstream.upstream_job_id,
+                    state.status.value,
+                    token,
+                    result_ids=state.result_ids or None,
+                    error_code=state.error_code,
+                )
+                return _response(item, request)
+            except asyncio.CancelledError:
+                store.mark_submission_unknown(
+                    job_id,
+                    token,
+                    upstream_job_id=_known_upstream_job_id(upstream),
+                )
+                raise
+            except SubmissionError as error:
+                if error.disposition is SubmissionDisposition.ACCEPTED:
+                    item = store.mark_submitted(
+                        job_id, str(error.provider_task_id), "queued", token
+                    )
+                    return _response(item, request)
+                if error.disposition is SubmissionDisposition.REJECTED:
+                    store.mark_submission_rejected(job_id, token, error.code)
+                    raise problem(
+                        request,
+                        "REQUEST_REJECTED",
+                        "The request was rejected.",
+                        status=422,
+                    ) from None
+                if error.disposition in {
+                    SubmissionDisposition.NOT_SUBMITTED,
+                    SubmissionDisposition.TEMPORARY_UNAVAILABLE,
+                }:
+                    store.fail_reservation(job_id, error.code, token)
+                    raise problem(
+                        request,
+                        "UPSTREAM_UNAVAILABLE",
+                        "The generation service is unavailable.",
+                        status=503,
+                        retryable=True,
+                    ) from None
+                store.mark_submission_unknown(job_id, token)
+                raise problem(
+                    request,
+                    "UPSTREAM_UNAVAILABLE",
+                    "The generation service is unavailable.",
+                    status=502,
+                    retryable=True,
+                ) from None
+            except DomainError:
+                raise
+            except InvalidUpstreamResult:
+                store.mark_submission_unknown(
+                    job_id,
+                    token,
+                    upstream_job_id=_known_upstream_job_id(upstream),
+                )
+                raise problem(
+                    request,
+                    "UPSTREAM_INVALID",
+                    "The generation service returned an invalid response.",
+                    status=502,
+                ) from None
+            except Exception:
+                store.mark_submission_unknown(
+                    job_id,
+                    token,
+                    upstream_job_id=_known_upstream_job_id(upstream),
+                )
+                raise problem(
+                    request,
+                    "UPSTREAM_UNAVAILABLE",
+                    "The generation service is unavailable.",
+                    status=502,
+                    retryable=True,
+                ) from None
     except ExecutionCapacityExceeded:
         store.fail_reservation(str(reservation.job["id"]), "TASK_CAPACITY", str(reservation.job["submission_token"]))
         raise problem(request, "CAPACITY_EXCEEDED", "The generation service is busy.", status=429, retryable=True) from None
@@ -517,21 +603,6 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True) from None
     except DomainError:
         raise
-    except PortalUpstreamError as error:
-        if error.retryable:
-            store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
-            raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
-        store.mark_failed(str(reservation.job["id"]), "REQUEST_REJECTED", str(reservation.job["submission_token"]))
-        raise problem(request, "REQUEST_REJECTED", "The request was rejected.", status=422)
-    except asyncio.CancelledError:
-        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
-        raise
-    except InvalidUpstreamResult:
-        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
-        raise problem(request, "UPSTREAM_INVALID", "The generation service returned an invalid response.", status=502) from None
-    except Exception:
-        store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))
-        raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=502, retryable=True)
 
 
 @router.get("/jobs/{job_id}")

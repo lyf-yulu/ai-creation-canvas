@@ -41,6 +41,7 @@ def test_possible_send_timeout_is_visible_unknown_and_never_replayed(tmp_path: P
     item, _ = store.job_for_owner(first.json()["id"], "user-a")
     assert item is not None and item["submission_state"] == "submission_unknown"
     assert item["submission_token"] is None and item["lease_until"] is None
+    assert store.claim_pollable_job(lease_seconds=30) is None
     encoded = json.dumps(item, sort_keys=True)
     assert "secret-value" not in encoded and "gemini-a" not in encoded
 

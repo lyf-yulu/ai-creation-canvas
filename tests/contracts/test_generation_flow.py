@@ -10,6 +10,7 @@ import httpx
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsAdapter, ServiceDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
+from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.domain.models import AssetRef, JobState, JobStatus, ModelInputPort, ModelSpec, RequestContext, UpstreamJob
@@ -179,7 +180,7 @@ def test_sync_only_adapter_returning_queued_is_unknown_and_never_replayed(tmp_pa
     ),
     ids=("empty", "unsafe", "duplicate", "over-limit"),
 )
-def test_invalid_synchronous_success_is_terminal_unchargeable_failure(tmp_path, results):
+def test_invalid_synchronous_success_is_unknown_unchargeable_and_never_replayed(tmp_path, results):
     state = SimpleNamespace(status=JobStatus.SUCCEEDED, results=results, error=None)
     adapter = SynchronousOutcomeGeneration(state)
     registry = AdapterRegistry()
@@ -208,13 +209,28 @@ def test_invalid_synchronous_success_is_terminal_unchargeable_failure(tmp_path, 
     assert response.json()["code"] == "UPSTREAM_INVALID"
     with app.state.canvas_store._connection() as db:
         stored = dict(db.execute("SELECT * FROM canvas_jobs").fetchone())
-    assert stored["status"] == "failed"
-    assert stored["error_code"] == "INVALID_UPSTREAM_RESULT"
+    assert stored["status"] == "submission_unknown"
+    assert stored["error_code"] == "SUBMISSION_UNKNOWN"
     assert stored["upstream_job_id"] == "sync-upstream-1"
     assert stored["result_id"] is None
     assert stored["result_ids_json"] is None
     assert stored["charged_at"] is None
     assert app.state.canvas_store.usage_for_owner("u-a")["total_cost_fen"] == 0
+    repeated = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.generate",
+            "model_id": "model-1",
+            "prompt": "safe prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": f"invalid-sync-{len(results)}-{str(results)[:8]}",
+        },
+        headers=headers(),
+    )
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
 
 
 def test_valid_synchronous_multi_result_persists_legacy_first_and_downloads_each_result(tmp_path):
@@ -686,18 +702,286 @@ def test_cookie_protected_catalog_rejects_submission_before_catalog_or_storage(t
     assert sqlite3.connect(app.state.canvas_store.database).execute("SELECT COUNT(*) FROM canvas_jobs").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize(("retryable", "expected_status", "expected_code"), [(True, 502, "UPSTREAM_UNAVAILABLE"), (False, 422, "REQUEST_REJECTED")])
-def test_typed_submission_error_never_returns_created(tmp_path, retryable, expected_status, expected_code):
+@pytest.mark.parametrize("retryable", (True, False))
+def test_direct_untyped_portal_error_is_unknown_and_never_replayed(tmp_path, retryable):
     class FailingGeneration(FakeGeneration):
         async def submit(self, context, request):
+            self.submit_count += 1
             raise PortalUpstreamError(retryable=retryable)
 
-    registry = AdapterRegistry(); registry.register_generation(FailingGeneration())
+    adapter = FailingGeneration()
+    registry = AdapterRegistry(); registry.register_generation(adapter)
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
     payload = {"operation":"image.generate", "model_id":"model-1", "prompt":"p", "params":{}, "asset_ids":[], "idempotency_key":f"failure-{retryable}"}
-    response = TestClient(app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers=headers())
-    assert response.status_code == expected_status and response.status_code != 201
-    assert response.json()["code"] == expected_code
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/api/v1/jobs", json=payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=payload, headers=headers())
+    assert response.status_code == 502
+    assert response.json()["code"] == "UPSTREAM_UNAVAILABLE"
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+
+
+@pytest.mark.parametrize(
+    ("case", "failure"),
+    (
+        ("unknown", lambda: RuntimeError("sensitive provider detail")),
+        ("timeout", lambda: PortalUpstreamError(retryable=True, status_code=503)),
+        ("invalid", lambda: InvalidUpstreamResult("malformed provider success")),
+        (
+            "typed-unknown",
+            lambda: SubmissionError(
+                SubmissionDisposition.SUBMISSION_UNKNOWN,
+                "SUBMISSION_UNKNOWN",
+                adapter_template="ark.image.generate",
+            ),
+        ),
+    ),
+)
+def test_direct_ambiguous_submission_is_unknown_and_never_replayed(tmp_path, case, failure):
+    class AmbiguousGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            raise failure()
+
+    adapter = AmbiguousGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": f"direct-{case}",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code in {502, 503}
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    stored, forbidden = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None and forbidden is False
+    assert stored["status"] == "submission_unknown"
+    assert stored["submission_state"] == "submission_unknown"
+    assert stored["submission_token"] is None
+    assert app.state.canvas_store.claim_pollable_job(lease_seconds=30) is None
+
+
+def test_direct_malformed_success_is_unknown_and_never_replayed(tmp_path):
+    class MalformedGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            return UpstreamJob(self.service_id, "upstream-1", JobState("upstream-1", "succeeded"))
+
+    adapter = MalformedGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-malformed",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code == 502
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    stored, _ = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["status"] == "submission_unknown"
+    assert stored["submission_token"] is None
+    assert app.state.canvas_store.claim_pollable_job(lease_seconds=30) is None
+
+
+def test_direct_cancelled_submission_is_unknown_and_never_replayed(tmp_path):
+    class CancelledGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            raise asyncio.CancelledError
+
+    adapter = CancelledGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-cancelled",
+    }
+
+    first = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs", json=request_payload, headers=headers()
+    )
+    repeated = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs", json=request_payload, headers=headers()
+    )
+
+    assert first.status_code == 500
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    stored, _ = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["status"] == "submission_unknown"
+    assert stored["submission_token"] is None
+    assert app.state.canvas_store.claim_pollable_job(lease_seconds=30) is None
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    (SubmissionDisposition.NOT_SUBMITTED, SubmissionDisposition.TEMPORARY_UNAVAILABLE),
+)
+def test_direct_explicit_safe_submission_outcome_can_be_retried(tmp_path, disposition):
+    class SafelyRetryableGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            if self.submit_count == 1:
+                raise SubmissionError(
+                    disposition,
+                    "TEMPORARY_UNAVAILABLE",
+                    adapter_template="ark.image.generate",
+                    status_code=503,
+                )
+            return UpstreamJob(self.service_id, "upstream-1", JobState("upstream-1", "queued"))
+
+    adapter = SafelyRetryableGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": f"direct-safe-{disposition.value}",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code in {502, 503}
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "queued"
+    assert adapter.submit_count == 2
+
+
+def test_direct_explicit_rejected_submission_is_terminal_failed(tmp_path):
+    class RejectedGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            raise SubmissionError(
+                SubmissionDisposition.REJECTED,
+                "REQUEST_REJECTED",
+                adapter_template="ark.image.generate",
+                status_code=422,
+            )
+
+    adapter = RejectedGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-rejected",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code == 422
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "failed"
+    assert adapter.submit_count == 1
+
+
+def test_direct_explicit_accepted_submission_persists_upstream_and_never_replays(tmp_path):
+    class AcceptedGeneration(FakeGeneration):
+        async def list_models(self, context):
+            return (ModelSpec("model-1", self.service_id, "Model", ("video.generate",)),)
+
+        async def submit(self, context, request):
+            self.submit_count += 1
+            raise SubmissionError(
+                SubmissionDisposition.ACCEPTED,
+                "PROVIDER_TASK_ACCEPTED",
+                adapter_template="ark.video.generate",
+                status_code=202,
+                provider_task_id="cgt-task-safe-1",
+            )
+
+    adapter = AcceptedGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "video.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-accepted",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code == repeated.status_code == 201
+    assert repeated.json()["status"] == "queued"
+    assert adapter.submit_count == 1
+    stored, _ = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["upstream_job_id"] == "cgt-task-safe-1"
+    assert stored["submission_token"] is None
 
 
 def test_get_does_not_poll_an_adapter_that_would_raise_invalid_result(tmp_path):
@@ -854,30 +1138,26 @@ def test_get_does_not_poll_a_cookie_protected_adapter(tmp_path):
     assert adapter.cookies == []
 
 
-def test_retry_after_provider_accepted_a_timed_out_submission_reuses_one_upstream_job(tmp_path):
+def test_direct_read_timeout_never_sends_a_second_provider_submission(tmp_path):
     class Clock:
         value = 1000.0
         def __call__(self): return self.value
     clock = Clock()
-    created: dict[str, str] = {}
-    create_count = 0
+    submit_count = 0
     fail_first = True
 
     async def provider(request: httpx.Request) -> httpx.Response:
-        nonlocal create_count, fail_first
+        nonlocal submit_count, fail_first
         if request.url.path.endswith("/api/config"):
             return httpx.Response(200, json={"models": [{"id": "model-1", "display_name": "Model", "operations": ["image.generate"]}]})
         if request.method == "GET" and "/api/jobs/" in request.url.path:
             assert request.headers.get("cookie") is None
             return httpx.Response(200, json={"id": "provider-job-1", "status": "succeeded", "result_ref": "result-1"})
-        key = json.loads(request.content)["idempotency_key"]
-        if key not in created:
-            create_count += 1
-            created[key] = "provider-job-1"
+        submit_count += 1
         if fail_first:
             fail_first = False
             raise httpx.ReadTimeout("response lost", request=request)
-        return httpx.Response(202, json={"id": created[key], "status": "queued"})
+        return httpx.Response(202, json={"id": f"provider-job-{submit_count}", "status": "queued"})
 
     settings = Settings("test", 8992, tmp_path / "data", "test-secret")
     store = CanvasStore(settings.data_dir, clock=clock)
@@ -896,5 +1176,6 @@ def test_retry_after_provider_accepted_a_timed_out_submission_reuses_one_upstrea
     retry_app = create_app(settings, registry=registry, model_catalog=ModelCatalog(registry), canvas_store=reopened)
     retry = TestClient(retry_app, raise_server_exceptions=False).post("/api/v1/jobs", json=payload, headers={**headers(), "cookie": "session=a"})
     assert retry.status_code == 201
-    assert create_count == 1
+    assert retry.json()["status"] == "submission_unknown"
+    assert submit_count == 1
     assert sqlite3.connect(reopened.database).execute("SELECT COUNT(*) FROM canvas_jobs").fetchone()[0] == 1
