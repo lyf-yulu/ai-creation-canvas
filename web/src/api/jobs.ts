@@ -39,9 +39,12 @@ export async function waitForJob(id: string, options: WaitOptions = {}): Promise
         if (!Number.isFinite(startedAt) || !Number.isFinite(deadline)) throw new Error("Job polling options are invalid");
     }
     let wait = pollIntervalMs;
+    let isInitialFetch = true;
     while (true) {
         if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        if (!isInitialFetch && Number.isFinite(deadline) && now() >= deadline) break;
         const job = await getJob(id, options.signal);
+        isInitialFetch = false;
         if (job.status === "succeeded") return job;
         if (job.status === "failed") {
             const error = job.error;

@@ -34,7 +34,27 @@ it("counts request time toward an explicit deadline and forwards cancellation", 
     const sleep = vi.fn().mockResolvedValue(undefined);
 
     await expect(waitForJob("j", { fetchJob, sleep, now: () => now, maxWaitMs: 2, signal: controller.signal })).rejects.toThrow("timed out");
+    expect(fetchJob).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
+});
+
+it("does not start a subsequent fetch at the deadline", async () => {
+    let now = 0;
+    const fetchTimes: number[] = [];
+    const fetchJob = vi.fn(async () => {
+        fetchTimes.push(now);
+        return { id: "j", status: "running" as const };
+    });
+
+    await expect(waitForJob("j", {
+        fetchJob,
+        sleep: async (milliseconds) => { now += milliseconds; },
+        now: () => now,
+        pollIntervalMs: 1,
+        maxWaitMs: 2,
+    })).rejects.toThrow("timed out");
+
+    expect(fetchTimes).toEqual([0, 1]);
 });
 
 it("has no default two-minute deadline and backs off between polls", async () => {
