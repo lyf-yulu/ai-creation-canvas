@@ -103,6 +103,10 @@ def test_startup_preloads_governed_direct_adapter_and_recovers_without_catalog_r
         "restart-job", upstream.upstream_job_id, "queued",
         str(reservation.job["submission_token"]),
     )
+    with store._connection(immediate=True) as db:
+        db.execute(
+            "UPDATE canvas_jobs SET completion_mode=NULL WHERE id='restart-job'"
+        )
 
     recovery_calls = 0
 
@@ -136,5 +140,6 @@ def test_startup_preloads_governed_direct_adapter_and_recovers_without_catalog_r
 
     assert item is not None and forbidden is False
     assert item["status"] == "succeeded"
+    assert item["completion_mode"] == "background"
     assert registry.generation("chiyun").service_id == "chiyun"
     assert recovery_calls == 0

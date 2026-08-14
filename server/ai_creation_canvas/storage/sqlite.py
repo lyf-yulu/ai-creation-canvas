@@ -17,6 +17,8 @@ import time
 import re
 from typing import Callable, Iterator
 
+from ai_creation_canvas.domain.models import CompletionMode
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -418,6 +420,7 @@ class CanvasStore:
                 pool_revision_digest TEXT, key_fingerprint TEXT, submission_state TEXT, route_snapshot_json TEXT,
                 video_seconds INTEGER NOT NULL DEFAULT 0, image_count INTEGER NOT NULL DEFAULT 0,
                 video_price_fen INTEGER, image_price_fen INTEGER, cost_fen INTEGER, charged_at TEXT,
+                completion_mode TEXT CHECK(completion_mode IN ('background','request')),
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
@@ -466,7 +469,7 @@ class CanvasStore:
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT"), ("logical_model_id", "TEXT"), ("logical_model_revision", "INTEGER"), ("route_revision", "INTEGER"), ("pool_revision_digest", "TEXT"), ("key_fingerprint", "TEXT"), ("submission_state", "TEXT"), ("route_snapshot_json", "TEXT"), ("video_seconds", "INTEGER NOT NULL DEFAULT 0"), ("image_count", "INTEGER NOT NULL DEFAULT 0"), ("video_price_fen", "INTEGER"), ("image_price_fen", "INTEGER"), ("cost_fen", "INTEGER"), ("charged_at", "TEXT")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT"), ("logical_model_id", "TEXT"), ("logical_model_revision", "INTEGER"), ("route_revision", "INTEGER"), ("pool_revision_digest", "TEXT"), ("key_fingerprint", "TEXT"), ("submission_state", "TEXT"), ("route_snapshot_json", "TEXT"), ("video_seconds", "INTEGER NOT NULL DEFAULT 0"), ("image_count", "INTEGER NOT NULL DEFAULT 0"), ("video_price_fen", "INTEGER"), ("image_price_fen", "INTEGER"), ("cost_fen", "INTEGER"), ("charged_at", "TEXT"), ("completion_mode", "TEXT CHECK(completion_mode IN ('background','request'))")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
         db.execute(
@@ -1794,7 +1797,9 @@ class CanvasStore:
             db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
             return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None, logical_model_id: str | None = None, logical_model_revision: int | None = None, video_seconds: int = 0, image_count: int = 0) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None, logical_model_id: str | None = None, logical_model_revision: int | None = None, video_seconds: int = 0, image_count: int = 0, completion_mode: CompletionMode = "background") -> Reservation:
+        if not isinstance(completion_mode, str) or completion_mode not in {"background", "request"}:
+            raise ValueError("completion mode is invalid")
         video_seconds = self._validated_usage_value(
             video_seconds, name="video_seconds", maximum=_MAX_VIDEO_SECONDS
         )
@@ -1825,7 +1830,7 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,logical_model_id,logical_model_revision,submission_state,video_seconds,image_count,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, logical_model_id, logical_model_revision, "reserved", video_seconds, image_count, now, now))
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,logical_model_id,logical_model_revision,submission_state,video_seconds,image_count,completion_mode,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, logical_model_id, logical_model_revision, "reserved", video_seconds, image_count, completion_mode, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)
@@ -1981,6 +1986,7 @@ class CanvasStore:
             row = db.execute(
                 "SELECT * FROM canvas_jobs "
                 "WHERE status IN ('queued','running') AND upstream_job_id IS NOT NULL "
+                "AND completion_mode='background' "
                 "AND (lease_until IS NULL OR lease_until<=?) "
                 "ORDER BY updated_at,id LIMIT 1",
                 (now,),
@@ -1990,6 +1996,7 @@ class CanvasStore:
             cursor = db.execute(
                 "UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? "
                 "WHERE id=? AND status IN ('queued','running') AND upstream_job_id IS NOT NULL "
+                "AND completion_mode='background' "
                 "AND (lease_until IS NULL OR lease_until<=?)",
                 (token, now + float(lease_seconds), _now(), row["id"], now),
             )
@@ -1998,6 +2005,80 @@ class CanvasStore:
             claimed = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (row["id"],)).fetchone()
         assert claimed is not None
         return dict(claimed)
+
+    def claim_request_scoped_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        lease_seconds: float = 30.0,
+    ) -> dict[str, object] | None:
+        """Lease one exact owner-visible request-scoped job for a single HTTP poll."""
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        token = os.urandom(16).hex()
+        now = self._clock()
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? "
+                "WHERE id=? AND user_id=? AND status IN ('queued','running') "
+                "AND upstream_job_id IS NOT NULL AND completion_mode='request' "
+                "AND (lease_until IS NULL OR lease_until<=?)",
+                (token, now + float(lease_seconds), _now(), job_id, user_id, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = db.execute(
+                "SELECT * FROM canvas_jobs WHERE id=? AND user_id=?",
+                (job_id, user_id),
+            ).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def reconcile_job_completion_modes(
+        self,
+        *,
+        background_service_ids: set[str] | frozenset[str],
+        request_service_ids: set[str] | frozenset[str],
+    ) -> int:
+        """Classify legacy nonterminal rows using only trusted server registries."""
+        background = frozenset(background_service_ids)
+        request = frozenset(request_service_ids)
+        if (
+            any(not isinstance(item, str) or not item for item in background | request)
+            or background & request
+        ):
+            raise ValueError("completion mode services are invalid")
+        clauses = ["logical_model_id IS NOT NULL"]
+        parameters: list[object] = []
+        if background:
+            placeholders = ",".join("?" for _ in background)
+            clauses.append(f"service_id IN ({placeholders})")
+            parameters.extend(sorted(background))
+        if request:
+            placeholders = ",".join("?" for _ in request)
+            clauses.append(f"service_id IN ({placeholders})")
+            parameters.extend(sorted(request))
+        background_placeholders = ",".join("?" for _ in background)
+        case = "CASE WHEN logical_model_id IS NOT NULL THEN 'background'"
+        case_parameters: list[object] = []
+        if background:
+            case += f" WHEN service_id IN ({background_placeholders}) THEN 'background'"
+            case_parameters.extend(sorted(background))
+        case += " ELSE 'request' END"
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                f"UPDATE canvas_jobs SET completion_mode={case},updated_at=? "
+                "WHERE completion_mode IS NULL AND status IN ('queued','running') "
+                f"AND ({' OR '.join(clauses)})",
+                (*case_parameters, _now(), *parameters),
+            )
+        return cursor.rowcount
 
     def record_polled_job(
         self,

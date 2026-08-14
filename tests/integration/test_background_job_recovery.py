@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
 import json
+import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from ai_creation_canvas.adapters.ark import _local_asset_loader
@@ -22,6 +26,8 @@ from ai_creation_canvas.config import Settings
 from ai_creation_canvas.coordination import LocalExecutionCoordinator
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
 from ai_creation_canvas.domain.registry import AdapterRegistry
+from ai_creation_canvas.domain.models import PortalUser, RequestContext
+from ai_creation_canvas.job_polling import JobPollingService
 from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
@@ -98,6 +104,8 @@ class DirectProviderTransport:
 
 
 class RecoverablePortalJobsAdapter(PortalJobsAdapter):
+    requires_portal_cookie = False
+    requires_request_scoped_polling = False
     supports_background_polling = True
 
 
@@ -253,6 +261,252 @@ def _assert_result(client: TestClient, headers: dict[str, str], url: str, expect
     assert ranged.status_code == 206 and ranged.content == expected[:8]
     full = client.get(url, headers=headers)
     assert full.status_code == 200 and full.content == expected
+
+
+class RequestScopedPortalTransport:
+    def __init__(self, poll_response: httpx.Response | None = None) -> None:
+        self.poll_response = poll_response or httpx.Response(
+            200,
+            json={"id": "request-upstream", "status": "succeeded", "result_ref": "request-result"},
+        )
+        self.submits = 0
+        self.polls = 0
+        self.poll_cookies: list[str] = []
+        self.poll_started: threading.Event | None = None
+        self.release_poll: threading.Event | None = None
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/portal/api/config":
+            return httpx.Response(200, json={"models": [{
+                "id": "portal-image",
+                "display_name": "Request Portal",
+                "operations": ["image.generate"],
+                "input_media": ["text"],
+                "parameter_schema": {},
+            }]})
+        if request.method == "POST" and request.url.path == "/portal/api/jobs":
+            self.submits += 1
+            return httpx.Response(201, json={"id": "request-upstream", "status": "queued"})
+        if request.method == "GET" and request.url.path == "/portal/api/jobs/request-upstream":
+            self.polls += 1
+            self.poll_cookies.append(request.headers.get("cookie", ""))
+            if self.poll_started is not None:
+                self.poll_started.set()
+            if self.release_poll is not None:
+                assert self.release_poll.wait(timeout=2)
+            return self.poll_response
+        raise AssertionError(f"unexpected request-scoped Portal call: {request.method} {request.url.path}")
+
+
+def _request_scoped_app(data_dir: Path, transport: RequestScopedPortalTransport):
+    registry = AdapterRegistry()
+    portal_client = PortalClient(
+        "http://127.0.0.1:46122",
+        allowed_mounts=("/portal",),
+        allowed_methods=("GET", "POST"),
+        allow_loopback_http=True,
+        transport=httpx.MockTransport(transport),
+    )
+    registry.register_generation(PortalJobsAdapter(
+        ServiceDeclaration("portal-fixture", "/portal", "image", ("image.generate",)),
+        portal_client,
+    ))
+    store = CanvasStore(data_dir)
+    app = create_app(
+        Settings("test", 46121, data_dir, SIGNING_SECRET.decode(), allowed_origins=(ORIGIN,)),
+        static_dir=data_dir / "missing-static",
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=store,
+    )
+    app.state.job_worker._idle_seconds = 3600.0
+    return app, store
+
+
+def _submit_request_scoped_job(client: TestClient, *, cookie: str) -> str:
+    response = client.post(
+        "/api/v1/jobs",
+        headers={**_headers("request-owner"), "Cookie": cookie},
+        json={
+            "operation": "image.generate",
+            "model_id": "portal-image",
+            "prompt": "offline request polling",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "request-job",
+        },
+    )
+    assert response.status_code == 201 and response.json()["status"] == "queued"
+    return str(response.json()["id"])
+
+
+@pytest.mark.parametrize(
+    ("poll_response", "error_code"),
+    (
+        (httpx.Response(400, json={"code": "denied"}), "REQUEST_REJECTED"),
+        (
+            httpx.Response(200, json={
+                "id": "request-upstream",
+                "status": "succeeded",
+                "result_ref": "https://invalid.example/result",
+            }),
+            "INVALID_UPSTREAM_RESULT",
+        ),
+    ),
+)
+def test_request_scoped_terminal_and_invalid_polls_store_safe_failures(
+    tmp_path: Path, poll_response: httpx.Response, error_code: str
+) -> None:
+    transport = RequestScopedPortalTransport(poll_response)
+    app, store = _request_scoped_app(tmp_path / error_code, transport)
+    with TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as client:
+        job_id = _submit_request_scoped_job(client, cookie="portal_session=terminal-owner")
+        response = client.get(
+            f"/api/v1/jobs/{job_id}",
+            headers={**_headers("request-owner"), "Cookie": "portal_session=terminal-owner"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == job_id
+    assert response.json()["status"] == "failed"
+    assert response.json()["error"]["code"] == error_code
+    stored, forbidden = store.job_for_owner(job_id, "request-owner")
+    assert stored is not None and forbidden is False
+    assert stored["submission_token"] is None and stored["error_code"] == error_code
+
+
+def test_request_scoped_temporary_poll_error_releases_lease_without_cookie_persistence(
+    tmp_path: Path, caplog
+) -> None:
+    cookie = "portal_session=temporary-secret"
+    transport = RequestScopedPortalTransport(httpx.Response(503))
+    app, store = _request_scoped_app(tmp_path / "temporary", transport)
+    with caplog.at_level(logging.WARNING):
+        with TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as client:
+            job_id = _submit_request_scoped_job(client, cookie=cookie)
+            response = client.get(
+                f"/api/v1/jobs/{job_id}",
+                headers={**_headers("request-owner"), "Cookie": cookie},
+            )
+
+    assert response.status_code == 200 and response.json()["status"] == "queued"
+    stored, forbidden = store.job_for_owner(job_id, "request-owner")
+    assert stored is not None and forbidden is False
+    assert stored["submission_token"] is None
+    assert transport.poll_cookies == [cookie]
+    assert cookie.encode() not in store.database.read_bytes()
+    assert cookie not in caplog.text
+
+
+def test_concurrent_owner_gets_execute_exactly_one_request_scoped_poll(tmp_path: Path) -> None:
+    transport = RequestScopedPortalTransport()
+    transport.poll_started = threading.Event()
+    transport.release_poll = threading.Event()
+    app, _ = _request_scoped_app(tmp_path / "concurrent", transport)
+    cookie = "portal_session=concurrent-owner"
+    headers = {**_headers("request-owner"), "Cookie": cookie}
+    with (
+        TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as first_client,
+        TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as second_client,
+    ):
+        job_id = _submit_request_scoped_job(first_client, cookie=cookie)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(first_client.get, f"/api/v1/jobs/{job_id}", headers=headers)
+            assert transport.poll_started.wait(timeout=2)
+            second = second_client.get(f"/api/v1/jobs/{job_id}", headers=headers)
+            transport.release_poll.set()
+            completed = first.result(timeout=2)
+
+    assert second.status_code == 200 and second.json()["status"] == "queued"
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert transport.polls == 1 and transport.poll_cookies == [cookie]
+
+
+def test_request_scoped_restart_waits_for_fresh_authenticated_get(tmp_path: Path) -> None:
+    data_dir = tmp_path / "request-restart"
+    transport = RequestScopedPortalTransport()
+    first_app, first_store = _request_scoped_app(data_dir, transport)
+    with TestClient(first_app, base_url=ORIGIN, raise_server_exceptions=False) as first_client:
+        job_id = _submit_request_scoped_job(
+            first_client, cookie="portal_session=first-process"
+        )
+    assert transport.polls == 0
+    first_row, _ = first_store.job_for_owner(job_id, "request-owner")
+    assert first_row is not None and first_row["completion_mode"] == "request"
+    assert b"portal_session=first-process" not in first_store.database.read_bytes()
+
+    second_app, second_store = _request_scoped_app(data_dir, transport)
+    with TestClient(second_app, base_url=ORIGIN, raise_server_exceptions=False) as second_client:
+        assert transport.polls == 0
+        completed = second_client.get(
+            f"/api/v1/jobs/{job_id}",
+            headers={
+                **_headers("request-owner"),
+                "Cookie": "portal_session=fresh-process",
+            },
+        )
+
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert transport.poll_cookies == ["portal_session=fresh-process"]
+    second_row, _ = second_store.job_for_owner(job_id, "request-owner")
+    assert second_row is not None and second_row["status"] == "succeeded"
+
+
+def test_cancelled_request_scoped_poll_immediately_releases_its_lease(tmp_path: Path) -> None:
+    class CancelledPortalAdapter:
+        service_id = "cancelled-portal"
+        requires_request_scoped_polling = True
+
+        async def list_models(self, context):
+            return ()
+
+        async def submit(self, context, request):
+            raise AssertionError("submission is outside this polling test")
+
+        async def poll(self, context, upstream_job_id):
+            raise AssertionError("background poll is forbidden")
+
+        async def poll_with_cookie(self, context, upstream_job_id, cookie_header):
+            raise asyncio.CancelledError
+
+    store = CanvasStore(tmp_path / "cancelled")
+    reservation = store.reserve_job(
+        user_id="request-owner",
+        job_id="cancelled-job",
+        service_id="cancelled-portal",
+        operation="image.generate",
+        idempotency_key="cancelled-key",
+        request_hash="c" * 64,
+        completion_mode="request",
+    )
+    store.mark_submitted(
+        "cancelled-job",
+        "cancelled-upstream",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_request_scoped_job(
+        "cancelled-job", user_id="request-owner", lease_seconds=30
+    )
+    assert claim is not None
+    registry = AdapterRegistry()
+    registry.register_generation(CancelledPortalAdapter())
+    context = RequestContext(
+        PortalUser("request-owner", "Request Owner", "user"), "request", "trace"
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(JobPollingService(store, registry).poll_request_claim(
+            claim,
+            str(claim["submission_token"]),
+            context,
+            "portal_session=current",
+        ))
+
+    stored, _ = store.job_for_owner("cancelled-job", "request-owner")
+    assert stored is not None and stored["status"] == "queued"
+    assert stored["submission_token"] is None
+    assert stored["lease_until"] is not None and float(stored["lease_until"]) <= time.time()
 
 
 def test_background_worker_recovers_direct_and_managed_jobs_after_process_restart(tmp_path: Path) -> None:

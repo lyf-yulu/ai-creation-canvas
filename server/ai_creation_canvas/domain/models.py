@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 import math
-from typing import Mapping
+from typing import Literal, Mapping
 
 from ai_creation_canvas.errors import ApiError
 
@@ -115,6 +115,9 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+CompletionMode = Literal["background", "request"]
 
 
 @dataclass(frozen=True, slots=True)

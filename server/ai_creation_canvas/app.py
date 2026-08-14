@@ -226,6 +226,19 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     async def start_job_worker() -> None:
         if callable(refresh_background_adapters):
             await refresh_background_adapters()
+        adapters = registry.generation_adapters()
+        store.reconcile_job_completion_modes(
+            background_service_ids={
+                adapter.service_id
+                for adapter in adapters
+                if getattr(adapter, "supports_background_polling", False) is True
+            },
+            request_service_ids={
+                adapter.service_id
+                for adapter in adapters
+                if getattr(adapter, "requires_request_scoped_polling", False) is True
+            },
+        )
         await app.state.job_worker.start()
 
     app.router.on_startup.append(start_job_worker)

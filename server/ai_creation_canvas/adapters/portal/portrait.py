@@ -41,6 +41,7 @@ class PortraitDeclaration:
 
 class PortalPortraitAdapter:
     requires_portal_cookie = True
+    requires_request_scoped_polling = True
     def __init__(self, declaration: PortraitDeclaration, client: PortalClient):
         self.service_id, self._declaration, self._client = declaration.service_id, declaration, client
 

@@ -339,6 +339,10 @@ def _adapter_has_server_completion(adapter: object) -> bool:
     )
 
 
+def _adapter_requires_request_scoped_polling(adapter: object) -> bool:
+    return getattr(adapter, "requires_request_scoped_polling", False) is True
+
+
 def _sync_only_adapter_returned_nonterminal(adapter: object, status: JobStatus) -> bool:
     return bool(
         getattr(adapter, "supports_synchronous_submission", False) is True
@@ -396,7 +400,11 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     runtime = getattr(request.app.state, "managed_routing_runtime", None)
     managed = runtime is not None and runtime.is_managed(domain_request.model_id)
     selected_adapter = None if managed else request.app.state.adapter_registry.generation(model.service_id)
-    if selected_adapter is not None and not _adapter_has_server_completion(selected_adapter):
+    request_scoped = (
+        selected_adapter is not None
+        and _adapter_requires_request_scoped_polling(selected_adapter)
+    )
+    if selected_adapter is not None and not request_scoped and not _adapter_has_server_completion(selected_adapter):
         raise problem(
             request,
             "MODEL_UNAVAILABLE",
@@ -474,6 +482,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
         logical_model_revision=runtime.logical_model(domain_request.model_id).revision if managed else None,
         video_seconds=video_seconds,
         image_count=image_count,
+        completion_mode="request" if request_scoped else "background",
     )
     if reservation.conflict:
         raise problem(request, "IDEMPOTENCY_CONFLICT", "The idempotency key was already used for a different request.", status=409)
@@ -623,6 +632,28 @@ async def get_job(job_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
     if item is None:
         raise problem(request, "JOB_NOT_FOUND", "The job was not found.", status=404)
+    if item.get("completion_mode") == "request" and item["status"] in {"queued", "running"}:
+        cookie_header = request.headers.get("cookie")
+        if not cookie_header:
+            raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
+        claim = request.app.state.canvas_store.claim_request_scoped_job(
+            job_id,
+            user_id=context.user.user_id,
+            lease_seconds=30,
+        )
+        if claim is not None:
+            item = await request.app.state.job_polling_service.poll_request_claim(
+                claim,
+                str(claim["submission_token"]),
+                context,
+                cookie_header,
+            )
+        else:
+            current, _ = request.app.state.canvas_store.job_for_owner(
+                job_id, context.user.user_id
+            )
+            if current is not None:
+                item = current
     return _response(await _poll(request, context, item), request)
 
 

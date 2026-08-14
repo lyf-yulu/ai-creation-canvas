@@ -137,6 +137,107 @@ def test_pollable_job_lease_excludes_concurrent_workers_and_expired_lease_is_rec
     assert fresh.job["result_id"] == "fresh_result"
 
 
+def test_request_scoped_job_is_only_claimed_by_exact_owner_and_never_by_worker(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="owner",
+        job_id="request-job",
+        service_id="portal-images",
+        operation="image.generate",
+        idempotency_key="request-key",
+        request_hash="r" * 64,
+        completion_mode="request",
+    )
+    submitted = store.mark_submitted(
+        "request-job",
+        "upstream-request-job",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+
+    assert submitted["completion_mode"] == "request"
+    assert store.claim_pollable_job(lease_seconds=30) is None
+    assert store.claim_request_scoped_job(
+        "request-job", user_id="other", lease_seconds=30
+    ) is None
+    claim = store.claim_request_scoped_job(
+        "request-job", user_id="owner", lease_seconds=30
+    )
+    assert claim is not None
+    assert claim["id"] == "request-job"
+    assert store.claim_request_scoped_job(
+        "request-job", user_id="owner", lease_seconds=30
+    ) is None
+
+
+@pytest.mark.parametrize("completion_mode", ("", "worker", None, 1, True, [], {}))
+def test_reserve_job_rejects_invalid_explicit_completion_mode(tmp_path, completion_mode):
+    store = CanvasStore(tmp_path / "data")
+
+    with pytest.raises(ValueError, match="completion mode"):
+        store.reserve_job(
+            user_id="u",
+            job_id="j",
+            service_id="s",
+            operation="image.generate",
+            idempotency_key="k",
+            request_hash="h",
+            completion_mode=completion_mode,
+        )
+
+
+def test_startup_reconciliation_assigns_only_trusted_legacy_completion_modes(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+
+    def legacy(job_id: str, service_id: str, *, managed: bool = False):
+        reservation = store.reserve_job(
+            user_id="u",
+            job_id=job_id,
+            service_id=service_id,
+            operation="image.generate",
+            idempotency_key=f"key-{job_id}",
+            request_hash=f"hash-{job_id}",
+            logical_model_id="logical" if managed else None,
+        )
+        store.mark_submitted(
+            job_id,
+            f"upstream-{job_id}",
+            "queued",
+            str(reservation.job["submission_token"]),
+        )
+        with store._connection(immediate=True) as db:
+            db.execute("UPDATE canvas_jobs SET completion_mode=NULL WHERE id=?", (job_id,))
+
+    legacy("background", "server-capable")
+    legacy("request", "portal-images")
+    legacy("managed", "managed-provider", managed=True)
+    legacy("unresolved", "unknown")
+
+    changed = store.reconcile_job_completion_modes(
+        background_service_ids={"server-capable"},
+        request_service_ids={"portal-images"},
+    )
+
+    assert changed == 3
+    rows = {
+        job_id: store.job_for_owner(job_id, "u")[0]
+        for job_id in ("background", "request", "managed", "unresolved")
+    }
+    assert rows["background"]["completion_mode"] == "background"
+    assert rows["request"]["completion_mode"] == "request"
+    assert rows["managed"]["completion_mode"] == "background"
+    assert rows["unresolved"]["completion_mode"] is None
+    assert store.claim_request_scoped_job(
+        "request", user_id="u", lease_seconds=30
+    ) is not None
+    background_claims = {
+        str(store.claim_pollable_job(lease_seconds=30)["id"]),
+        str(store.claim_pollable_job(lease_seconds=30)["id"]),
+    }
+    assert background_claims == {"background", "managed"}
+    assert store.claim_pollable_job(lease_seconds=30) is None
+
+
 def test_pollable_job_lease_claims_direct_and_managed_jobs_but_excludes_ineligible_rows(tmp_path):
     class Clock:
         value = 1_000.0

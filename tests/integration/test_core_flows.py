@@ -26,49 +26,13 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import PortalUser, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.models import PortalUser, RequestContext
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import InvalidUpstreamResult
 
 
 ROOT = Path(__file__).resolve().parents[2]
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
-
-
-class SynchronousPortalJobsAdapter(PortalJobsAdapter):
-    supports_synchronous_submission = True
-
-    async def submit_with_cookie(self, context, request, cookie_header):
-        upstream = await super().submit_with_cookie(context, request, cookie_header)
-        state = upstream.state
-        if state.status.value in {"queued", "running"}:
-            state = await self.poll_with_cookie(context, upstream.upstream_job_id, cookie_header)
-        if state.status.value != "succeeded":
-            raise InvalidUpstreamResult("synchronous Portal fixture returned an asynchronous state")
-        return UpstreamJob(
-            self.service_id,
-            upstream.upstream_job_id,
-            state,
-            upstream.submitted_at,
-        )
-
-
-class SynchronousPortalPortraitAdapter(PortalPortraitAdapter):
-    supports_synchronous_submission = True
-
-    async def submit_with_cookie(self, context, request, cookie_header):
-        upstream = await super().submit_with_cookie(context, request, cookie_header)
-        state = upstream.state
-        if state.status.value in {"queued", "running"}:
-            state = await self.poll_with_cookie(context, upstream.upstream_job_id, cookie_header)
-        if state.status.value != "succeeded":
-            raise InvalidUpstreamResult("synchronous Portal fixture returned an asynchronous state")
-        return UpstreamJob(
-            self.service_id,
-            upstream.upstream_job_id,
-            state,
-            upstream.submitted_at,
-        )
 
 
 def signed_headers(user_id: str, *, cookie: bool = True) -> dict[str, str]:
@@ -148,9 +112,9 @@ def canvas(tmp_path):
     transport = httpx.MockTransport(portal)
     client = PortalClient("http://127.0.0.1:45679", allowed_mounts=("/images", "/videos", "/portrait"), allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=True, transport=transport)
     registry = AdapterRegistry()
-    images = SynchronousPortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client)
-    videos = SynchronousPortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client)
-    portrait = SynchronousPortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
+    images = PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client)
+    videos = PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client)
+    portrait = PortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
     for adapter in (images, videos, portrait):
         registry.register_generation(adapter)
     registry.register_asset(portrait)
@@ -186,16 +150,29 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
     asset_ids = [_upload(client, "user-a", kind=asset_kind)] if asset_kind else []
     response = client.post("/api/v1/jobs", json={"operation": operation, "model_id": model_id, "prompt": "integration prompt", "params": {}, "asset_ids": asset_ids, "idempotency_key": f"{operation}-{model_id}"}, headers=signed_headers("user-a"))
     assert response.status_code == 201, response.text
+    assert response.json()["status"] == "queued"
     job_id = response.json()["id"]
+    calls_before_cross_user = len(provider_calls)
     assert client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-b")).status_code == 404
+    assert len(provider_calls) == calls_before_cross_user
     assert client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-b")).status_code == 404
     if asset_ids:
         assert client.get(f"/api/v1/assets/{asset_ids[0]}", headers=signed_headers("user-b")).status_code == 403
     assert asyncio.run(client.app.state.job_worker.run_once()) is False
+    stored_before, _ = client.app.state.canvas_store.job_for_owner(job_id, "user-a")
+    assert stored_before is not None and stored_before["completion_mode"] == "request"
+    missing_cookie = client.get(
+        f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a", cookie=False)
+    )
+    assert missing_cookie.status_code == 401
+    assert missing_cookie.json()["code"] == "AUTH_REQUIRED"
+    stored_after_missing, _ = client.app.state.canvas_store.job_for_owner(job_id, "user-a")
+    assert stored_after_missing == stored_before
     provider_calls_before_get = len(provider_calls)
     completed = client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a"))
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
-    assert len(provider_calls) == provider_calls_before_get
+    assert len(provider_calls) == provider_calls_before_get + 1
+    assert b"portal_session=user-a" not in client.app.state.canvas_store.database.read_bytes()
     result = client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-a"))
     assert result.status_code == 200 and result.content
     if model_id == "portrait-model":
@@ -205,7 +182,7 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
     assert len(usage) == 1 and usage[0][0] == "user-a"
 
 
-def test_cookie_portal_async_route_is_rejected_before_provider_submission(tmp_path):
+def test_cookie_portal_async_route_is_accepted_as_request_scoped(tmp_path):
     posts = 0
 
     def portal(request: httpx.Request) -> httpx.Response:
@@ -254,9 +231,12 @@ def test_cookie_portal_async_route_is_rejected_before_provider_submission(tmp_pa
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "MODEL_UNAVAILABLE"
-    assert posts == 0
+    assert response.status_code == 201
+    assert response.json()["status"] == "queued"
+    assert posts == 1
+    stored, forbidden = app.state.canvas_store.job_for_owner(response.json()["id"], "user-a")
+    assert stored is not None and forbidden is False
+    assert stored["completion_mode"] == "request"
 
 
 def test_production_portrait_adapter_rejects_external_or_nonopaque_result_references():

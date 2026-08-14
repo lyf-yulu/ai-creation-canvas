@@ -16,7 +16,7 @@ from tests.contracts.test_generation_flow import headers
 class Portrait:
     service_id = "portal-portrait"
     requires_portal_cookie = True
-    supports_synchronous_submission = True
+    requires_request_scoped_polling = True
     def __init__(self): self.received = None; self.upload_calls = 0
     async def list_models(self, context): return (ModelSpec("portrait-video", self.service_id, "Portrait", ("video.image_to_video",), ("text", "image"), {}, "portrait"),)
     async def list_models_with_cookie(self, context, cookie): return await self.list_models(context)
@@ -27,13 +27,15 @@ class Portrait:
     async def submit(self, context, request): raise AssertionError
     async def submit_with_cookie(self, context, request, cookie):
         self.received = request.asset_ids
-        result = AssetRef("portrait-result", "reference", "active", "video/mp4")
         return UpstreamJob(
             self.service_id,
             "job-upstream",
-            JobState("job-upstream", "succeeded", results=(result,)),
+            JobState("job-upstream", "queued"),
         )
     async def poll(self, context, job): return JobState(job, "queued")
+    async def poll_with_cookie(self, context, job, cookie):
+        result = AssetRef("portrait-result", "reference", "active", "video/mp4")
+        return JobState(job, "succeeded", results=(result,))
 
 
 def test_portrait_local_mapping_hides_upstream_and_enforces_owner(tmp_path):
@@ -47,7 +49,13 @@ def test_portrait_local_mapping_hides_upstream_and_enforces_owner(tmp_path):
     active = client.get(f"/api/v1/assets/{local_id}", headers={**headers(), "Cookie": "s=a"})
     assert active.json()["status"] == "active" and "upstream" not in active.text
     response = client.post("/api/v1/jobs", json={"operation":"video.image_to_video","model_id":"portrait-video","prompt":"wave","params":{},"asset_ids":[local_id],"idempotency_key":"portrait-key"}, headers={**headers(), "Cookie": "s=a"})
-    assert response.status_code == 201 and adapter.received == ("upstream-1",)
+    assert response.status_code == 201 and response.json()["status"] == "queued"
+    assert adapter.received == ("upstream-1",)
+    completed = client.get(
+        f"/api/v1/jobs/{response.json()['id']}",
+        headers={**headers(), "Cookie": "s=a"},
+    )
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     stored, _ = client.app.state.canvas_store.asset_for_owner(local_id, "u-a")
     assert stored is not None and stored["service_id"] == "portal-portrait" and stored["upstream_asset_id"] == "upstream-1"
 

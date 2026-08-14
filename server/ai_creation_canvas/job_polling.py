@@ -88,6 +88,49 @@ class JobPollingService:
             _LOG.warning("generation job polling failed transiently")
             return self._release(job_id, token)
 
+    async def poll_request_claim(
+        self,
+        item: Mapping[str, object],
+        token: str,
+        context: RequestContext,
+        cookie_header: str,
+    ) -> dict[str, object]:
+        """Poll one owner-leased Portal job with only the current request Cookie."""
+        job_id = str(item["id"])
+        if (
+            item.get("submission_token") != token
+            or item.get("completion_mode") != "request"
+            or item.get("user_id") != context.user.user_id
+        ):
+            return dict(item)
+        try:
+            adapter = self._registry.generation(str(item["service_id"]))
+            if getattr(adapter, "requires_request_scoped_polling", False) is not True:
+                raise ValueError("request-scoped polling is unavailable")
+            poll = getattr(adapter, "poll_with_cookie", None)
+            if not callable(poll):
+                raise ValueError("request-scoped polling is unavailable")
+            state = validated_provider_job_state(
+                await poll(context, str(item["upstream_job_id"]), cookie_header)
+            )
+            return self._record_adapter_state(adapter, item, token, state)
+        except asyncio.CancelledError:
+            self._store.release_job_lease(
+                job_id, token=token, retry_after_seconds=0
+            )
+            raise
+        except (CoordinationUnavailable, ExecutionCapacityExceeded):
+            return self._release(job_id, token)
+        except PortalUpstreamError as error:
+            if error.retryable:
+                return self._release(job_id, token)
+            return self._fail(job_id, token, "REQUEST_REJECTED")
+        except (InvalidUpstreamResult, TypeError, ValueError):
+            return self._fail(job_id, token, "INVALID_UPSTREAM_RESULT")
+        except Exception:
+            _LOG.warning("generation job polling failed transiently")
+            return self._release(job_id, token)
+
     async def acknowledge_claim(self, item: Mapping[str, object], token: str) -> None:
         """Clear one durable provider acknowledgement without polling again."""
         job_id = str(item["id"])
@@ -131,6 +174,15 @@ class JobPollingService:
         state = validated_provider_job_state(
             await adapter.poll(context, str(item["upstream_job_id"]))
         )
+        return self._record_adapter_state(adapter, item, token, state)
+
+    def _record_adapter_state(
+        self,
+        adapter,
+        item: Mapping[str, object],
+        token: str,
+        state: ValidatedProviderJobState,
+    ) -> dict[str, object]:
         retry_after = 5.0 if state.status is JobStatus.RUNNING else 2.0
         acknowledge = getattr(adapter, "acknowledge_poll_result", None)
         written = self._store.record_polled_job(
