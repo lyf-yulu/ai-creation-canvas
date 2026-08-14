@@ -7,6 +7,50 @@ import pytest
 from ai_creation_canvas.config import Settings
 
 
+def test_trusted_hosts_accepts_lan_hosts_and_casefold_deduplicates(tmp_path: Path) -> None:
+    settings = Settings(
+        "development",
+        8992,
+        tmp_path / "data",
+        "local-secret",
+        trusted_hosts=("Canvas.LAN", "192.168.1.25", "canvas.lan"),
+    )
+
+    assert settings.trusted_hosts == ("canvas.lan", "192.168.1.25")
+
+
+@pytest.mark.parametrize(
+    "trusted_hosts",
+    [
+        ("*.lan",),
+        ("canvas.*",),
+        ("http://canvas.lan",),
+        ("canvas.lan:8992",),
+        ("canvas.lan/path",),
+        ("",),
+        ("canvas lan",),
+    ],
+)
+def test_trusted_hosts_rejects_non_host_values(tmp_path: Path, trusted_hosts: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError, match="trusted_hosts is invalid"):
+        Settings("development", 8992, tmp_path / "data", "local-secret", trusted_hosts=trusted_hosts)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    (
+        "http://*.lan",
+        "http://canvas.lan/path",
+        "http://user@canvas.lan",
+        "http://canvas.lan?next=/",
+        "http://canvas.lan#fragment",
+    ),
+)
+def test_allowed_origins_rejects_wildcards_paths_and_userinfo(tmp_path: Path, origin: str) -> None:
+    with pytest.raises(ValueError, match="allowed_origins is invalid"):
+        Settings("development", 8992, tmp_path / "data", "local-secret", allowed_origins=(origin,))
+
+
 def test_credential_pool_path_is_optional_outside_managed_route_validation(tmp_path: Path) -> None:
     settings = Settings("development", 8992, tmp_path / "data", "local-secret")
 

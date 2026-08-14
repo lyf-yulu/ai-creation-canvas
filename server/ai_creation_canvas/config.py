@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import json
 from pathlib import Path
 import re
@@ -18,6 +19,9 @@ _PRODUCTION_REPOSITORY = Path("/Users/260413a/ai-generation-portable-apps")
 _REJECTED_TOKENS = frozenset({"default", "changeme", "change-me", "test"})
 _MAX_SERVICES_BYTES = 65536
 _DANGEROUS_FIELDS = frozenset({"base_url", "url", "script", "plugin", "code", "api_key", "token", "headers"})
+_DNS_HOSTNAME = re.compile(
+    r"(?=.{1,253}\Z)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
+)
 
 
 def load_service_declarations(path: Path | str, expected_root: Path | str) -> tuple[ServiceDeclaration, ...]:
@@ -84,6 +88,16 @@ def _is_within(child: Path, parent: Path) -> bool:
     return True
 
 
+def _is_exact_trusted_host(value: object) -> bool:
+    if not isinstance(value, str) or not value or value != value.strip() or any(char.isspace() for char in value):
+        return False
+    try:
+        ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        return bool(_DNS_HOSTNAME.fullmatch(value)) and not value.replace(".", "").isdigit()
+    return True
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
@@ -103,6 +117,7 @@ class Settings:
     session_ttl_seconds: int = 12 * 60 * 60
     session_cookie_name: str = "aicc_session"
     allowed_origins: tuple[str, ...] = ()
+    trusted_hosts: tuple[str, ...] = ()
     enable_demo_adapter: bool = False
     enable_ark_adapter: bool = False
     ark_models_config_path: Path | str | None = None
@@ -151,11 +166,35 @@ class Settings:
         if not isinstance(self.allowed_origins, tuple) or len(self.allowed_origins) > 16:
             raise ValueError("allowed_origins is invalid")
         for origin in self.allowed_origins:
-            parsed = urlsplit(origin) if isinstance(origin, str) else None
-            if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            try:
+                parsed = urlsplit(origin) if isinstance(origin, str) else None
+                port = parsed.port if parsed is not None else None
+            except ValueError:
+                parsed = None
+                port = None
+            if (
+                parsed is None
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or not parsed.hostname
+                or "*" in parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or port == 0
+                or "?" in origin
+                or "#" in origin
+                or any(char.isspace() for char in origin)
+            ):
                 raise ValueError("allowed_origins is invalid")
         if self.identity_mode == "local" and not self.allowed_origins:
             raise ValueError("local identity requires allowed_origins")
+        if not isinstance(self.trusted_hosts, tuple) or len(self.trusted_hosts) > 16:
+            raise ValueError("trusted_hosts is invalid")
+        if not all(_is_exact_trusted_host(host) for host in self.trusted_hosts):
+            raise ValueError("trusted_hosts is invalid")
         if type(self.enable_demo_adapter) is not bool:
             raise ValueError("enable_demo_adapter must be a bool")
         if type(self.enable_ark_adapter) is not bool:
@@ -190,6 +229,14 @@ class Settings:
         if self.prompt_skill_model_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", self.prompt_skill_model_id):
             raise ValueError("prompt_skill_model_id is invalid")
         object.__setattr__(self, "allowed_origins", tuple(dict.fromkeys(self.allowed_origins)))
+        trusted_hosts: list[str] = []
+        seen_hosts: set[str] = set()
+        for host in self.trusted_hosts:
+            normalized_host = host.casefold()
+            if normalized_host not in seen_hosts:
+                trusted_hosts.append(normalized_host)
+                seen_hosts.add(normalized_host)
+        object.__setattr__(self, "trusted_hosts", tuple(trusted_hosts))
         if self.services_config_path is not None:
             if not self.portal_base_url or self.services_config_root is None:
                 raise ValueError("services configuration requires a Portal base URL and trusted root")
