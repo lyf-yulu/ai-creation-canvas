@@ -209,6 +209,8 @@ def _run_serve_local(argv: list[str]) -> None:
     bind_address = ipaddress.IPv4Address(args.host)
     if not bind_address.is_loopback and not args.public_origin:
         parser.error("a non-loopback host requires at least one --public-origin")
+    if not bind_address.is_loopback and any((urlsplit(origin).port or 80) != args.port for origin in args.public_origin):
+        parser.error("LAN public origin ports must match --port")
     if not bind_address.is_loopback and args.open_browser:
         parser.error("--open is only supported for loopback hosts")
     app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)

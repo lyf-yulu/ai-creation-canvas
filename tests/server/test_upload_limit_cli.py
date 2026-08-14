@@ -69,6 +69,19 @@ def test_serve_local_rejects_a_non_loopback_bind_without_a_public_origin(tmp_pat
         ])
 
 
+def test_serve_local_rejects_a_lan_public_origin_with_a_different_port(tmp_path, monkeypatch):
+    monkeypatch.setattr(entrypoint, "create_local_app", lambda **_kwargs: pytest.fail("must not construct app"))
+
+    with pytest.raises(SystemExit):
+        entrypoint._run_serve_local([
+            "--host", "0.0.0.0",
+            "--public-origin", "http://192.168.1.20:8992",
+            "--port", "8993",
+            "--data-dir", str(tmp_path / "data"),
+            "--static-dir", str(tmp_path / "dist"),
+        ])
+
+
 def test_serve_local_wires_a_lan_bind_and_exact_public_origin(tmp_path, monkeypatch):
     received = {}
 
@@ -104,7 +117,7 @@ def test_serve_local_canonicalizes_a_lan_public_origin_before_app_construction(t
     entrypoint._run_serve_local([
         "--host", "0.0.0.0",
         "--public-origin", "HTTP://CANVAS.LOCAL:80",
-        "--port", "8992",
+        "--port", "80",
         "--data-dir", str(tmp_path / "data"),
         "--static-dir", str(tmp_path / "dist"),
     ])
