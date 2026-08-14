@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
@@ -117,6 +118,8 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
 def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
+    if settings.trusted_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.trusted_hosts))
     injected_execution_coordinator = execution_coordinator is not None
     if settings.environment == "production" and managed_routing_runtime is not None:
         raise ValueError("managed production runtime cannot be injected")
@@ -322,6 +325,17 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     async def api_namespace_not_found(request: Request) -> JSONResponse:
         request_id = _request_id(getattr(request.state, "request_id", None))
         return JSONResponse(status_code=404, content=ApiError("API_NOT_FOUND", "The requested API resource was not found.", False, request_id, "request").to_dict())
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz() -> JSONResponse:
+        state, _ = _static_path_state(build_dir, "index.html")
+        if state is StaticPathState.LEGIT_FILE:
+            return JSONResponse({"status": "ready"})
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
 
     @app.get("/{requested_path:path}", include_in_schema=False)
     async def static_or_spa(request: Request, requested_path: str) -> Response:
