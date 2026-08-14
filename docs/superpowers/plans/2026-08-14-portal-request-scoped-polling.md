@@ -14,8 +14,10 @@
 
 **Files:**
 - Modify: `server/ai_creation_canvas/api/jobs.py`
+- Modify: `server/ai_creation_canvas/storage/sqlite.py`
 - Modify: `tests/contracts/test_generation_flow.py`
 - Modify: `tests/server/test_submission_unknown.py`
+- Modify: `tests/server/test_task_store.py`
 
 - [ ] **Step 1: Write failing direct-submission tests**
 
@@ -32,6 +34,8 @@ assert stored["submission_token"] is None
 
 Keep a separate explicit business-rejection test proving a known provider 4xx becomes terminal `failed` and is not classified as unknown. Replace the old test that permits a second provider POST after a read timeout; provider-side idempotency is defense in depth, not the Canvas replay policy.
 
+Add a store-level CAS test for a dedicated `begin_direct_submission(job_id, token)` transition. It must atomically change a token-owned direct reservation from `reserved`/unset state to `in_flight`; stale tokens and repeated calls return false. Once in flight, lease expiry may only become `submission_unknown`, never a new reservation.
+
 - [ ] **Step 2: Run RED**
 
 ```bash
@@ -45,7 +49,7 @@ Expected: ambiguous cases call `adapter.submit` twice or persist `failed`/reclai
 
 - [ ] **Step 3: Centralize direct outcome classification**
 
-In `create_job`, keep capacity/coordination failures that occur before provider submission reclaimable. Once `adapter.submit*` has started:
+In `create_job`, keep capacity/coordination failures that occur before provider submission reclaimable. Immediately before `adapter.submit*`, call the dedicated token-checked `begin_direct_submission`; only its successful caller may perform provider I/O. Once submission is in flight:
 
 ```python
 except asyncio.CancelledError:
@@ -78,7 +82,7 @@ PYTHONPATH=.:server .venv/bin/pytest -q \
 - [ ] **Step 5: Commit**
 
 ```bash
-git add server/ai_creation_canvas/api/jobs.py tests/contracts/test_generation_flow.py tests/server/test_submission_unknown.py
+git add server/ai_creation_canvas/api/jobs.py server/ai_creation_canvas/storage/sqlite.py tests/contracts/test_generation_flow.py tests/server/test_submission_unknown.py tests/server/test_task_store.py
 git commit -m "fix: prevent direct submission replay"
 ```
 
