@@ -141,6 +141,8 @@ git commit -m "refactor: share managed job resolution"
 - Modify: `tests/integration/test_demo_generation.py`
 - Modify: `tests/integration/test_model_centric_routing.py`
 - Modify: `tests/integration/test_slice1_product.py`
+- Modify: `tests/integration/test_portal_contract.py`
+- Modify: `tests/server/test_portrait_mapping.py`
 
 **Interfaces:**
 - Consumes: Task 1 lease API, Task 2 managed adapter resolver, direct `AdapterRegistry`, adapter `JobState.results`.
@@ -181,7 +183,7 @@ PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/co
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/chiyun.py server/ai_creation_canvas/adapters/chiyun_gemini.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/adapters/factory.py server/ai_creation_canvas/catalog.py server/ai_creation_canvas/storage/sqlite.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/server/test_task_store.py tests/server/test_dynamic_model_catalog.py tests/contracts/test_ark_adapter.py tests/contracts/test_chiyun_adapter.py tests/contracts/test_chiyun_gemini_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_slice1_product.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/chiyun.py server/ai_creation_canvas/adapters/chiyun_gemini.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/adapters/factory.py server/ai_creation_canvas/catalog.py server/ai_creation_canvas/storage/sqlite.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/server/test_task_store.py tests/server/test_dynamic_model_catalog.py tests/contracts/test_ark_adapter.py tests/contracts/test_chiyun_adapter.py tests/contracts/test_chiyun_gemini_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/server/test_portrait_mapping.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_portal_contract.py tests/integration/test_slice1_product.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
