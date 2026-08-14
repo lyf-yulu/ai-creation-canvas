@@ -34,13 +34,13 @@ bash scripts/run-real-media-local.sh
 
 用户权限和画布节点只绑定“逻辑模型”。一个逻辑模型可挂接多条官方或第三方线路；线路绑定确切的 Provider、模型族和凭据池。用户不选择线路或 Key。管理员页面只展示池 ID、Provider、分组、允许模型族和容量摘要，不提供 Key、任意 Base URL、参数映射脚本或动态适配器输入。
 
-真实凭据必须放在仓库外的管理员受限 YAML。可从 `server/config/credential-pools.example.yaml` 了解结构，但不要直接在示例文件中填真实值。部署文件必须是普通文件、不得是符号链接、位于 `--credential-pools-root` 内，并设置为仅服务账号可读：
+真实凭据必须放在仓库外的管理员受限 JSON。可从 `server/config/credential-pools.example.json` 了解结构，但不要直接在仓库示例文件中填真实值。部署文件必须是普通文件、不得是符号链接、位于 `--credential-pools-root` 内，并设置为仅服务账号可读：
 
 ```bash
-chmod 0600 /受控配置目录/credential-pools.yaml
+chmod 0600 /受控配置目录/credential-pools.json
 ```
 
-启动时同时传入 `--credential-pools /受控配置目录/credential-pools.yaml` 与 `--credential-pools-root /受控配置目录`。生产受管线路还必须配置 Redis 和独立的 `AICC_CREDENTIAL_HMAC_KEY`；Redis 只保存 HMAC 不透明标识、租约、计数和过期时间，不保存 Key、池名、分组、用户 ID、提示词或媒体。配置重载只有在整个新文件解析、权限和分组校验全部通过后才原子替换；失败时继续使用上一份有效快照、不使用半份配置，并让本次重载请求返回受控错误。部署监控应采集该错误并主动告警；当前服务不会自行发送外部告警。
+启动时同时传入 `--credential-pools /受控配置目录/credential-pools.json` 与 `--credential-pools-root /受控配置目录`。管理员可在管理页面选择严格 JSON 并确认替换；浏览器不读取正文，服务端验证完成后以 `0600` 权限原子替换。生产受管线路还必须配置 Redis 和独立的 `AICC_CREDENTIAL_HMAC_KEY`；Redis 只保存 HMAC 不透明标识、租约、计数和过期时间，不保存 Key、池名、分组、用户 ID、提示词或媒体。配置重载只有在整个新文件解析、权限和分组校验全部通过后才原子替换；失败时继续使用上一份有效快照、不使用半份配置，并让本次重载请求返回受控错误。部署监控应采集该错误并主动告警；当前服务不会自行发送外部告警。
 
 同一逻辑模型的轮询候选必须精确满足线路绑定的 `(provider, group, family)`。例如 T8Star `gemini` 池可与 Nano Banana 线路并列官方池参与调度；T8Star `cc` 池即使属于同一供应商也不能进入该任务。明确 429 且确认未创建上游任务时可以在同池换 Key，池耗尽后才尝试下一条兼容线路。发送后响应不明会进入 `submission_unknown`，禁止自动换 Key 或跨线路重发，避免重复计费。
 
@@ -94,7 +94,7 @@ PYTHONPATH=server python -m ai_creation_canvas \
   --portal-internal-token "由部署系统注入" \
   --portal-base-url "https://受信-portal.example" \
   --services-config server/config/services.example.json \
-  --credential-pools /受控配置目录/credential-pools.yaml \
+  --credential-pools /受控配置目录/credential-pools.json \
   --credential-pools-root /受控配置目录 \
   --max-image-upload-mib 10 \
   --max-video-upload-mib 64 \
