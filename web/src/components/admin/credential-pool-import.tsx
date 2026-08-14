@@ -41,7 +41,7 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
     return (
         <section className="mt-6 rounded-xl border border-[#245a35] bg-[#07110b] p-4">
             <h2 className="text-lg font-semibold">导入凭据池 JSON</h2>
-            <p className="mt-1 text-xs text-[#86a991]">文件只会原样上传到服务端验证；页面不会读取、展示或保存 API Key。</p>
+            <p className="mt-1 text-xs text-[#86a991]">文件只会原样上传到服务端验证；页面不会读取、展示或保存供应商凭据。</p>
             <div className="mt-4 flex flex-wrap items-end gap-3">
                 <label className="text-sm text-[#b9d0c0]">
                     选择凭据 JSON
