@@ -11,24 +11,47 @@ export function assetIdsForReferences(references: AssetLike[]) {
         return reference.asset_id;
     });
 }
-type WaitOptions = { fetchJob?: typeof fetchJob; sleep?: (milliseconds: number) => Promise<void>; pollIntervalMs?: number; maxWaitMs?: number; signal?: AbortSignal };
-const defaultSleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+type WaitOptions = { fetchJob?: typeof fetchJob; sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>; now?: () => number; pollIntervalMs?: number; maxPollIntervalMs?: number; maxWaitMs?: number; signal?: AbortSignal };
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const defaultSleep = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) { reject(new DOMException("Aborted", "AbortError")); return; }
+    const onAbort = () => { clearTimeout(timer); reject(new DOMException("Aborted", "AbortError")); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, milliseconds);
+    signal?.addEventListener("abort", onAbort, { once: true });
+});
 export async function waitForJob(id: string, options: WaitOptions = {}): Promise<JobState> {
     const getJob = options.fetchJob || fetchJob;
     const sleep = options.sleep || defaultSleep;
+    const now = options.now || (() => performance.now());
     const pollIntervalMs = options.pollIntervalMs ?? 1_000;
-    const maxWaitMs = options.maxWaitMs ?? 120_000;
-    for (let elapsed = 0; elapsed <= maxWaitMs; elapsed += pollIntervalMs) {
+    const maxPollIntervalMs = options.maxPollIntervalMs ?? 10_000;
+    const maxWaitMs = options.maxWaitMs ?? Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0 || pollIntervalMs > MAX_TIMER_DELAY_MS
+        || !Number.isFinite(maxPollIntervalMs) || maxPollIntervalMs <= 0 || maxPollIntervalMs > MAX_TIMER_DELAY_MS
+        || pollIntervalMs > maxPollIntervalMs
+        || (options.maxWaitMs !== undefined && (!Number.isFinite(maxWaitMs) || maxWaitMs < 0))) {
+        throw new Error("Job polling options are invalid");
+    }
+    let deadline = Number.POSITIVE_INFINITY;
+    if (Number.isFinite(maxWaitMs)) {
+        const startedAt = now();
+        deadline = startedAt + maxWaitMs;
+        if (!Number.isFinite(startedAt) || !Number.isFinite(deadline)) throw new Error("Job polling options are invalid");
+    }
+    let wait = pollIntervalMs;
+    while (true) {
         if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const job = await getJob(id);
+        const job = await getJob(id, options.signal);
         if (job.status === "succeeded") return job;
         if (job.status === "failed") {
             const error = job.error;
             if (error) throw new ApiRequestError(error);
             throw new Error(`Job ${job.status}`);
         }
-        if (elapsed + pollIntervalMs > maxWaitMs) break;
-        await sleep(pollIntervalMs);
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        await sleep(Math.min(wait, remaining), options.signal);
+        wait = Math.min(wait * 2, maxPollIntervalMs);
     }
     throw new Error(`Job ${id} timed out`);
 }
