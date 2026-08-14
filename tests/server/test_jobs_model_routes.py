@@ -26,11 +26,13 @@ from ai_creation_canvas.coordination import CredentialLease, CoordinationUnavail
 from ai_creation_canvas.credential_pools import CredentialKey, CredentialPool
 from ai_creation_canvas.domain.models import ModelInputPort
 from ai_creation_canvas.domain.registry import AdapterRegistry
+from ai_creation_canvas.managed_jobs import validated_job_route
 from ai_creation_canvas.model_registry import OperationContract
 from ai_creation_canvas.model_registry import ProviderDefinition
 from ai_creation_canvas.model_routing import LogicalModelDefinition, ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from ai_creation_canvas.trusted_routing import trusted_route_presets
 from tests.server.test_model_registry import _provider
 
 
@@ -67,25 +69,20 @@ def headers(user: str = "user-a") -> dict[str, str]:
 
 
 def contract() -> OperationContract:
-    return OperationContract(
-        "image.edit",
-        (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
-        "image",
-        {"type": "object", "properties": {"size": {"type": "string", "enum": ["auto", "1024x1024"], "default": "auto"}, "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1}}, "required": ["size", "output_count"], "additionalProperties": False},
-        {"size": "size", "output_count": "n"},
-    )
+    return trusted_route_presets()[("gpt_image2", "chiyun")].operation_contracts[0]
 
 
 def logical() -> LogicalModelDefinition:
     return LogicalModelDefinition("nano-banana", "Nano Banana", "Logical model", "image", (contract(),), revision=1)
 
 
-def route(route_id: str, provider: str, pool_id: str, priority: int) -> ModelRouteDefinition:
-    return ModelRouteDefinition(route_id, "nano-banana", provider, "gemini-image", "chiyun_openai_images", pool_id, "nano-banana", (contract(),), priority, 1, revision=1)
+def route(route_id: str, pool_id: str, priority: int) -> ModelRouteDefinition:
+    preset = trusted_route_presets()[("gpt_image2", "chiyun")]
+    return ModelRouteDefinition(route_id, "nano-banana", preset.provider_id, preset.provider_model_name, preset.adapter_type, pool_id, preset.family, (contract(),), priority, 1, revision=1)
 
 
-def pool(pool_id: str, provider: str, group: str, keys: tuple[str, ...]) -> CredentialPool:
-    return CredentialPool(pool_id, provider, group, ("nano-banana",), tuple(CredentialKey(key, f"secret-value-{key}", 1) for key in keys), hashlib.sha256(pool_id.encode()).hexdigest())
+def pool(pool_id: str, group: str, keys: tuple[str, ...]) -> CredentialPool:
+    return CredentialPool(pool_id, "chiyun-gpt-image2", group, ("gpt-image",), tuple(CredentialKey(key, f"secret-value-{key}", 1) for key in keys), hashlib.sha256(pool_id.encode()).hexdigest())
 
 
 class ScriptedCoordinator:
@@ -112,22 +109,20 @@ class ScriptedCoordinator:
 
 def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, store: CanvasStore | None = None, submission_budget=None):
     store = store or CanvasStore(tmp_path / "data")
-    store.create_provider_definition(ProviderDefinition("google", "Google", "chiyun_openai_images", "https://google.example", "official"), actor_user_id="bootstrap")
-    store.create_provider_definition(ProviderDefinition("t8star", "T8", "chiyun_openai_images", "https://t8.example", "gemini"), actor_user_id="bootstrap")
+    store.create_provider_definition(ProviderDefinition("chiyun-gpt-image2", "Chiyun GPT Image 2", "chiyun_openai_images", "https://chiyun.work", "managed"), actor_user_id="bootstrap")
     store.create_logical_model(logical())
-    store.create_model_route(route("official-route", "google", "official", 1))
-    store.create_model_route(route("gemini-route", "t8star", "gemini", 2))
+    store.create_model_route(route("official-route", "official", 1))
+    store.create_model_route(route("gemini-route", "gemini", 2))
     pools = {
-        "official": pool("official", "google", "official", ("official-a",)),
-        "gemini": pool("gemini", "t8star", "gemini", ("gemini-a", "gemini-b")),
-        "cc": pool("cc", "t8star", "cc", ("cc-a",)),
+        "official": pool("official", "official", ("official-a",)),
+        "gemini": pool("gemini", "gemini", ("gemini-a", "gemini-b")),
+        "cc": pool("cc", "cc", ("cc-a",)),
     }
     factory = RouteAdapterFactory(
         data_dir=store.data_dir,
         asset_loader=lambda _: (PNG, "image/png"),
         provider_protocols={
-            "google": ProviderProtocol.from_readonly_deployment("google", "chiyun_openai_images", "https://google.example", approved_origin="https://google.example"),
-            "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
+            "chiyun-gpt-image2": ProviderProtocol("chiyun-gpt-image2", "chiyun_openai_images", "https://chiyun.work"),
         },
         transport=httpx.MockTransport(handler),
         trusted_route_validator=lambda _route: None,
@@ -199,12 +194,13 @@ def test_managed_route_retries_explicit_429_on_next_compatible_key_and_persists_
     assert item["logical_model_id"] == "nano-banana" and item["logical_model_revision"] == 1
     assert item["route_id"] == "gemini-route" and item["route_revision"] == 1
     assert item["pool_revision_digest"] == pools["gemini"].revision_digest
+    assert validated_job_route(item).route_id == "gemini-route"
     assert item["submission_state"] == "submitted"
     encoded = json.dumps(item, sort_keys=True)
     for forbidden_value in ("secret-value", "gemini-a", "gemini-b", "cc-a"):
         assert forbidden_value not in encoded
     original_snapshot = item["route_snapshot_json"]
-    store.update_model_route(route("gemini-route", "t8star", "gemini", 99), expected_revision=1)
+    store.update_model_route(route("gemini-route", "gemini", 99), expected_revision=1)
     changed, _ = store.job_for_owner(response.json()["id"], "user-a")
     assert changed is not None and changed["route_snapshot_json"] == original_snapshot
     legacy_snapshot = json.loads(str(original_snapshot))
@@ -375,7 +371,7 @@ def test_provider_disable_hides_catalog_and_stops_submission(tmp_path: Path) -> 
 def test_production_logical_routes_require_pool_configuration_after_redis(tmp_path: Path) -> None:
     store = CanvasStore(tmp_path / "data")
     store.create_logical_model(logical())
-    store.create_model_route(route("official-route", "google", "official", 1))
+    store.create_model_route(route("official-route", "official", 1))
     with pytest.raises(ValueError, match="credential pool"):
         create_app(
             Settings("production", 8991, store.data_dir, "deployment-secret", redis_url="redis://127.0.0.1:6379/0"),
@@ -389,7 +385,7 @@ def test_restart_keeps_historical_untrusted_provider_out_of_protocol_map(tmp_pat
     store = CanvasStore(tmp_path / "data")
     store.create_provider_definition(_provider(), actor_user_id="bootstrap")
     store.create_logical_model(logical())
-    store.create_model_route(route("official-route", "google", "official", 1))
+    store.create_model_route(route("official-route", "official", 1))
     pools = tmp_path / "credential-pools.yaml"
     pools.write_text("version: 1\npools:\n  official:\n    provider: google\n    group: official\n    allowed_families: [nano-banana]\n    keys:\n      - id: official-a\n        api_key: deployment-secret-value\n        max_concurrency: 1\n", encoding="utf-8")
     pools.chmod(0o600)

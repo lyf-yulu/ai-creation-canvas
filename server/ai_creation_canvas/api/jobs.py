@@ -7,7 +7,6 @@ import json
 import secrets
 import re
 from dataclasses import replace
-from contextlib import asynccontextmanager
 from typing import Any, Mapping
 
 from fastapi import APIRouter, Request
@@ -19,11 +18,12 @@ from ai_creation_canvas.errors import DomainError, InvalidUpstreamResult, Portal
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, classify_submission_error
-from ai_creation_canvas.credential_pools import CredentialPool
-from ai_creation_canvas.model_registry import OperationContract
+from ai_creation_canvas.managed_jobs import managed_job_adapter, validated_job_route
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteCandidate
 from ai_creation_canvas.catalog import ProviderSubmissionBudgetExhausted
+
+_validated_job_route = validated_job_route
 
 router = APIRouter(prefix="/api/v1")
 _MAX_DEPTH = 8
@@ -174,57 +174,6 @@ def _route_snapshot(route: ModelRouteDefinition, pool_revision_digest: str) -> s
     return json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
 
 
-def _route_from_snapshot(value: object) -> ModelRouteDefinition:
-    if not isinstance(value, str) or len(value.encode("utf-8")) > 64 * 1024:
-        raise ValueError("managed route snapshot is invalid")
-    try:
-        body = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        raise ValueError("managed route snapshot is invalid") from None
-    core = {"route_id", "model_id", "provider_id", "provider_model_name", "adapter_type", "credential_pool_ref", "family", "operation_contracts", "priority", "max_concurrency", "enabled", "archived_at", "revision"}
-    accepted_shapes = {frozenset(core), frozenset(core | {"pool_revision_digest"}), frozenset(core | {"pool_revision_digest", "schema_version"})}
-    if (
-        not isinstance(body, dict)
-        or frozenset(body) not in accepted_shapes
-        or ("schema_version" in body and body["schema_version"] != 2)
-        or not isinstance(body["operation_contracts"], list)
-    ):
-        raise ValueError("managed route snapshot is invalid")
-    try:
-        contracts = tuple(OperationContract.from_dict(item) for item in body["operation_contracts"] if isinstance(item, dict))
-        if len(contracts) != len(body["operation_contracts"]):
-            raise ValueError
-        return ModelRouteDefinition(
-            route_id=body["route_id"], model_id=body["model_id"], provider_id=body["provider_id"],
-            provider_model_name=body["provider_model_name"], adapter_type=body["adapter_type"],
-            credential_pool_ref=body["credential_pool_ref"], family=body["family"],
-            operation_contracts=contracts, priority=body["priority"], max_concurrency=body["max_concurrency"],
-            enabled=body["enabled"], archived_at=body["archived_at"], revision=body["revision"],
-        )
-    except (TypeError, ValueError, KeyError):
-        raise ValueError("managed route snapshot is invalid") from None
-
-
-def _validated_job_route(item: Mapping[str, object]) -> ModelRouteDefinition:
-    route = _route_from_snapshot(item.get("route_snapshot_json"))
-    try:
-        body = json.loads(str(item.get("route_snapshot_json")))
-    except ValueError:
-        raise ValueError("managed job snapshot is inconsistent") from None
-    if (
-        item.get("logical_model_id") != route.model_id
-        or item.get("service_id") != route.model_id
-        or item.get("route_id") != route.route_id
-        or item.get("route_revision") != route.revision
-        or item.get("operation") not in {contract.operation.value for contract in route.operation_contracts}
-        or not isinstance(item.get("pool_revision_digest"), str)
-        or re.fullmatch(r"[0-9a-f]{64}", str(item.get("pool_revision_digest"))) is None
-        or ("pool_revision_digest" in body and item.get("pool_revision_digest") != body.get("pool_revision_digest"))
-    ):
-        raise ValueError("managed job snapshot is inconsistent")
-    return route
-
-
 def _adapter_template(route: ModelRouteDefinition, operation: str) -> str:
     return f"{route.adapter_type}.{operation}"
 
@@ -347,26 +296,6 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
     raise problem(request, "CAPACITY_EXCEEDED", "The generation service is busy.", status=429, retryable=True)
 
 
-@asynccontextmanager
-async def _managed_adapter(request: Request, context, item: Mapping[str, object]):
-    runtime = request.app.state.managed_routing_runtime
-    route = _validated_job_route(item)
-    expected = item.get("key_fingerprint")
-    if not isinstance(expected, str) or not expected:
-        raise ValueError("managed credential snapshot is unavailable")
-    pool = runtime.pools().get(route.credential_pool_ref)
-    if not isinstance(pool, CredentialPool):
-        raise CoordinationUnavailable("managed credential pool is unavailable")
-    matches = tuple(key for key in pool.keys if runtime.coordinator.fingerprint_secret(key.secret) == expected)
-    if len(matches) != 1:
-        raise CoordinationUnavailable("managed credential is unavailable")
-    candidate = RouteCandidate(route, replace(pool, keys=matches))
-    async with runtime.coordinator.acquire_credential(str(item["id"]), context.user.user_id, candidate) as lease:
-        if lease.key_fingerprint != expected:
-            raise CoordinationUnavailable("managed credential changed")
-        yield runtime.adapter_factory.build(route, lease)
-
-
 async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
     if item["status"] == "submitting" and item.get("submission_state") == "in_flight":
         item = request.app.state.canvas_store.expire_in_flight(str(item["id"]))
@@ -374,7 +303,7 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
         return item
     try:
         if item.get("logical_model_id") is not None:
-            async with _managed_adapter(request, context, item) as adapter:
+            async with managed_job_adapter(request.app.state.managed_routing_runtime, context, item) as adapter:
                 state = await adapter.poll(context, str(item["upstream_job_id"]))
         else:
             adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
@@ -455,7 +384,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                 elif source and source.get("status") == "succeeded" and source.get("service_id") in reusable_result_services and index < len(source_results):
                     if managed:
                         try:
-                            _validated_job_route(source)
+                            validated_job_route(source)
                         except ValueError:
                             source = None
                     if source is not None and (not managed or source.get("logical_model_id") == domain_request.model_id):
@@ -567,7 +496,7 @@ async def cancel_job(job_id: str, request: Request) -> dict[str, object]:
         raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
     try:
         if item.get("logical_model_id") is not None:
-            async with _managed_adapter(request, context, item) as adapter:
+            async with managed_job_adapter(request.app.state.managed_routing_runtime, context, item) as adapter:
                 cancel = getattr(adapter, "cancel", None)
                 if not callable(cancel):
                     raise problem(request, "JOB_NOT_CANCELLABLE", "The job cannot be cancelled.", status=409)
