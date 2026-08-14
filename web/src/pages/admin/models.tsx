@@ -24,6 +24,7 @@ import {
 } from "@/api/admin";
 import type { ModelSpec } from "@/api/contracts";
 import { ModelEditor } from "@/components/admin/model-editor";
+import { CredentialPoolImport } from "@/components/admin/credential-pool-import";
 import { ModelCallSettings } from "@/components/admin/model-call-settings";
 import { callingPresetsForModel, routeMatchesCallingPreset } from "@/components/admin/model-templates";
 import { ObjectLifecycleActions } from "@/components/admin/object-lifecycle-actions";
@@ -188,6 +189,8 @@ export default function AdminModelsPage() {
                     管理配置未能加载，请重试。
                 </p>
             )}
+
+            <CredentialPoolImport onImported={setPools} />
 
             <div className="mt-6 grid min-w-0 gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
                 <aside className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-3">

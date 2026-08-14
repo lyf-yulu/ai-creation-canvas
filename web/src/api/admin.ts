@@ -62,6 +62,11 @@ export const fetchAdminModelRoute = (modelId: string, routeId: string) => apiFet
 export const createAdminModelRoute = (body: ModelRouteWrite) => apiFetch<AdminModelRoute>(`/api/v1/admin/logical-models/${encodeURIComponent(body.model_id)}/routes`, { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) });
 export const updateAdminModelRoute = (body: ModelRouteWrite & { revision: number }) => apiFetch<AdminModelRoute>(`/api/v1/admin/logical-models/${encodeURIComponent(body.model_id)}/routes/${encodeURIComponent(body.route_id)}`, { method: "PUT", headers: jsonHeaders, body: JSON.stringify(body) });
 export const fetchAdminCredentialPools = async () => (await apiFetch<{ pools: AdminCredentialPool[] }>("/api/v1/admin/credential-pools")).pools;
+export const importAdminCredentialPools = (file: File) => {
+    const body = new FormData();
+    body.set("file", file, file.name);
+    return apiFetch<{ pools: AdminCredentialPool[] }>("/api/v1/admin/credential-pools/import", { method: "POST", body });
+};
 
 type LifecycleKind = "enable" | "disable" | "archive" | "restore" | "purge-runtime";
 const lifecycle = <T>(path: string, revision: number) => apiFetch<T>(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ revision }) });
