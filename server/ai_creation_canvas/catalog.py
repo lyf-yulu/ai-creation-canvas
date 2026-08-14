@@ -235,6 +235,10 @@ class GovernedModelCatalog:
                 self._registered.add(adapter.service_id)
                 self._bindings.update({model.model_id: GovernedModelBinding(provider, model) for model in models})
 
+    async def refresh_background_adapters(self) -> None:
+        """Register governed direct adapters before background recovery starts."""
+        await self._refresh()
+
     async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> CatalogResult:
         await self._refresh()
         return await self._base.list_models(context, cookie_header=cookie_header)

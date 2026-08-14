@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -16,12 +17,15 @@ import time
 import re
 from typing import Callable, Iterator
 
+from ai_creation_canvas.domain.models import CompletionMode
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
@@ -92,6 +96,12 @@ class Reservation:
     job: dict[str, object]
     created: bool
     conflict: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PolledJobWrite:
+    job: dict[str, object]
+    applied: bool
 
 
 class StoreInitializationError(RuntimeError):
@@ -470,6 +480,7 @@ class CanvasStore:
                 pool_revision_digest TEXT, key_fingerprint TEXT, submission_state TEXT, route_snapshot_json TEXT,
                 video_seconds INTEGER NOT NULL DEFAULT 0, image_count INTEGER NOT NULL DEFAULT 0,
                 video_price_fen INTEGER, image_price_fen INTEGER, cost_fen INTEGER, charged_at TEXT,
+                completion_mode TEXT CHECK(completion_mode IN ('background','request')),
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(user_id, idempotency_key)
             )""")
@@ -518,13 +529,23 @@ class CanvasStore:
             db.execute("DROP TABLE canvas_jobs_legacy")
             columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_jobs)")}
             # Migration is intentionally additive; old data has no sensitive payload.
-        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT"), ("logical_model_id", "TEXT"), ("logical_model_revision", "INTEGER"), ("route_revision", "INTEGER"), ("pool_revision_digest", "TEXT"), ("key_fingerprint", "TEXT"), ("submission_state", "TEXT"), ("route_snapshot_json", "TEXT"), ("video_seconds", "INTEGER NOT NULL DEFAULT 0"), ("image_count", "INTEGER NOT NULL DEFAULT 0"), ("video_price_fen", "INTEGER"), ("image_price_fen", "INTEGER"), ("cost_fen", "INTEGER"), ("charged_at", "TEXT")):
+        for name, spec in (("result_id", "TEXT"), ("result_ids_json", "TEXT"), ("submission_token", "TEXT"), ("lease_until", "REAL"), ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("model_id", "TEXT"), ("model_revision", "INTEGER"), ("provider_id", "TEXT"), ("adapter_type", "TEXT"), ("route_id", "TEXT"), ("submission_json", "TEXT"), ("logical_model_id", "TEXT"), ("logical_model_revision", "INTEGER"), ("route_revision", "INTEGER"), ("pool_revision_digest", "TEXT"), ("key_fingerprint", "TEXT"), ("submission_state", "TEXT"), ("route_snapshot_json", "TEXT"), ("video_seconds", "INTEGER NOT NULL DEFAULT 0"), ("image_count", "INTEGER NOT NULL DEFAULT 0"), ("video_price_fen", "INTEGER"), ("image_price_fen", "INTEGER"), ("cost_fen", "INTEGER"), ("charged_at", "TEXT"), ("completion_mode", "TEXT CHECK(completion_mode IN ('background','request'))")):
             if name not in columns:
                 db.execute(f"ALTER TABLE canvas_jobs ADD COLUMN {name} {spec}")
+        db.execute(
+            "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+            "error_code='SUBMISSION_UNKNOWN',submission_token=NULL,lease_until=NULL,updated_at=? "
+            "WHERE status='submitting' AND submission_state IS NULL AND logical_model_id IS NULL",
+            (_now(),),
+        )
         for row in db.execute("SELECT id, result_id FROM canvas_jobs WHERE result_id IS NOT NULL"):
             if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
                 scrub_pending = True
                 db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_job_acknowledgements (
+                job_id TEXT PRIMARY KEY REFERENCES canvas_jobs(id) ON DELETE CASCADE,
+                token TEXT, lease_until REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
         if scrub_pending:
             db.execute(
                 "INSERT INTO canvas_meta(key,value) VALUES ('legacy_result_scrub_pending','1') "
@@ -2110,7 +2131,9 @@ class CanvasStore:
             db.execute("UPDATE canvas_assets SET status=?,updated_at=? WHERE asset_id=?", (status, _now(), asset_id))
             return dict(db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone())
 
-    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None, logical_model_id: str | None = None, logical_model_revision: int | None = None, video_seconds: int = 0, image_count: int = 0) -> Reservation:
+    def reserve_job(self, *, user_id: str, job_id: str, service_id: str, operation: str, idempotency_key: str, request_hash: str, lease_seconds: float = 30.0, model_id: str | None = None, model_revision: int | None = None, provider_id: str | None = None, adapter_type: str | None = None, submission_json: str | None = None, logical_model_id: str | None = None, logical_model_revision: int | None = None, video_seconds: int = 0, image_count: int = 0, completion_mode: CompletionMode = "background") -> Reservation:
+        if not isinstance(completion_mode, str) or completion_mode not in {"background", "request"}:
+            raise ValueError("completion mode is invalid")
         video_seconds = self._validated_usage_value(
             video_seconds, name="video_seconds", maximum=_MAX_VIDEO_SECONDS
         )
@@ -2126,6 +2149,20 @@ class CanvasStore:
                 item = dict(existing)
                 if item["request_hash"] != request_hash:
                     return Reservation(item, False, True)
+                if (
+                    item["status"] == "submitting"
+                    and item.get("submission_state") in {None, "reserved"}
+                    and item.get("completion_mode") is not None
+                    and item.get("completion_mode") != completion_mode
+                ):
+                    db.execute(
+                        "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                        "error_code='SUBMISSION_UNKNOWN',submission_token=NULL,lease_until=NULL,updated_at=? "
+                        "WHERE id=? AND status='submitting' AND (submission_state IS NULL OR submission_state='reserved')",
+                        (now, item["id"]),
+                    )
+                    item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
+                    return Reservation(item, False)
                 lease_expired = float(item.get("lease_until") or 0) <= self._clock()
                 if item["status"] == "submitting" and item.get("submission_state") == "in_flight" and lease_expired:
                     db.execute(
@@ -2137,27 +2174,70 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, False)
                 if item["status"] == "submitting" and item.get("submission_state") in {None, "reserved"} and lease_expired:
-                    db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, updated_at=? WHERE id=? AND submission_token IS ?", (token, lease_until, now, item["id"], item.get("submission_token")))
+                    db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, completion_mode=?, updated_at=? WHERE id=? AND submission_token IS ? AND (completion_mode IS NULL OR completion_mode=?)", (token, lease_until, completion_mode, now, item["id"], item.get("submission_token"), completion_mode))
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)
-            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,logical_model_id,logical_model_revision,submission_state,video_seconds,image_count,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, logical_model_id, logical_model_revision, "reserved" if logical_model_id is not None else None, video_seconds, image_count, now, now))
+            db.execute("INSERT INTO canvas_jobs (id,user_id,service_id,operation,status,idempotency_key,request_hash,submission_token,lease_until,attempt,model_id,model_revision,provider_id,adapter_type,submission_json,logical_model_id,logical_model_revision,submission_state,video_seconds,image_count,completion_mode,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (job_id, user_id, service_id, operation, "submitting", idempotency_key, request_hash, token, lease_until, 1, model_id, model_revision, provider_id, adapter_type, submission_json, logical_model_id, logical_model_revision, "reserved", video_seconds, image_count, completion_mode, now, now))
             row = db.execute("SELECT * FROM canvas_jobs WHERE id = ?", (job_id,)).fetchone()
         assert row is not None
         return Reservation(dict(row), True)
 
-    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str, token: str | None = None, *, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
+    def mark_submitted(
+        self,
+        job_id: str,
+        upstream_job_id: str,
+        status: str,
+        token: str | None = None,
+        *,
+        result_ids: tuple[str, ...] | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, object]:
+        if status not in {"queued", "running", "succeeded", "failed"}:
+            raise ValueError("submitted status is invalid")
+        if result_ids is not None and (
+            not 1 <= len(result_ids) <= 15
+            or any(not isinstance(item, str) or _RESULT_ID.fullmatch(item) is None for item in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+        ):
+            raise ValueError("result IDs are invalid")
+        if status == "succeeded" and result_ids is None:
+            raise ValueError("successful submission results are required")
+        if status != "succeeded" and result_ids is not None:
+            raise ValueError("result IDs are invalid")
+        if status == "failed":
+            if not isinstance(error_code, str) or _ERROR_CODE.fullmatch(error_code) is None:
+                error_code = "TASK_FAILED"
+        elif error_code is not None:
+            raise ValueError("submitted error code is invalid")
+        encoded = json.dumps(result_ids, separators=(",", ":")) if result_ids is not None else None
+        result_id = result_ids[0] if result_ids is not None else None
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token:
                 return dict(row)
-            encoded = json.dumps(list(result_ids), separators=(",", ":")) if result_ids else None
             now = _now()
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, result_ids_json=COALESCE(?,result_ids_json), submission_state=CASE WHEN submission_state IS NULL THEN NULL ELSE 'submitted' END, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, encoded, now, job_id))
+            db.execute(
+                "UPDATE canvas_jobs SET status=?,upstream_job_id=?,error_code=?,result_id=?,result_ids_json=?,"
+                "submission_state=CASE WHEN submission_state IS NULL THEN NULL ELSE 'submitted' END,"
+                "submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                (status, upstream_job_id, error_code, result_id, encoded, now, job_id),
+            )
             if status == "succeeded":
                 self._capture_usage_snapshot(db, job_id, now)
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
+
+    def begin_direct_submission(self, job_id: str, token: str) -> bool:
+        """Move one token-owned direct reservation into its non-replayable I/O phase."""
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET submission_state='in_flight',updated_at=? "
+                "WHERE id=? AND submission_token=? AND status='submitting' "
+                "AND logical_model_id IS NULL AND (submission_state IS NULL OR submission_state='reserved')",
+                (_now(), job_id, token),
+            )
+        return cursor.rowcount == 1
 
     def record_routing_snapshot(self, job_id: str, token: str, *, logical_model_id: str, logical_model_revision: int, route_id: str, route_revision: int, pool_revision_digest: str, key_fingerprint: str, route_snapshot_json: str) -> dict[str, object]:
         if not all(isinstance(value, str) and value for value in (logical_model_id, route_id, pool_revision_digest, key_fingerprint, route_snapshot_json)):
@@ -2179,14 +2259,27 @@ class CanvasStore:
                 return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
-    def mark_submission_unknown(self, job_id: str, token: str, error_code: str = "SUBMISSION_UNKNOWN") -> dict[str, object]:
+    def mark_submission_unknown(
+        self,
+        job_id: str,
+        token: str,
+        error_code: str = "SUBMISSION_UNKNOWN",
+        *,
+        upstream_job_id: str | None = None,
+    ) -> dict[str, object]:
+        if upstream_job_id is not None and (not isinstance(upstream_job_id, str) or not upstream_job_id):
+            raise ValueError("upstream job ID is invalid")
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise KeyError(job_id)
             if row["submission_token"] != token:
                 return dict(row)
-            db.execute("UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',error_code=?,submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (error_code, _now(), job_id))
+            db.execute(
+                "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                "error_code=?,upstream_job_id=COALESCE(?,upstream_job_id),submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                (error_code, upstream_job_id, _now(), job_id),
+            )
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def mark_submission_rejected(self, job_id: str, token: str, error_code: str = "REQUEST_REJECTED") -> dict[str, object]:
@@ -2225,6 +2318,309 @@ class CanvasStore:
         if row is None:
             raise KeyError(job_id)
         return dict(row)
+
+    def claim_pollable_job(self, *, lease_seconds: float = 30.0) -> dict[str, object] | None:
+        """Lease one submitted job for the background poll worker."""
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        token = os.urandom(16).hex()
+        now = self._clock()
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT * FROM canvas_jobs "
+                "WHERE status IN ('queued','running') AND upstream_job_id IS NOT NULL "
+                "AND completion_mode='background' "
+                "AND (lease_until IS NULL OR lease_until<=?) "
+                "ORDER BY updated_at,id LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? "
+                "WHERE id=? AND status IN ('queued','running') AND upstream_job_id IS NOT NULL "
+                "AND completion_mode='background' "
+                "AND (lease_until IS NULL OR lease_until<=?)",
+                (token, now + float(lease_seconds), _now(), row["id"], now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (row["id"],)).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def claim_request_scoped_job(
+        self,
+        job_id: str,
+        *,
+        user_id: str,
+        lease_seconds: float = 30.0,
+    ) -> dict[str, object] | None:
+        """Lease one exact owner-visible request-scoped job for a single HTTP poll."""
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        token = os.urandom(16).hex()
+        now = self._clock()
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? "
+                "WHERE id=? AND user_id=? AND status IN ('queued','running') "
+                "AND upstream_job_id IS NOT NULL AND completion_mode='request' "
+                "AND (lease_until IS NULL OR lease_until<=?)",
+                (token, now + float(lease_seconds), _now(), job_id, user_id, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = db.execute(
+                "SELECT * FROM canvas_jobs WHERE id=? AND user_id=?",
+                (job_id, user_id),
+            ).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def reconcile_job_completion_modes(
+        self,
+        *,
+        background_service_ids: set[str] | frozenset[str],
+        request_service_ids: set[str] | frozenset[str],
+    ) -> int:
+        """Classify legacy nonterminal rows using only trusted server registries."""
+        background = frozenset(background_service_ids)
+        request = frozenset(request_service_ids)
+        if (
+            any(not isinstance(item, str) or not item for item in background | request)
+            or background & request
+        ):
+            raise ValueError("completion mode services are invalid")
+        clauses = ["logical_model_id IS NOT NULL"]
+        parameters: list[object] = []
+        if background:
+            placeholders = ",".join("?" for _ in background)
+            clauses.append(f"service_id IN ({placeholders})")
+            parameters.extend(sorted(background))
+        if request:
+            placeholders = ",".join("?" for _ in request)
+            clauses.append(f"service_id IN ({placeholders})")
+            parameters.extend(sorted(request))
+        background_placeholders = ",".join("?" for _ in background)
+        case = "CASE WHEN logical_model_id IS NOT NULL THEN 'background'"
+        case_parameters: list[object] = []
+        if background:
+            case += f" WHEN service_id IN ({background_placeholders}) THEN 'background'"
+            case_parameters.extend(sorted(background))
+        case += " ELSE 'request' END"
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                f"UPDATE canvas_jobs SET completion_mode={case},updated_at=? "
+                "WHERE completion_mode IS NULL AND status IN ('queued','running') "
+                f"AND ({' OR '.join(clauses)})",
+                (*case_parameters, _now(), *parameters),
+            )
+        return cursor.rowcount
+
+    def record_polled_job(
+        self,
+        job_id: str,
+        *,
+        token: str,
+        status: str,
+        error_code: str | None = None,
+        result_id: str | None = None,
+        result_ids: tuple[str, ...] | None = None,
+        retry_after_seconds: float = 2.0,
+        acknowledgement_required: bool = False,
+    ) -> PolledJobWrite:
+        """Commit one leased poll result; stale workers cannot overwrite a reclaim."""
+        ranks = {"queued": 2, "running": 3, "succeeded": 4, "failed": 4}
+        if status not in ranks:
+            raise ValueError("polled status is invalid")
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
+        if result_ids is not None:
+            if (
+                not 1 <= len(result_ids) <= 15
+                or any(not isinstance(item, str) or _RESULT_ID.fullmatch(item) is None for item in result_ids)
+                or len(set(result_ids)) != len(result_ids)
+            ):
+                raise ValueError("result IDs are invalid")
+            if result_id is not None and result_id != result_ids[0]:
+                raise ValueError("result IDs are invalid")
+            result_id = result_ids[0]
+            encoded = json.dumps(result_ids, separators=(",", ":"))
+        elif result_id is not None:
+            if not isinstance(result_id, str) or _RESULT_ID.fullmatch(result_id) is None:
+                raise ValueError("result IDs are invalid")
+            encoded = json.dumps((result_id,), separators=(",", ":"))
+        else:
+            encoded = None
+        if status == "succeeded" and result_id is None:
+            raise ValueError("successful poll results are required")
+        if not isinstance(acknowledgement_required, bool):
+            raise ValueError("acknowledgement requirement is invalid")
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            old = dict(row)
+            if old.get("submission_token") != token or old["status"] not in {"queued", "running"}:
+                return PolledJobWrite(old, False)
+            if ranks[status] < ranks[str(old["status"])]:
+                status = str(old["status"])
+            terminal = status in {"succeeded", "failed"}
+            next_poll = None if terminal else self._clock() + float(retry_after_seconds)
+            now = _now()
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET status=?,error_code=COALESCE(?,error_code),"
+                "result_id=COALESCE(?,result_id),result_ids_json=COALESCE(?,result_ids_json),"
+                "submission_token=NULL,lease_until=?,updated_at=? WHERE id=? AND submission_token=?",
+                (status, error_code, result_id, encoded, next_poll, now, job_id, token),
+            )
+            applied = cursor.rowcount == 1
+            if applied and status == "succeeded":
+                self._capture_usage_snapshot(db, job_id, now)
+                if acknowledgement_required:
+                    db.execute(
+                        "INSERT OR IGNORE INTO canvas_job_acknowledgements(job_id,token,lease_until,created_at,updated_at) "
+                        "VALUES (?,NULL,NULL,?,?)",
+                        (job_id, now, now),
+                    )
+            updated = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        assert updated is not None
+        return PolledJobWrite(dict(updated), applied)
+
+    def claim_job_acknowledgement(self, *, lease_seconds: float = 30.0) -> dict[str, object] | None:
+        """Lease durable provider acknowledgement work independently of polling."""
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        token = os.urandom(16).hex()
+        now = self._clock()
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT j.id FROM canvas_job_acknowledgements a "
+                "JOIN canvas_jobs j ON j.id=a.job_id "
+                "WHERE j.status='succeeded' AND (a.lease_until IS NULL OR a.lease_until<=?) "
+                "ORDER BY a.updated_at,a.job_id LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET token=?,lease_until=?,updated_at=? "
+                "WHERE job_id=? AND (lease_until IS NULL OR lease_until<=?)",
+                (token, now + float(lease_seconds), _now(), row["id"], now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = db.execute(
+                "SELECT j.*,a.token AS acknowledgement_token,a.lease_until AS acknowledgement_lease_until "
+                "FROM canvas_job_acknowledgements a JOIN canvas_jobs j ON j.id=a.job_id "
+                "WHERE a.job_id=?",
+                (row["id"],),
+            ).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def renew_job_acknowledgement(self, job_id: str, *, token: str, lease_seconds: float = 30.0) -> bool:
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET lease_until=?,updated_at=? WHERE job_id=? AND token=?",
+                (self._clock() + float(lease_seconds), _now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def release_job_acknowledgement(
+        self,
+        job_id: str,
+        *,
+        token: str,
+        retry_after_seconds: float = 2.0,
+    ) -> bool:
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET token=NULL,lease_until=?,updated_at=? "
+                "WHERE job_id=? AND token=?",
+                (self._clock() + float(retry_after_seconds), _now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def complete_job_acknowledgement(self, job_id: str, *, token: str) -> bool:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "DELETE FROM canvas_job_acknowledgements WHERE job_id=? AND token=?",
+                (job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def renew_job_lease(self, job_id: str, *, token: str, lease_seconds: float = 30.0) -> bool:
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET lease_until=?,updated_at=? "
+                "WHERE id=? AND submission_token=? AND status IN ('queued','running')",
+                (self._clock() + float(lease_seconds), _now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def release_job_lease(self, job_id: str, *, token: str, retry_after_seconds: float = 2.0) -> dict[str, object]:
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(job_id)
+            if row["submission_token"] == token and row["status"] in {"queued", "running"}:
+                db.execute(
+                    "UPDATE canvas_jobs SET submission_token=NULL,lease_until=?,updated_at=? WHERE id=? AND submission_token=?",
+                    (self._clock() + float(retry_after_seconds), _now(), job_id, token),
+                )
+            updated = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
+        assert updated is not None
+        return dict(updated)
 
     def fail_reservation(self, job_id: str, error_code: str = "TASK_FAILED", token: str | None = None) -> dict[str, object]:
         # Retain a short-lived reservation that can be reclaimed, without losing the key.
@@ -2292,54 +2688,6 @@ class CanvasStore:
             "WHERE id=? AND charged_at IS NULL",
             (rates["video_price_fen"], rates["image_price_fen"], total, now, job_id),
         )
-
-    def claim_pollable_job(self) -> dict[str, object] | None:
-        now = _now()
-        token = os.urandom(16).hex()
-        with self._connection(immediate=True) as db:
-            row = db.execute(
-                "SELECT * FROM canvas_jobs WHERE status IN ('queued','running') "
-                "AND (lease_until IS NULL OR lease_until<=?) ORDER BY updated_at,id LIMIT 1",
-                (self._clock(),),
-            ).fetchone()
-            if row is None:
-                return None
-            db.execute(
-                "UPDATE canvas_jobs SET submission_token=?,lease_until=?,updated_at=? WHERE id=?",
-                (token, self._clock() + 30.0, now, row["id"]),
-            )
-            claimed = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (row["id"],)).fetchone()
-        assert claimed is not None
-        return dict(claimed)
-
-    def record_polled_job(
-        self,
-        job_id: str,
-        *,
-        token: str,
-        status: str,
-        error_code: str | None = None,
-        result_id: str | None = None,
-    ) -> dict[str, object]:
-        if status not in {"queued", "running", "succeeded", "failed"}:
-            raise ValueError("polled status is invalid")
-        now = _now()
-        with self._connection(immediate=True) as db:
-            row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None:
-                raise KeyError(job_id)
-            if row["submission_token"] != token or row["status"] in {"succeeded", "failed"}:
-                return dict(row)
-            db.execute(
-                "UPDATE canvas_jobs SET status=?,error_code=COALESCE(?,error_code),"
-                "result_id=COALESCE(?,result_id),submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
-                (status, error_code, result_id, now, job_id),
-            )
-            if status == "succeeded":
-                self._capture_usage_snapshot(db, job_id, now)
-            updated = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
-        assert updated is not None
-        return dict(updated)
 
     def _update(self, job_id: str, *, status: str, upstream_job_id: str | None = None, error_code: str | None = None, result_id: str | None = None, result_ref: str | None = None, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
         ranks = {"uploading": 0, "submitting": 1, "queued": 2, "running": 3, "succeeded": 4, "failed": 4}

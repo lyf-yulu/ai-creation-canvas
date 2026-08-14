@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import time
 
 import httpx
 import pytest
@@ -66,8 +68,13 @@ def test_chiyun_submits_ordered_multipart_and_materializes_bounded_results(tmp_p
             {"size": "1024x1536", "output_count": 1}, inputs={"reference_images": ("one", "two")},
         ))
         state = await adapter.poll(context(), upstream.upstream_job_id)
+        replayed = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.status.value == "succeeded"
         assert state.result is not None and state.result.mime_type == "image/png"
+        assert tuple(item.asset_id for item in replayed.results) == tuple(item.asset_id for item in state.results)
+        await adapter.acknowledge_poll_result(upstream.upstream_job_id)
+        with pytest.raises(InvalidUpstreamResult):
+            await adapter.poll(context(), upstream.upstream_job_id)
         stream = await adapter.open_result(context(), state.result.asset_id, cookie_header="", range_header="bytes=0-7")
         assert stream.status_code == 206
         assert b"".join([chunk async for chunk in stream.aiter_bytes()]) == PNG[:8]
@@ -85,6 +92,90 @@ def test_chiyun_submits_ordered_multipart_and_materializes_bounded_results(tmp_p
     assert fields(request.content, "size") == [b"1024x1536"]
     assert fields(request.content, "n") == [b"1"]
     assert fields(request.content, "image[]") == [PNG, JPEG]
+
+
+def test_chiyun_pending_updates_are_safe_across_adapter_instances(tmp_path: Path) -> None:
+    response = {"data": [{"b64_json": base64.b64encode(PNG).decode()}]}
+
+    def build() -> ChiyunGenerationAdapter:
+        return ChiyunGenerationAdapter(
+            provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+            asset_loader=lambda _: (PNG, "image/png"),
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response)),
+        )
+
+    first, second = build(), build()
+    job_a = asyncio.run(first.submit(context(), JobRequest(
+        "image.edit", "chiyun-gpt-image-2", "a", "job-a",
+        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+    )))
+    original_read = first._read_index
+
+    def slow_read():
+        values = original_read()
+        time.sleep(0.1)
+        return values
+
+    first._read_index = slow_read
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        acknowledgement = pool.submit(
+            lambda: asyncio.run(first.acknowledge_poll_result(job_a.upstream_job_id))
+        )
+        time.sleep(0.02)
+        submitted = pool.submit(
+            lambda: asyncio.run(second.submit(context(), JobRequest(
+                "image.edit", "chiyun-gpt-image-2", "b", "job-b",
+                {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+            )))
+        ).result()
+        acknowledgement.result()
+
+    state = asyncio.run(second.poll(context(), submitted.upstream_job_id))
+    assert state.status.value == "succeeded"
+
+
+def test_chiyun_local_index_io_is_retryable_and_pending_is_replayable(tmp_path: Path, monkeypatch) -> None:
+    adapter = ChiyunGenerationAdapter(
+        provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+        asset_loader=lambda _: (PNG, "image/png"),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={
+            "data": [{"b64_json": base64.b64encode(PNG).decode()}],
+        })),
+    )
+    submitted = asyncio.run(adapter.submit(context(), JobRequest(
+        "image.edit", "chiyun-gpt-image-2", "recover", "local-io",
+        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+    )))
+    original_read_text = Path.read_text
+    failed_read = False
+
+    def flaky_read_text(path, *args, **kwargs):
+        nonlocal failed_read
+        if path == adapter._index and not failed_read:
+            failed_read = True
+            raise OSError("private index read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    with pytest.raises(PortalUpstreamError) as read_error:
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
+    assert read_error.value.retryable is True
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+
+    original_write = adapter._write_index
+    monkeypatch.setattr(
+        adapter,
+        "_write_index",
+        lambda values: (_ for _ in ()).throw(OSError("private index write failure")),
+    )
+    with pytest.raises(PortalUpstreamError) as write_error:
+        asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
+    assert write_error.value.retryable is True
+    monkeypatch.setattr(adapter, "_write_index", original_write)
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+    asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
+    with pytest.raises(InvalidUpstreamResult):
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
 
 
 def test_chiyun_preserves_the_actual_returned_image_mime(tmp_path: Path) -> None:

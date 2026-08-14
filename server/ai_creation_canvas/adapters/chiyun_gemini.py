@@ -1,9 +1,10 @@
 """Trusted Chiyun Gemini image adapter with ordered inline references."""
 from __future__ import annotations
 
-import asyncio
 import base64
 import binascii
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ import httpx
 from ai_creation_canvas.adapters.chiyun import _FileStream, _empty_stream, _range, _safe_unlink
 from ai_creation_canvas.adapters.retry import SubmissionError, SubmissionDisposition, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import InvalidUpstreamResult
+from ai_creation_canvas.errors import InvalidUpstreamResult, LocalRecoveryUnavailable
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ProviderDefinition
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 
@@ -34,6 +35,7 @@ _UPSTREAM_ID = re.compile(r"chiyun_gemini_[0-9a-f]{64}\Z")
 
 class ChiyunGeminiGenerationAdapter:
     requires_portal_cookie = False
+    supports_background_polling = True
 
     def __init__(self, *, provider: ProviderDefinition, models: tuple[GovernedModelDefinition, ...], api_key: str, data_dir: Path | str, asset_loader: Callable[[str], tuple[bytes, str]], transport: httpx.AsyncBaseTransport | None = None) -> None:
         if provider.adapter_type != "chiyun_gemini_images" or not provider.enabled or not isinstance(api_key, str) or len(api_key.strip()) < 8:
@@ -51,7 +53,8 @@ class ChiyunGeminiGenerationAdapter:
         if self._root.is_symlink():
             raise ValueError("Chiyun Gemini result root is unsafe")
         os.chmod(self._root, 0o700)
-        self._index, self._lock = self._root / "pending.json", asyncio.Lock()
+        self._index = self._root / "pending.json"
+        self._index_lock_path = self._root / "pending.lock"
 
     @property
     def model_ids(self) -> tuple[str, ...]:
@@ -110,7 +113,7 @@ class ChiyunGeminiGenerationAdapter:
                 os.fsync(output.fileno())
             os.chmod(temporary, 0o600)
             os.replace(temporary, destination)
-            async with self._lock:
+            with self._locked_index():
                 values = self._read_index()
                 values[upstream_id] = {"result_id": result_id, "mime": mime}
                 self._write_index(values)
@@ -119,18 +122,32 @@ class ChiyunGeminiGenerationAdapter:
         return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        try:
+            return await self._poll(context, upstream_job_id)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
+
+    async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun Gemini job is invalid")
-        async with self._lock:
-            values = self._read_index()
-            raw = values.pop(upstream_job_id, None)
-            if raw is not None:
-                self._write_index(values)
+        with self._locked_index():
+            raw = self._read_index().get(upstream_job_id)
         if not isinstance(raw, dict) or not isinstance(raw.get("result_id"), str) or _RESULT_ID.fullmatch(raw["result_id"]) is None or raw.get("mime") not in _IMAGE_MIME:
             raise InvalidUpstreamResult("Chiyun Gemini result index is invalid")
         result = AssetRef(raw["result_id"], "reference", "active", raw["mime"], "image")
         return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=(result,))
+
+    async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+        if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
+            raise ValueError("Chiyun Gemini job is invalid")
+        try:
+            with self._locked_index():
+                values = self._read_index()
+                if values.pop(upstream_job_id, None) is not None:
+                    self._write_index(values)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -179,12 +196,27 @@ class ChiyunGeminiGenerationAdapter:
             return {}
         try:
             value = json.loads(self._index.read_text(encoding="ascii"))
-        except (OSError, ValueError, UnicodeError):
+        except (ValueError, UnicodeError):
             return {}
         return value if isinstance(value, dict) else {}
 
+    @contextmanager
+    def _locked_index(self):
+        descriptor = os.open(
+            self._index_lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.chmod(self._index_lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def _write_index(self, values: Mapping[str, object]) -> None:
-        temporary = self._root / ".pending.tmp"
+        temporary = self._root / f".pending.{os.getpid()}.{os.urandom(8).hex()}.tmp"
         try:
             temporary.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")), encoding="ascii")
             os.chmod(temporary, 0o600)

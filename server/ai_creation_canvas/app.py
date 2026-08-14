@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
-from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter
+from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter, is_trusted_request_scoped_adapter
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
@@ -41,6 +41,8 @@ from ai_creation_canvas.config import Settings, load_service_declarations
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
 from ai_creation_canvas.domain.models import PortalRole
+from ai_creation_canvas.job_polling import JobPollingService
+from ai_creation_canvas.job_worker import JobWorker
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
 from ai_creation_canvas.coordination import LocalExecutionCoordinator, RedisExecutionCoordinator
@@ -214,12 +216,36 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             store, lambda: loader.reload().as_mapping(), RouteSelector(trusted_routes_only=True), execution_coordinator, route_factory,
             provider_submission_budget,
         )
+    refresh_background_adapters = getattr(model_catalog, "refresh_background_adapters", None)
     if managed_routing_runtime is not None:
         if managed_routing_runtime.store is not store:
             raise ValueError("managed routing runtime store does not match the app store")
         model_catalog = LogicalModelCatalog(model_catalog, store, managed_routing_runtime)
     app.state.model_catalog = AssignedModelCatalog(model_catalog, app.state.canvas_store) if settings.identity_mode == "local" else model_catalog
     app.state.managed_routing_runtime = managed_routing_runtime
+    app.state.job_polling_service = JobPollingService(store, registry, managed_routing_runtime)
+    app.state.job_worker = JobWorker(store, app.state.job_polling_service)
+
+    async def start_job_worker() -> None:
+        if callable(refresh_background_adapters):
+            await refresh_background_adapters()
+        adapters = registry.generation_adapters()
+        store.reconcile_job_completion_modes(
+            background_service_ids={
+                adapter.service_id
+                for adapter in adapters
+                if getattr(adapter, "supports_background_polling", False) is True
+            },
+            request_service_ids={
+                adapter.service_id
+                for adapter in adapters
+                if is_trusted_request_scoped_adapter(adapter)
+            },
+        )
+        await app.state.job_worker.start()
+
+    app.router.on_startup.append(start_job_worker)
+    app.router.on_shutdown.append(app.state.job_worker.stop)
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"

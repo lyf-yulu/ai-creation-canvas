@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import JobState, ModelSpec, UpstreamJob
+from ai_creation_canvas.domain.models import AssetRef, JobState, ModelSpec, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 
 
@@ -31,6 +31,7 @@ PREPARE = REPO_ROOT / "scripts" / "prepare-portal-test-copy.sh"
 class FixtureGeneration:
     service_id = "fixture-images"
     requires_portal_cookie = True
+    supports_synchronous_submission = True
 
     def __init__(self, record_usage) -> None:
         self.submissions = 0
@@ -43,7 +44,13 @@ class FixtureGeneration:
     async def submit(self, context, request):
         self.submissions += 1
         self._record_usage(context.user.user_id, "image")
-        return UpstreamJob(self.service_id, f"upstream-{self.submissions}", JobState(f"upstream-{self.submissions}", "queued"))
+        upstream_id = f"upstream-{self.submissions}"
+        result = AssetRef("opaque-result", "reference", "active", "image/png")
+        return UpstreamJob(
+            self.service_id,
+            upstream_id,
+            JobState(upstream_id, "succeeded", results=(result,)),
+        )
 
     async def list_models_with_cookie(self, context, cookie_header):
         return await self.list_models(context)
@@ -304,7 +311,7 @@ def test_proxy_rewrites_mount_and_preserves_method_body_and_portal_cookie(portal
         headers={"content-type": "application/json"},
     )
     assert response.status_code == 201
-    assert response.json()["status"] == "queued"
+    assert response.json()["status"] == "succeeded"
     assert adapter.cookies == ["portal_session=session-a"]
     assert client.get("/ai-canvas/", headers={"accept": "text/html"}).text == "canvas-spa"
     assert client.get("/ai-canvas/projects/one", headers={"accept": "text/html"}).text == "canvas-spa"
@@ -321,7 +328,6 @@ def test_two_users_cannot_read_each_others_results_and_usage_is_once(portal):
     job_id = created.json()["id"]
     assert adapter.submissions == 1
     assert module.app.state.usage_events == [("user-a", "image")]
-    canvas_app.state.canvas_store._update(job_id, status="succeeded", result_id="opaque-result")
     assert client.get(f"/ai-canvas/api/v1/jobs/{job_id}").status_code == 200
     assert client.get(f"/ai-canvas/api/v1/results/{job_id}").content == b"png"
     assert _as(client, "session-b").get(f"/ai-canvas/api/v1/jobs/{job_id}").status_code == 404

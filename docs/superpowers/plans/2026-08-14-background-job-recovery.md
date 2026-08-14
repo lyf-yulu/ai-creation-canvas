@@ -8,6 +8,25 @@
 
 **Tech Stack:** Python 3.12, FastAPI, asyncio, SQLite, httpx adapters, React/TypeScript, Vitest, pytest.
 
+## Implementation Status and Approved Compatibility Amendment (2026-08-14)
+
+**Status:** Implemented and verified, with the approved Cookie Portal compatibility exception recorded in `2026-08-14-portal-request-scoped-polling.md`.
+
+This document is retained as the historical implementation plan. Its original goal and task steps described server-owned background polling as the common path; implementation review established that the existing Cookie-authenticated Portal image, video, and portrait contracts cannot safely be polled by a browser-independent worker without persisting a user Cookie. The approved follow-up did not weaken the no-Cookie or no-replay constraints. It introduced two persisted completion modes instead:
+
+- `background`: explicitly background-capable direct adapters and managed routes survive browser closure and a single-process restart; their job GET remains read-only.
+- `request`: trusted Cookie Portal image, video, and portrait adapters are never worker-polled. Only the current owner GET may use that request's fresh Cookie for one poll. Portal `401`/`403` releases the lease and leaves the job queued/running so re-login can resume it.
+
+Cookies are never persisted, logged, placed in snapshots, or passed to the worker. Ambiguous direct submissions remain `submission_unknown` and are never replayed; only a failure explicitly classified as `NOT_SUBMITTED` is eligible for controlled retry. The additive SQLite migration classifies legacy nonterminal rows only from trusted server registries and leaves unresolved rows unclaimable. Consequently, every unconditional statement below about direct-job GET being read-only or browser-independent/offline recovery must be read as applying only to `background` mode, not to every provider.
+
+Compatibility follow-up steps completed:
+
+- [x] Seal ambiguous direct submission ownership and replay behavior.
+- [x] Add bounded `background`/`request` completion modes and trusted legacy-row reconciliation.
+- [x] Restore request-scoped Portal image, video, and portrait polling without Cookie persistence.
+- [x] Verify owner-only GET polling, worker exclusion, restart with a fresh Cookie, and `401`/`403` re-login recovery.
+- [x] Update operator and verification documentation with the narrowed recovery claim and single-instance migration/backup boundary.
+
 ## Global Constraints
 
 - Target a company-internal single instance; do not add Redis Streams, Celery, or another queue.
@@ -121,9 +140,31 @@ git commit -m "refactor: share managed job resolution"
 - Create: `server/ai_creation_canvas/job_polling.py`
 - Modify: `server/ai_creation_canvas/job_worker.py`
 - Modify: `server/ai_creation_canvas/adapters/ark.py`
+- Modify: `server/ai_creation_canvas/adapters/chiyun.py`
+- Modify: `server/ai_creation_canvas/adapters/chiyun_gemini.py`
+- Modify: `server/ai_creation_canvas/adapters/demo.py`
+- Modify: `server/ai_creation_canvas/adapters/factory.py`
+- Modify: `server/ai_creation_canvas/catalog.py`
+- Modify: `server/ai_creation_canvas/storage/sqlite.py`
 - Modify: `server/ai_creation_canvas/app.py`
+- Modify: `server/ai_creation_canvas/api/jobs.py`
 - Modify: `tests/server/test_job_worker.py`
 - Modify: `tests/contracts/test_ark_adapter.py`
+- Modify: `tests/contracts/test_chiyun_adapter.py`
+- Modify: `tests/contracts/test_chiyun_gemini_adapter.py`
+- Modify: `tests/contracts/test_generation_flow.py`
+- Modify: `tests/contracts/test_route_retry_contracts.py`
+- Modify: `tests/server/test_task_store.py`
+- Modify: `tests/server/test_dynamic_model_catalog.py`
+- Modify: `tests/server/test_activity_api.py`
+- Modify: `tests/server/test_admin_api.py`
+- Modify: `tests/server/test_jobs_model_routes.py`
+- Modify: `tests/integration/test_core_flows.py`
+- Modify: `tests/integration/test_demo_generation.py`
+- Modify: `tests/integration/test_model_centric_routing.py`
+- Modify: `tests/integration/test_slice1_product.py`
+- Modify: `tests/integration/test_portal_contract.py`
+- Modify: `tests/server/test_portrait_mapping.py`
 
 **Interfaces:**
 - Consumes: Task 1 lease API, Task 2 managed adapter resolver, direct `AdapterRegistry`, adapter `JobState.results`.
@@ -132,6 +173,10 @@ git commit -m "refactor: share managed job resolution"
 - [ ] **Step 1: Write failing worker tests**
 
 Cover ordered two-result completion; managed polling through the saved route/fingerprint; missing credential delaying without key rotation; retryable `PortalUpstreamError` releasing the lease; non-retryable error terminating safely; invalid/empty/duplicate/over-limit success failing terminally; `submission_unknown` never claimed; stale token never acknowledging Ark pending; and successful CAS acknowledging once.
+
+Cover the recovery boundary itself: adapters that may return an asynchronous state must explicitly support cookie-free background polling before provider I/O; governed direct adapters must be registered during startup rather than waiting for a browser catalog request; Chiyun and Chiyun Gemini polling must be read-only until an explicit acknowledgement; pending-index updates must be safe across adapter instances; stale CAS tokens must never acknowledge; and acknowledgement failures must remain durably claimable without polling or charging the provider again.
+
+Also cover direct and managed queued jobs through `GET /api/v1/jobs/{job_id}` and assert the endpoint returns stored state without calling either provider adapter. Preserve the local stale `submitting/in_flight` to `submission_unknown` transition. Mark the built-in Demo generation adapter as background-pollable and migrate integration fixtures that represent recoverable providers to declare the same capability; integration flows must explicitly advance `app.state.job_worker.run_once()` before reading completion.
 
 - [ ] **Step 2: Run RED**
 
@@ -147,50 +192,34 @@ Create a server-owned `RequestContext` from `user_id`. Resolve direct adapters f
 
 - [ ] **Step 4: Reduce `JobWorker` to scheduling**
 
-Inject `JobPollingService`. Keep start/stop idempotence, event-loop ownership protection, heartbeat renewal, cancellation release, and loop-level isolation. Construct service/worker once in `create_app`. Call Ark `acknowledge_poll_result` only after the current token successfully persisted matching ordered results.
+Inject `JobPollingService`. Keep start/stop idempotence, event-loop ownership protection, heartbeat renewal, cancellation release, and loop-level isolation. Construct service/worker once in `create_app`. Call Ark `acknowledge_poll_result` only after the current token successfully persisted matching ordered results. Remove provider polling from the GET path so it only performs the safe local in-flight expiry check and returns persisted state; cancel and result endpoints remain unchanged.
+
+Make the store return an explicit CAS-applied result instead of inferring ownership from the returned row. Persist acknowledgement work in SQLite in the same transaction as terminal success, claim it independently of provider polling, and clear it only after idempotent adapter acknowledgement succeeds. Chiyun, Chiyun Gemini, and Ark pending indexes must use a cross-instance safe read-modify-write boundary. An acknowledgement retry must never call `poll()` again.
 
 - [ ] **Step 5: Run GREEN**
 
 ```bash
-PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/server/test_submission_unknown.py
+PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/server/test_submission_unknown.py
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/chiyun.py server/ai_creation_canvas/adapters/chiyun_gemini.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/adapters/factory.py server/ai_creation_canvas/catalog.py server/ai_creation_canvas/storage/sqlite.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/server/test_task_store.py tests/server/test_dynamic_model_catalog.py tests/server/test_activity_api.py tests/server/test_admin_api.py tests/contracts/test_ark_adapter.py tests/contracts/test_chiyun_adapter.py tests/contracts/test_chiyun_gemini_adapter.py tests/contracts/test_generation_flow.py tests/contracts/test_route_retry_contracts.py tests/server/test_jobs_model_routes.py tests/server/test_portrait_mapping.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_portal_contract.py tests/integration/test_slice1_product.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
-### Task 4: Read-Only Job API and Frontend Waiting
+### Task 4: Frontend Long-Running Job Waiting
 
 **Files:**
-- Modify: `server/ai_creation_canvas/api/jobs.py`
-- Modify: `tests/contracts/test_generation_flow.py`
 - Modify: `web/src/api/jobs.ts`
 - Modify: `web/src/test/jobs.test.ts`
 
 **Interfaces:**
 - Consumes: persisted state advanced by `JobWorker`.
-- Produces: read-only `GET /api/v1/jobs/{job_id}` and abortable exponential-backoff `waitForJob(...)`.
+- Produces: abortable exponential-backoff `waitForJob(...)` consuming the read-only job endpoint completed in Task 3.
 
-- [ ] **Step 1: Write failing API tests**
-
-For direct and managed queued jobs, call GET and assert provider poll count stays zero while stored state is returned. Preserve local expiry of stale `submitting/in_flight` into `submission_unknown`.
-
-- [ ] **Step 2: Run RED**
-
-```bash
-PYTHONPATH=.:server .venv/bin/pytest -q tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py
-```
-
-Expected: managed GET still calls the provider.
-
-- [ ] **Step 3: Make GET read-only**
-
-Remove provider I/O from `_poll`; retain only the safe local in-flight expiry transition. Keep cancel and result endpoints unchanged.
-
-- [ ] **Step 4: Verify frontend behavior with tests first**
+- [ ] **Step 1: Verify frontend behavior with tests first**
 
 Tests must prove request time counts toward an explicit deadline, AbortSignal reaches fetch and sleep, no default two-minute timeout exists, invalid intervals reject, and delays back off from 1 to at most 10 seconds.
 
@@ -198,7 +227,7 @@ Tests must prove request time counts toward an explicit deadline, AbortSignal re
 npm test --prefix web -- --run src/test/jobs.test.ts
 ```
 
-- [ ] **Step 5: Implement minimal frontend waiting and run GREEN**
+- [ ] **Step 2: Implement minimal frontend waiting and run GREEN**
 
 Use `fetchJob(id, signal)`, monotonic `now`, abortable sleep, bounded exponential backoff, and no provider-specific frontend state.
 
@@ -207,10 +236,10 @@ npm test --prefix web -- --run src/test/jobs.test.ts
 npm run typecheck --prefix web
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add server/ai_creation_canvas/api/jobs.py tests/contracts/test_generation_flow.py web/src/api/jobs.ts web/src/test/jobs.test.ts
+git add web/src/api/jobs.ts web/src/test/jobs.test.ts
 git commit -m "feat: decouple completion from browser polling"
 ```
 

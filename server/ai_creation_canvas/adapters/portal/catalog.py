@@ -84,11 +84,13 @@ class PortalCookieGenerationPort(Protocol):
 class PortalJobsAdapter:
     """Maps a trusted service's data-only `/api/config` response into ModelSpec values."""
 
+    requires_portal_cookie = True
+    requires_request_scoped_polling = True
+
     def __init__(self, declaration: ServiceDeclaration, client: PortalClient) -> None:
         self.service_id = declaration.service_id
         self._declaration = declaration
         self._client = client
-        self.requires_portal_cookie = True
 
     async def list_models(self, context: RequestContext, *, cookie_header: str | None = None) -> tuple[ModelSpec, ...]:
         if cookie_header is None:
@@ -212,6 +214,13 @@ class PortalJobsAdapter:
         if not cookie_header: raise ValueError("Cookie header is required")
         headers = {"Range": range_header} if range_header else None
         return await self._client.open_stream(context, "HEAD" if head else "GET", f"api/results/{quote(result_id, safe='')}", mount=self._declaration.mount, cookie_header=cookie_header, headers=headers)
+
+
+def is_trusted_request_scoped_adapter(adapter: object) -> bool:
+    """Accept request Cookie polling only for the two code-owned Portal adapters."""
+    from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter
+
+    return type(adapter) in {PortalJobsAdapter, PortalPortraitAdapter}
 
 
 class ModelCatalog:

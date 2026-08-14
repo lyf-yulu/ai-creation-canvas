@@ -11,6 +11,7 @@ secrets/
 # Runtime and user data
 /.local-data/
 /.local-lan-data/
+/.local-real-media-data/
 /.paid-acceptance/
 /.acceptance-*/
 state/

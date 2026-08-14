@@ -1,4 +1,6 @@
 from ai_creation_canvas.storage.sqlite import CanvasStore, StoreInitializationError
+import json
+import math
 import pytest
 import sqlite3
 import time
@@ -12,6 +14,46 @@ def test_store_creates_owned_job_reservation(tmp_path):
     )
     assert reservation.created is True
     assert reservation.job["id"] == "job-a"
+
+
+def test_direct_submission_begin_is_single_owner_cas_and_expires_unknown(tmp_path):
+    now = [1_000.0]
+    store = CanvasStore(tmp_path / "data", clock=lambda: now[0])
+    reservation = store.reserve_job(
+        user_id="user-a",
+        job_id="job-a",
+        service_id="images",
+        operation="image.generate",
+        idempotency_key="key-a",
+        request_hash="a" * 64,
+        lease_seconds=30,
+    )
+    token = str(reservation.job["submission_token"])
+
+    assert reservation.job["submission_state"] == "reserved"
+    assert store.begin_direct_submission("job-a", token) is True
+    assert store.begin_direct_submission("job-a", token) is False
+    assert store.begin_direct_submission("job-a", "stale-token") is False
+    in_flight, _ = store.job_for_owner("job-a", "user-a")
+    assert in_flight is not None
+    assert in_flight["submission_state"] == "in_flight"
+    assert in_flight["logical_model_id"] is None
+    assert in_flight["route_snapshot_json"] is None
+
+    now[0] += 31
+    repeated = store.reserve_job(
+        user_id="user-a",
+        job_id="other",
+        service_id="images",
+        operation="image.generate",
+        idempotency_key="key-a",
+        request_hash="a" * 64,
+    )
+    assert repeated.created is False
+    assert repeated.job["id"] == "job-a"
+    assert repeated.job["status"] == "submission_unknown"
+    assert repeated.job["submission_state"] == "submission_unknown"
+    assert repeated.job["submission_token"] is None
 
 
 def test_store_uses_wal_and_reclaims_expired_lease(tmp_path):
@@ -33,6 +75,9 @@ def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
     row, _ = store.job_for_owner("j", "u")
     assert row and row["result_id"] == "opaque_id"
     assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}
+    assert sqlite3.connect(store.database).execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='canvas_job_acknowledgements'"
+    ).fetchone() == (1,)
     assert store.usage_rates() == {"video_price_fen": 0, "image_price_fen": 0}
     assert store.usage_for_owner("u") == {"user_id": "u", "total_cost_fen": 0, "jobs": ()}
 
@@ -51,6 +96,522 @@ def test_active_lease_and_reopened_store_preserve_one_reservation(tmp_path):
     first = CanvasStore(path).reserve_job(user_id="u", job_id="j", service_id="s", operation="op", idempotency_key="k", request_hash="h")
     reopened = CanvasStore(path).reserve_job(user_id="u", job_id="other", service_id="s", operation="op", idempotency_key="k", request_hash="h")
     assert first.created and not reopened.created and reopened.job["id"] == "j"
+
+
+def test_pollable_job_lease_excludes_concurrent_workers_and_expired_lease_is_reclaimed(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / "data", clock=clock)
+    store.reserve_job(
+        user_id="u",
+        job_id="j",
+        service_id="s",
+        operation="video.generate",
+        idempotency_key="k",
+        request_hash="h",
+    )
+    store.mark_submitted("j", "upstream-j", "running")
+
+    first = store.claim_pollable_job(lease_seconds=30)
+    assert first is not None
+    assert first["id"] == "j"
+    assert store.claim_pollable_job(lease_seconds=30) is None
+
+    clock.value += 31
+    reclaimed = store.claim_pollable_job(lease_seconds=30)
+    assert reclaimed is not None
+    assert reclaimed["id"] == "j"
+    assert reclaimed["submission_token"] != first["submission_token"]
+
+    stale = store.record_polled_job("j", token=str(first["submission_token"]), status="succeeded", result_id="stale_result")
+    assert stale.applied is False
+    assert stale.job["status"] == "running"
+    fresh = store.record_polled_job("j", token=str(reclaimed["submission_token"]), status="succeeded", result_id="fresh_result")
+    assert fresh.applied is True
+    assert fresh.job["status"] == "succeeded"
+    assert fresh.job["result_id"] == "fresh_result"
+
+
+def test_request_scoped_job_is_only_claimed_by_exact_owner_and_never_by_worker(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="owner",
+        job_id="request-job",
+        service_id="portal-images",
+        operation="image.generate",
+        idempotency_key="request-key",
+        request_hash="r" * 64,
+        completion_mode="request",
+    )
+    submitted = store.mark_submitted(
+        "request-job",
+        "upstream-request-job",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+
+    assert submitted["completion_mode"] == "request"
+    assert store.claim_pollable_job(lease_seconds=30) is None
+    assert store.claim_request_scoped_job(
+        "request-job", user_id="other", lease_seconds=30
+    ) is None
+    claim = store.claim_request_scoped_job(
+        "request-job", user_id="owner", lease_seconds=30
+    )
+    assert claim is not None
+    assert claim["id"] == "request-job"
+    assert store.claim_request_scoped_job(
+        "request-job", user_id="owner", lease_seconds=30
+    ) is None
+
+
+@pytest.mark.parametrize("completion_mode", ("", "worker", None, 1, True, [], {}))
+def test_reserve_job_rejects_invalid_explicit_completion_mode(tmp_path, completion_mode):
+    store = CanvasStore(tmp_path / "data")
+
+    with pytest.raises(ValueError, match="completion mode"):
+        store.reserve_job(
+            user_id="u",
+            job_id="j",
+            service_id="s",
+            operation="image.generate",
+            idempotency_key="k",
+            request_hash="h",
+            completion_mode=completion_mode,
+        )
+
+
+def test_startup_reconciliation_assigns_only_trusted_legacy_completion_modes(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+
+    def legacy(job_id: str, service_id: str, *, managed: bool = False):
+        reservation = store.reserve_job(
+            user_id="u",
+            job_id=job_id,
+            service_id=service_id,
+            operation="image.generate",
+            idempotency_key=f"key-{job_id}",
+            request_hash=f"hash-{job_id}",
+            logical_model_id="logical" if managed else None,
+        )
+        store.mark_submitted(
+            job_id,
+            f"upstream-{job_id}",
+            "queued",
+            str(reservation.job["submission_token"]),
+        )
+        with store._connection(immediate=True) as db:
+            db.execute("UPDATE canvas_jobs SET completion_mode=NULL WHERE id=?", (job_id,))
+
+    legacy("background", "server-capable")
+    legacy("request", "portal-images")
+    legacy("managed", "managed-provider", managed=True)
+    legacy("unresolved", "unknown")
+
+    changed = store.reconcile_job_completion_modes(
+        background_service_ids={"server-capable"},
+        request_service_ids={"portal-images"},
+    )
+
+    assert changed == 3
+    rows = {
+        job_id: store.job_for_owner(job_id, "u")[0]
+        for job_id in ("background", "request", "managed", "unresolved")
+    }
+    assert rows["background"]["completion_mode"] == "background"
+    assert rows["request"]["completion_mode"] == "request"
+    assert rows["managed"]["completion_mode"] == "background"
+    assert rows["unresolved"]["completion_mode"] is None
+    assert store.claim_request_scoped_job(
+        "request", user_id="u", lease_seconds=30
+    ) is not None
+    background_claims = {
+        str(store.claim_pollable_job(lease_seconds=30)["id"]),
+        str(store.claim_pollable_job(lease_seconds=30)["id"]),
+    }
+    assert background_claims == {"background", "managed"}
+    assert store.claim_pollable_job(lease_seconds=30) is None
+
+
+@pytest.mark.parametrize("completion_mode", ("background", "request"))
+def test_reclaimed_legacy_reservation_persists_current_trusted_completion_mode(
+    tmp_path, completion_mode
+):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / completion_mode, clock=clock)
+    original = store.reserve_job(
+        user_id="u", job_id="legacy", service_id="service", operation="image.generate",
+        idempotency_key="legacy-key", request_hash="h", lease_seconds=1,
+    )
+    with store._connection(immediate=True) as db:
+        db.execute("UPDATE canvas_jobs SET completion_mode=NULL WHERE id='legacy'")
+    clock.value += 2
+
+    reclaimed = store.reserve_job(
+        user_id="u", job_id="other", service_id="service", operation="image.generate",
+        idempotency_key="legacy-key", request_hash="h", completion_mode=completion_mode,
+    )
+    assert reclaimed.created is True
+    assert reclaimed.job["completion_mode"] == completion_mode
+    submitted = store.mark_submitted(
+        "legacy", "upstream", "queued", str(reclaimed.job["submission_token"])
+    )
+    assert submitted["completion_mode"] == completion_mode
+    if completion_mode == "request":
+        assert store.claim_pollable_job() is None
+        assert store.claim_request_scoped_job("legacy", user_id="u") is not None
+    else:
+        assert store.claim_request_scoped_job("legacy", user_id="u") is None
+        assert store.claim_pollable_job() is not None
+
+
+def test_reclaim_with_changed_completion_mode_becomes_nonreplayable(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / "mismatch", clock=clock)
+    store.reserve_job(
+        user_id="u", job_id="job", service_id="service", operation="image.generate",
+        idempotency_key="key", request_hash="h", lease_seconds=1,
+        completion_mode="background",
+    )
+    clock.value += 2
+
+    repeated = store.reserve_job(
+        user_id="u", job_id="other", service_id="service", operation="image.generate",
+        idempotency_key="key", request_hash="h", completion_mode="request",
+    )
+
+    assert repeated.created is False
+    assert repeated.job["status"] == "submission_unknown"
+    assert repeated.job["submission_state"] == "submission_unknown"
+    assert repeated.job["submission_token"] is None
+    assert repeated.job["completion_mode"] == "background"
+
+
+def test_pollable_job_lease_claims_direct_and_managed_jobs_but_excludes_ineligible_rows(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / "data", clock=clock)
+
+    def submitted(job_id, status, *, managed=False):
+        reservation = store.reserve_job(
+            user_id="u",
+            job_id=job_id,
+            service_id="s",
+            operation="video.generate",
+            idempotency_key=f"key-{job_id}",
+            request_hash=f"hash-{job_id}",
+            logical_model_id=f"model-{job_id}" if managed else None,
+        )
+        return store.mark_submitted(
+            job_id,
+            f"upstream-{job_id}",
+            status,
+            str(reservation.job["submission_token"]),
+            result_ids=(f"result-{job_id}",) if status == "succeeded" else None,
+        )
+
+    for job_id, status, managed in (
+        ("direct-queued", "queued", False),
+        ("direct-running", "running", False),
+        ("managed-queued", "queued", True),
+        ("managed-running", "running", True),
+    ):
+        submitted(job_id, status, managed=managed)
+
+    unknown = store.reserve_job(
+        user_id="u",
+        job_id="submission-unknown",
+        service_id="s",
+        operation="video.generate",
+        idempotency_key="key-submission-unknown",
+        request_hash="hash-submission-unknown",
+    )
+    store.mark_submission_unknown("submission-unknown", str(unknown.job["submission_token"]))
+    submitted("terminal", "succeeded")
+    store.reserve_job(
+        user_id="u",
+        job_id="missing-upstream",
+        service_id="s",
+        operation="video.generate",
+        idempotency_key="key-missing-upstream",
+        request_hash="hash-missing-upstream",
+    )
+    store._update("missing-upstream", status="queued")
+    submitted("leased", "running")
+    with store._connection(immediate=True) as db:
+        db.execute(
+            "UPDATE canvas_jobs SET submission_token='held', lease_until=? WHERE id='leased'",
+            (clock.value + 30,),
+        )
+
+    claimed_ids = []
+    for _ in range(4):
+        claim = store.claim_pollable_job(lease_seconds=30)
+        assert claim is not None
+        claimed_ids.append(claim["id"])
+
+    assert set(claimed_ids) == {
+        "direct-queued",
+        "direct-running",
+        "managed-queued",
+        "managed-running",
+    }
+    assert store.claim_pollable_job(lease_seconds=30) is None
+
+
+def test_polled_success_persists_ordered_multi_results_and_charges_once(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reservation = store.reserve_job(
+        user_id="user-a",
+        job_id="multi-result",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="multi-result-key",
+        request_hash="m" * 64,
+        video_seconds=5,
+    )
+    store.mark_submitted(
+        "multi-result", "upstream-multi-result", "running", str(reservation.job["submission_token"])
+    )
+
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    updated = store.record_polled_job(
+        str(claim["id"]),
+        token=str(claim["submission_token"]),
+        status="succeeded",
+        result_ids=("result_1", "result_2"),
+    )
+
+    assert updated.applied is True
+    assert json.loads(str(updated.job["result_ids_json"])) == ["result_1", "result_2"]
+    assert updated.job["result_id"] == "result_1"
+    store.record_polled_job(
+        str(claim["id"]),
+        token=str(claim["submission_token"]),
+        status="succeeded",
+        result_ids=("result_1", "result_2"),
+    )
+    usage = store.usage_for_owner("user-a")
+    assert usage["total_cost_fen"] == 125
+    assert len(usage["jobs"]) == 1
+
+
+def test_success_cas_persists_acknowledgement_work_and_only_current_ack_token_clears_it(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    data_dir = tmp_path / "data"
+    store = CanvasStore(data_dir, clock=clock)
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="ack-job",
+        service_id="recoverable",
+        operation="image.generate",
+        idempotency_key="ack-key",
+        request_hash="a" * 64,
+    )
+    store.mark_submitted(
+        "ack-job",
+        "upstream-ack-job",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+
+    written = store.record_polled_job(
+        "ack-job",
+        token=str(claim["submission_token"]),
+        status="succeeded",
+        result_ids=("result_ack",),
+        acknowledgement_required=True,
+    )
+
+    assert written.applied is True
+    reopened = CanvasStore(data_dir, clock=clock)
+    acknowledgement = reopened.claim_job_acknowledgement(lease_seconds=30)
+    assert acknowledgement is not None
+    assert acknowledgement["id"] == "ack-job"
+    first_token = str(acknowledgement["acknowledgement_token"])
+    assert reopened.claim_job_acknowledgement(lease_seconds=30) is None
+    clock.value += 31
+    reclaimed = reopened.claim_job_acknowledgement(lease_seconds=30)
+    assert reclaimed is not None
+    token = str(reclaimed["acknowledgement_token"])
+    assert token != first_token
+    assert reopened.complete_job_acknowledgement("ack-job", token=first_token) is False
+    assert reopened.complete_job_acknowledgement("ack-job", token="stale-token") is False
+    assert reopened.complete_job_acknowledgement("ack-job", token=token) is True
+    assert reopened.claim_job_acknowledgement(lease_seconds=30) is None
+
+
+@pytest.mark.parametrize(
+    "result_ids",
+    (
+        (),
+        ("duplicate", "duplicate"),
+        ("unsafe/result",),
+        tuple(f"result_{index}" for index in range(16)),
+    ),
+)
+def test_record_polled_job_rejects_invalid_result_ids_without_changing_the_leased_row(tmp_path, result_ids):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="invalid-results",
+        service_id="s",
+        operation="image.generate",
+        idempotency_key="invalid-results-key",
+        request_hash="i" * 64,
+    )
+    store.mark_submitted(
+        "invalid-results", "upstream-invalid-results", "running", str(reservation.job["submission_token"])
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, forbidden = store.job_for_owner("invalid-results", "u")
+    assert before is not None and forbidden is False
+
+    with pytest.raises(ValueError, match="result IDs are invalid"):
+        store.record_polled_job(
+            "invalid-results",
+            token=str(claim["submission_token"]),
+            status="succeeded",
+            result_ids=result_ids,
+        )
+
+    after, forbidden = store.job_for_owner("invalid-results", "u")
+    assert after == before
+    assert forbidden is False
+
+
+def test_record_polled_job_rejects_success_without_results_without_changing_or_charging(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="missing-success-result",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="missing-success-result-key",
+        request_hash="r" * 64,
+        video_seconds=5,
+    )
+    store.mark_submitted(
+        "missing-success-result",
+        "upstream-missing-success-result",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, forbidden = store.job_for_owner("missing-success-result", "u")
+    assert before is not None and forbidden is False
+
+    with pytest.raises(ValueError, match="successful poll results are required"):
+        store.record_polled_job(
+            "missing-success-result",
+            token=str(claim["submission_token"]),
+            status="succeeded",
+        )
+
+    after, forbidden = store.job_for_owner("missing-success-result", "u")
+    assert after == before
+    assert forbidden is False
+    assert store.usage_for_owner("u")["total_cost_fen"] == 0
+
+
+@pytest.mark.parametrize("retry_after_seconds", (True, math.nan, math.inf, -math.inf, -0.1))
+def test_record_polled_job_rejects_invalid_retry_after_without_changing_the_leased_row(tmp_path, retry_after_seconds):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="invalid-record-retry-after",
+        service_id="s",
+        operation="image.generate",
+        idempotency_key="invalid-record-retry-after-key",
+        request_hash="r" * 64,
+    )
+    store.mark_submitted(
+        "invalid-record-retry-after",
+        "upstream-invalid-record-retry-after",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, _ = store.job_for_owner("invalid-record-retry-after", "u")
+
+    with pytest.raises(ValueError, match="retry_after_seconds is invalid"):
+        store.record_polled_job(
+            "invalid-record-retry-after",
+            token=str(claim["submission_token"]),
+            status="running",
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    after, _ = store.job_for_owner("invalid-record-retry-after", "u")
+    assert after == before
+
+
+@pytest.mark.parametrize("retry_after_seconds", (True, math.nan, math.inf, -math.inf, -0.1))
+def test_release_job_lease_rejects_invalid_retry_after_without_changing_the_leased_row(tmp_path, retry_after_seconds):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="invalid-release-retry-after",
+        service_id="s",
+        operation="image.generate",
+        idempotency_key="invalid-release-retry-after-key",
+        request_hash="r" * 64,
+    )
+    store.mark_submitted(
+        "invalid-release-retry-after",
+        "upstream-invalid-release-retry-after",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, _ = store.job_for_owner("invalid-release-retry-after", "u")
+
+    with pytest.raises(ValueError, match="retry_after_seconds is invalid"):
+        store.release_job_lease(
+            "invalid-release-retry-after",
+            token=str(claim["submission_token"]),
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    after, _ = store.job_for_owner("invalid-release-retry-after", "u")
+    assert after == before
 
 
 def test_legacy_migration_physically_scrubs_signed_urls_but_keeps_opaque_ids(tmp_path):
@@ -176,7 +737,10 @@ def test_synchronous_submission_success_captures_current_rates(tmp_path):
     store = CanvasStore(tmp_path / "data")
     store.set_usage_rates(video_price_fen=25, image_price_fen=120)
     reserved = store.reserve_job(user_id="user-a", job_id="sync", service_id="image", operation="image.generate", idempotency_key="sync-key", request_hash="s" * 64, image_count=1)
-    store.mark_submitted("sync", "up-sync", "succeeded", str(reserved.job["submission_token"]))
+    store.mark_submitted(
+        "sync", "up-sync", "succeeded", str(reserved.job["submission_token"]),
+        result_ids=("sync-result",),
+    )
     store.set_usage_rates(video_price_fen=99, image_price_fen=999)
     usage = store.usage_for_owner("user-a")
     assert usage["total_cost_fen"] == 120
@@ -207,6 +771,7 @@ def test_success_without_a_billable_quantity_keeps_every_snapshot_empty(tmp_path
         "up-unmetered",
         "succeeded",
         str(reserved.job["submission_token"]),
+        result_ids=("unmetered-result",),
     )
 
     assert completed["video_seconds"] == completed["image_count"] == 0

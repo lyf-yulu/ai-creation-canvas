@@ -34,6 +34,7 @@ class DemoGenerationAdapter:
 
     service_id = "demo-image"
     requires_portal_cookie = False
+    supports_background_polling = True
 
     def __init__(self) -> None:
         self._image = files("ai_creation_canvas").joinpath("static/demo-result.png").read_bytes()

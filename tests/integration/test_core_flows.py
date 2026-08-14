@@ -6,6 +6,7 @@ adapters.  It never opens a connection to a configured Portal or model port.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import shutil
@@ -25,7 +26,7 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import PortalUser, RequestContext
+from ai_creation_canvas.domain.models import JobState, ModelSpec, PortalUser, RequestContext, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import InvalidUpstreamResult
 
@@ -56,11 +57,13 @@ def signed_headers(user_id: str, *, cookie: bool = True) -> dict[str, str]:
 def canvas(tmp_path):
     usage: list[tuple[str, str]] = []
     jobs: dict[str, tuple[str, str]] = {}
+    provider_calls: list[tuple[str, str]] = []
     sequence = 0
 
     def portal(request: httpx.Request) -> httpx.Response:
         nonlocal sequence
         path = request.url.path
+        provider_calls.append((request.method, path))
         mount, _, resource = path.lstrip("/").partition("/")
         cookie = request.headers.get("cookie", "")
         user = cookie.partition("=")[2]
@@ -109,16 +112,17 @@ def canvas(tmp_path):
     transport = httpx.MockTransport(portal)
     client = PortalClient("http://127.0.0.1:45679", allowed_mounts=("/images", "/videos", "/portrait"), allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=True, transport=transport)
     registry = AdapterRegistry()
-    registry.register_generation(PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client))
-    registry.register_generation(PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client))
+    images = PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client)
+    videos = PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client)
     portrait = PortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
+    for adapter in (images, videos, portrait):
+        registry.register_generation(adapter)
     registry.register_asset(portrait)
-    registry.register_generation(portrait)
     static_dir = tmp_path / "static"
     static_dir.mkdir()
     (static_dir / "index.html").write_text("canvas", encoding="utf-8")
     app = create_app(Settings("test", 45680, tmp_path / "canvas-data", "integration-secret"), static_dir=static_dir, registry=registry, model_catalog=ModelCatalog(registry))
-    return TestClient(app, raise_server_exceptions=False), usage
+    return TestClient(app, raise_server_exceptions=False), usage, provider_calls
 
 
 def _upload(client: TestClient, user: str, *, kind: str = "reference") -> str:
@@ -142,17 +146,33 @@ def _upload(client: TestClient, user: str, *, kind: str = "reference") -> str:
     ],
 )
 def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(canvas, operation, model_id, asset_kind):
-    client, usage = canvas
+    client, usage, provider_calls = canvas
     asset_ids = [_upload(client, "user-a", kind=asset_kind)] if asset_kind else []
     response = client.post("/api/v1/jobs", json={"operation": operation, "model_id": model_id, "prompt": "integration prompt", "params": {}, "asset_ids": asset_ids, "idempotency_key": f"{operation}-{model_id}"}, headers=signed_headers("user-a"))
     assert response.status_code == 201, response.text
+    assert response.json()["status"] == "queued"
     job_id = response.json()["id"]
+    calls_before_cross_user = len(provider_calls)
     assert client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-b")).status_code == 404
+    assert len(provider_calls) == calls_before_cross_user
     assert client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-b")).status_code == 404
     if asset_ids:
         assert client.get(f"/api/v1/assets/{asset_ids[0]}", headers=signed_headers("user-b")).status_code == 403
+    assert asyncio.run(client.app.state.job_worker.run_once()) is False
+    stored_before, _ = client.app.state.canvas_store.job_for_owner(job_id, "user-a")
+    assert stored_before is not None and stored_before["completion_mode"] == "request"
+    missing_cookie = client.get(
+        f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a", cookie=False)
+    )
+    assert missing_cookie.status_code == 401
+    assert missing_cookie.json()["code"] == "AUTH_REQUIRED"
+    stored_after_missing, _ = client.app.state.canvas_store.job_for_owner(job_id, "user-a")
+    assert stored_after_missing == stored_before
+    provider_calls_before_get = len(provider_calls)
     completed = client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a"))
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert len(provider_calls) == provider_calls_before_get + 1
+    assert b"portal_session=user-a" not in client.app.state.canvas_store.database.read_bytes()
     result = client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-a"))
     assert result.status_code == 200 and result.content
     if model_id == "portrait-model":
@@ -160,6 +180,119 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
         ranged = client.get(f"/api/v1/results/{job_id}", headers={**signed_headers("user-a"), "range": "bytes=0-3"})
         assert ranged.status_code == 206 and ranged.content == b"mock"
     assert len(usage) == 1 and usage[0][0] == "user-a"
+
+
+def test_cookie_portal_async_route_is_accepted_as_request_scoped(tmp_path):
+    posts = 0
+
+    def portal(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "GET" and request.url.path == "/images/api/config":
+            return httpx.Response(200, json={"models": [{
+                "id": "image-model",
+                "display_name": "Image",
+                "operations": ["image.generate"],
+                "input_media": ["text"],
+                "parameter_schema": {},
+            }]})
+        if request.method == "POST":
+            posts += 1
+            return httpx.Response(201, json={"id": "provider-job", "status": "queued"})
+        raise AssertionError("unexpected Portal request")
+
+    portal_client = PortalClient(
+        "http://127.0.0.1:45679",
+        allowed_mounts=("/images",),
+        allowed_methods=("GET", "POST"),
+        allow_loopback_http=True,
+        transport=httpx.MockTransport(portal),
+    )
+    registry = AdapterRegistry()
+    registry.register_generation(PortalJobsAdapter(
+        ServiceDeclaration("images", "/images", "image", ("image.generate",)),
+        portal_client,
+    ))
+    app = create_app(
+        Settings("test", 45680, tmp_path / "data", "integration-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        headers=signed_headers("user-a"),
+        json={
+            "operation": "image.generate",
+            "model_id": "image-model",
+            "prompt": "integration prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "unsupported-cookie-route",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "queued"
+    assert posts == 1
+    stored, forbidden = app.state.canvas_store.job_for_owner(response.json()["id"], "user-a")
+    assert stored is not None and forbidden is False
+    assert stored["completion_mode"] == "request"
+
+
+def test_spoofed_request_scoped_capability_is_rejected_before_submission(tmp_path):
+    class SpoofedAdapter:
+        service_id = "spoofed"
+        requires_portal_cookie = True
+        requires_request_scoped_polling = True
+
+        def __init__(self):
+            self.submits = 0
+
+        async def list_models(self, context):
+            return (ModelSpec(
+                "spoofed-model", self.service_id, "Spoofed", ("image.generate",), ("text",), {}
+            ),)
+
+        async def submit(self, context, request):
+            self.submits += 1
+            return UpstreamJob(
+                self.service_id, "spoofed-upstream", JobState("spoofed-upstream", "queued")
+            )
+
+        async def poll(self, context, upstream_job_id):
+            raise AssertionError("spoofed adapter must not be polled")
+
+        async def submit_with_cookie(self, context, request, cookie_header):
+            return await self.submit(context, request)
+
+        async def poll_with_cookie(self, context, upstream_job_id, cookie_header):
+            raise AssertionError("spoofed adapter must not receive Cookie polling")
+
+    adapter = SpoofedAdapter()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 45680, tmp_path / "data", "integration-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        headers=signed_headers("user-a"),
+        json={
+            "operation": "image.generate",
+            "model_id": "spoofed-model",
+            "prompt": "must not submit",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "spoofed-capability",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "MODEL_UNAVAILABLE"
+    assert adapter.submits == 0
 
 
 def test_production_portrait_adapter_rejects_external_or_nonopaque_result_references():

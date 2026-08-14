@@ -59,6 +59,13 @@ class PortalUpstreamError(Exception):
         super().__init__(code)
 
 
+class LocalRecoveryUnavailable(PortalUpstreamError):
+    """A safe, retryable local I/O failure while recovering an accepted job."""
+
+    def __init__(self) -> None:
+        super().__init__("LOCAL_STATE_UNAVAILABLE", retryable=True, status_code=503)
+
+
 class InvalidUpstreamResult(Exception):
     """A provider declared success without a safe opaque result identifier."""
 

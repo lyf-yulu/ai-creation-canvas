@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -23,7 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, LocalRecoveryUnavailable, PortalUpstreamError
 from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.parameter_schema import validate_parameter_schema, validate_parameter_values
 
@@ -105,6 +107,7 @@ class ArkGenerationAdapter:
     """Maps a data-only Ark model declaration into existing generation ports."""
 
     requires_portal_cookie = False
+    supports_background_polling = True
 
     def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None, reusable_result_services: frozenset[str] | None = None) -> None:
         if not isinstance(api_key, str) or len(api_key.strip()) < 8:
@@ -119,7 +122,8 @@ class ArkGenerationAdapter:
         if root.is_symlink():
             raise ValueError("Ark result root is unsafe")
         os.chmod(root, 0o700)
-        self._root, self._index_path, self._lock = root, root / "pending.json", asyncio.Lock()
+        self._root, self._index_path = root, root / "pending.json"
+        self._index_lock_path = root / "pending.lock"
 
     @property
     def model_ids(self) -> tuple[str, ...]:
@@ -241,25 +245,18 @@ class ArkGenerationAdapter:
         return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
-        local_error: SubmissionError | None = None
         try:
             return await self._poll(context, upstream_job_id)
         except SubmissionError:
             raise
-        except OSError:
-            local_error = SubmissionError(
-                SubmissionDisposition.SUBMISSION_UNKNOWN,
-                "LOCAL_STATE_UNAVAILABLE",
-                adapter_template="ark.video.generate" if _CONTENT_TASK_ID.fullmatch(upstream_job_id) else "ark.image.generate",
-            )
-        raise local_error
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
         pending = await self._pending(upstream_job_id)
         if pending is not None:
             results = tuple([await self._download(upstream_job_id if index == 0 else f"{upstream_job_id}\n{index}", url, pending["kind"]) for index, url in enumerate(pending["urls"])])
-            await self._clear_pending(upstream_job_id)
             return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
         if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
             raise ValueError("Ark job is invalid")
@@ -280,6 +277,13 @@ class ArkGenerationAdapter:
         if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
             raise ValueError("Ark job is invalid")
         await self._api("DELETE", f"/api/v3/contents/generations/tasks/{upstream_job_id}")
+
+    async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+        """Discard image recovery metadata only after the job store commits success."""
+        try:
+            await self._clear_pending(upstream_job_id)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -358,11 +362,11 @@ class ArkGenerationAdapter:
             raise InvalidUpstreamResult("Ark result count is invalid")
         for url in urls:
             self._safe_result_url(url)
-        async with self._lock:
+        with self._locked_index():
             values = self._read_index(); values[job_id] = {"urls": list(urls), "kind": kind}; self._write_index(values)
 
     async def _pending(self, job_id: str) -> dict[str, object] | None:
-        async with self._lock:
+        with self._locked_index():
             item = self._read_index().get(job_id)
         if not isinstance(item, dict) or item.get("kind") not in {"image", "video"}:
             return None
@@ -373,18 +377,35 @@ class ArkGenerationAdapter:
         return {"urls": urls, "kind": item["kind"]} if isinstance(urls, list) and 1 <= len(urls) <= maximum and all(isinstance(url, str) for url in urls) else None
 
     async def _clear_pending(self, job_id: str) -> None:
-        async with self._lock:
-            values = self._read_index(); values.pop(job_id, None); self._write_index(values)
+        with self._locked_index():
+            values = self._read_index()
+            if values.pop(job_id, None) is not None:
+                self._write_index(values)
 
     def _read_index(self) -> dict[str, dict[str, object]]:
         if not self._index_path.exists(): return {}
         try:
             value = json.loads(self._index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError): return {}
+        except ValueError: return {}
         return value if isinstance(value, dict) else {}
 
+    @contextmanager
+    def _locked_index(self):
+        descriptor = os.open(
+            self._index_lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.chmod(self._index_lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def _write_index(self, values: Mapping[str, object]) -> None:
-        temporary = self._index_path.with_suffix(".tmp")
+        temporary = self._root / f".pending.{os.getpid()}.{os.urandom(8).hex()}.tmp"
         try:
             temporary.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
             os.chmod(temporary, 0o600)
@@ -405,7 +426,6 @@ class ArkGenerationAdapter:
         if media.is_file() and metadata.is_file():
             mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
             return AssetRef(result_id, "reference", "active", mime)
-        local_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(60), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("GET", url, headers={}) as response:
@@ -430,18 +450,12 @@ class ArkGenerationAdapter:
             finally:
                 _safe_unlink(metadata_temporary)
             return AssetRef(result_id, "reference", "active", mime)
-        except OSError:
+        except OSError as error:
             _safe_unlink(media)
             _safe_unlink(metadata)
-            local_error = SubmissionError(
-                SubmissionDisposition.SUBMISSION_UNKNOWN,
-                "LOCAL_STATE_UNAVAILABLE",
-                adapter_template="ark.image.generate" if kind == "image" else "ark.video.generate",
-            )
+            raise LocalRecoveryUnavailable() from error
         finally:
             _safe_unlink(temporary)
-        if local_error is not None:
-            raise local_error
 
 
 def _range(value: str, size: int) -> tuple[int, int] | None:

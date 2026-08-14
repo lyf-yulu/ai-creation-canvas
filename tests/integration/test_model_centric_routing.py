@@ -26,6 +26,7 @@ from ai_creation_canvas.model_registry import OperationContract
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteSelector
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from ai_creation_canvas.trusted_routing import trusted_route_presets
 from scripts.acceptance_real_media import reference_png
 from tests.server.test_route_key_coordination import ScriptRedis
 
@@ -49,19 +50,7 @@ def assert_decodable_png(content: bytes) -> None:
 
 
 def image_contract() -> dict[str, object]:
-    return {
-        "operation": "image.edit",
-        "input_ports": [
-            {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
-            {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10},
-        ],
-        "output_media_type": "image",
-        "parameter_schema": {"type": "object", "properties": {
-            "size": {"type": "string", "enum": ["auto", "1024x1024"], "default": "auto"},
-            "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
-        }, "required": ["size", "output_count"], "additionalProperties": False},
-        "parameter_mappings": {"size": "size", "output_count": "n"},
-    }
+    return trusted_route_presets()[("gpt_image2", "chiyun")].operation_contracts[0].to_dict()
 
 
 def model_body() -> dict[str, object]:
@@ -76,14 +65,15 @@ def model_body() -> dict[str, object]:
 
 
 def route_body(route_id: str, provider_id: str, pool_id: str, *, priority: int = 1) -> dict[str, object]:
+    preset = trusted_route_presets()[("gpt_image2", "chiyun")]
     return {
         "route_id": route_id,
         "model_id": "nano-banana",
         "provider_id": provider_id,
-        "provider_model_name": "gemini-2.5-flash-image",
-        "adapter_type": "chiyun_openai_images",
+        "provider_model_name": preset.provider_model_name,
+        "adapter_type": preset.adapter_type,
         "credential_pool_ref": pool_id,
-        "family": "nano-banana",
+        "family": preset.family,
         "operation_contracts": [image_contract()],
         "priority": priority,
         "max_concurrency": 4,
@@ -114,22 +104,18 @@ class AcceptanceApp:
 def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> AcceptanceApp:
     store = CanvasStore(tmp_path / "acceptance-data")
     store.create_provider_definition(
-        ProviderDefinition("chiyun", "Chiyun", "chiyun_openai_images", "https://google.example", "deployment-only"),
+        ProviderDefinition("chiyun-gpt-image2", "Chiyun GPT Image 2", "chiyun_openai_images", "https://chiyun.work", "deployment-only"),
         actor_user_id="bootstrap",
     )
     store.create_provider_definition(
-        ProviderDefinition("t8star", "T8Star", "chiyun_openai_images", "https://t8.example", "deployment-only"),
-        actor_user_id="bootstrap",
-    )
-    store.create_provider_definition(
-        ProviderDefinition("ark-video", "Ark Video", "ark", "https://ark.cn-beijing.volces.com", "deployment-only"),
+        ProviderDefinition("ark", "Ark", "ark", "https://ark.cn-beijing.volces.com", "deployment-only"),
         actor_user_id="bootstrap",
     )
     pools = {
-        "banana-official": pool("banana-official", "chiyun", "official", ("nano-banana",), ("official-a", "official-b")),
-        "banana-t8-gemini": pool("banana-t8-gemini", "t8star", "gemini", ("nano-banana",), ("gemini-a",)),
-        "seedance-offline": pool("seedance-offline", "ark-video", "official", ("seedance",), ("seedance-a",)),
-        "t8-cc": pool("t8-cc", "t8star", "cc", ("claude",), ("cc-a",)),
+        "banana-official": pool("banana-official", "chiyun-gpt-image2", "official", ("gpt-image",), ("official-a", "official-b")),
+        "banana-t8-gemini": pool("banana-t8-gemini", "chiyun-gpt-image2", "gemini", ("gpt-image",), ("gemini-a",)),
+        "seedance-offline": pool("seedance-offline", "ark", "official", ("seedance",), ("seedance-a",)),
+        "t8-cc": pool("t8-cc", "chiyun-gpt-image2", "cc", ("claude",), ("cc-a",)),
     }
     redis = ScriptRedis()
     coordinator = RedisExecutionCoordinator(
@@ -145,9 +131,8 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
         data_dir=store.data_dir,
         asset_loader=_local_asset_loader(store.data_dir),
         provider_protocols={
-            "chiyun": ProviderProtocol.from_readonly_deployment("chiyun", "chiyun_openai_images", "https://google.example", approved_origin="https://google.example"),
-            "t8star": ProviderProtocol.from_readonly_deployment("t8star", "chiyun_openai_images", "https://t8.example", approved_origin="https://t8.example"),
-            "ark-video": ProviderProtocol.from_readonly_deployment("ark-video", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com"),
+            "chiyun-gpt-image2": ProviderProtocol.from_readonly_deployment("chiyun-gpt-image2", "chiyun_openai_images", "https://chiyun.work", approved_origin="https://chiyun.work"),
+            "ark": ProviderProtocol.from_readonly_deployment("ark", "ark", "https://ark.cn-beijing.volces.com", approved_origin="https://ark.cn-beijing.volces.com"),
         },
         transport=provider,
         trusted_route_validator=lambda _route: None,
@@ -170,10 +155,10 @@ def build_acceptance_app(tmp_path: Path, provider: httpx.MockTransport) -> Accep
 
 def test_acceptance_fixture_exposes_an_offline_seedance_route_pool(tmp_path: Path) -> None:
     environment = build_acceptance_app(tmp_path, httpx.MockTransport(lambda _request: httpx.Response(500)))
-    provider = environment.store.provider_definition("ark-video")
+    provider = environment.store.provider_definition("ark")
     assert provider is not None and provider.adapter_type == "ark"
     seedance = environment.pools["seedance-offline"]
-    assert seedance.provider_id == "ark-video"
+    assert seedance.provider_id == "ark"
     assert seedance.allowed_families == ("seedance",)
 
 
@@ -200,8 +185,8 @@ def configure_model(admin: TestClient, headers: dict[str, str], accounts: Bootst
     assert admin.post("/api/v1/admin/logical-models", headers=headers, json=model_body()).status_code == 201
     store = admin.app.state.canvas_store
     for body in (
-        route_body("banana-official-route", "chiyun", "banana-official", priority=1),
-        route_body("banana-t8-gemini-route", "t8star", "banana-t8-gemini", priority=2),
+        route_body("banana-official-route", "chiyun-gpt-image2", "banana-official", priority=1),
+        route_body("banana-t8-gemini-route", "chiyun-gpt-image2", "banana-t8-gemini", priority=2),
     ):
         store.create_model_route(ModelRouteDefinition(
             body["route_id"], body["model_id"], body["provider_id"], body["provider_model_name"],
@@ -212,7 +197,7 @@ def configure_model(admin: TestClient, headers: dict[str, str], accounts: Bootst
     rejected = admin.post(
         "/api/v1/admin/logical-models/nano-banana/routes",
         headers=headers,
-        json=route_body("banana-t8-cc-route", "t8star", "t8-cc", priority=0),
+        json=route_body("banana-t8-cc-route", "chiyun-gpt-image2", "t8-cc", priority=0),
     )
     assert rejected.status_code == 400
     assert accounts.user is not None
@@ -308,8 +293,11 @@ def test_model_centric_offline_route_rotation_idempotency_and_owner_isolation(tm
         assert forbidden_value not in encoded_snapshot
     assert "banana-t8-cc-route" not in encoded_snapshot
 
+    assert asyncio.run(environment.app.state.job_worker.run_once()) is True
+    provider_calls_before_get = len(provider_calls)
     completed = user.get(f"/api/v1/jobs/{job_id}")
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert len(provider_calls) == provider_calls_before_get
     assert other.get(f"/api/v1/jobs/{job_id}").status_code == 404
     result_url = f"/api/v1/results/{job_id}/0"
     assert other.get(result_url).status_code == 404
@@ -382,9 +370,9 @@ def test_explicit_capacity_can_fall_through_to_compatible_gemini_route_but_never
 
     def provider(request: httpx.Request) -> httpx.Response:
         provider_calls.append(request)
-        if "google.example" in str(request.url):
+        if request.headers["authorization"].endswith(("official-a", "official-b")):
             return httpx.Response(429, json={"error": "fixture-capacity"})
-        assert "t8.example" in str(request.url)
+        assert request.headers["authorization"].endswith("gemini-a")
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
 
     environment = build_acceptance_app(tmp_path, httpx.MockTransport(provider))
@@ -409,10 +397,13 @@ def test_explicit_capacity_can_fall_through_to_compatible_gemini_route_but_never
     )
 
     assert created.status_code == 201
+    assert asyncio.run(environment.app.state.job_worker.run_once()) is True
+    provider_calls_before_get = len(provider_calls)
     completed = user.get(f"/api/v1/jobs/{created.json()['id']}")
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert len(provider_calls) == provider_calls_before_get
     assert len(provider_calls) == 3
-    assert [str(request.url.host) for request in provider_calls] == ["google.example", "google.example", "t8.example"]
+    assert [str(request.url.host) for request in provider_calls] == ["chiyun.work", "chiyun.work", "chiyun.work"]
     assert provider_calls[-1].headers["authorization"].endswith("gemini-a")
     stored, forbidden = environment.store.job_for_owner(created.json()["id"], environment.accounts.user.user_id)
     assert not forbidden and stored is not None

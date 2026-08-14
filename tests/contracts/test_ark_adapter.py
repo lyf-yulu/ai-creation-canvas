@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import struct
+import time
 import zlib
 
 import httpx
@@ -109,6 +111,11 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
         state = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.status.value == "succeeded"
         assert state.result is not None
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id in pending
+        await adapter.acknowledge_poll_result(upstream.upstream_job_id)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id not in pending
         stream = await adapter.open_result(context(), state.result.asset_id, cookie_header="", range_header="bytes=0-3")
         assert stream.status_code == 206
         assert b"".join([chunk async for chunk in stream.aiter_bytes()]) == b"safe"
@@ -133,11 +140,125 @@ def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) 
         )
         upstream = await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "two", "multi"))
         state = await adapter.poll(context(), upstream.upstream_job_id)
+        replayed = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.result is state.results[0]
         assert len(state.results) == 2
         assert len({item.asset_id for item in state.results}) == 2
+        assert tuple(item.asset_id for item in replayed.results) == tuple(item.asset_id for item in state.results)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id in pending
+        await adapter.acknowledge_poll_result(upstream.upstream_job_id)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id not in pending
 
     asyncio.run(scenario())
+
+
+def test_ark_pending_updates_are_safe_across_adapter_instances(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    declaration = ArkModelDeclaration(
+        "image-endpoint", "ark-image", "Seedream", ("image.generate",),
+        {"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+    )
+    first = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=transport,
+    )
+    second = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=transport,
+    )
+    job_a = asyncio.run(first.submit(
+        context(), JobRequest("image.generate", "image-endpoint", "a", "job-a")
+    ))
+    original_read = first._read_index
+
+    def slow_read():
+        values = original_read()
+        time.sleep(0.1)
+        return values
+
+    first._read_index = slow_read
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        acknowledgement = pool.submit(
+            lambda: asyncio.run(first.acknowledge_poll_result(job_a.upstream_job_id))
+        )
+        time.sleep(0.02)
+        submitted = pool.submit(
+            lambda: asyncio.run(second.submit(
+                context(), JobRequest("image.generate", "image-endpoint", "b", "job-b")
+            ))
+        ).result()
+        acknowledgement.result()
+
+    pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+    assert submitted.upstream_job_id in pending
+
+
+def test_ark_local_recovery_io_is_retryable_and_pending_is_replayable(tmp_path: Path, monkeypatch) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"safe-image")
+
+    adapter = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path,
+        models=(ArkModelDeclaration(
+            "image-endpoint", "ark-image", "Seedream", ("image.generate",),
+            {"type": "object", "properties": {}, "additionalProperties": False},
+        ),),
+        transport=httpx.MockTransport(handler),
+    )
+    submitted = asyncio.run(adapter.submit(
+        context(), JobRequest("image.generate", "image-endpoint", "recover", "local-io")
+    ))
+    original_read_text = Path.read_text
+    failed_read = False
+
+    def flaky_read_text(path, *args, **kwargs):
+        nonlocal failed_read
+        if path == adapter._index_path and not failed_read:
+            failed_read = True
+            raise OSError("private index read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    with pytest.raises(PortalUpstreamError) as read_error:
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
+    assert read_error.value.retryable is True
+
+    original_download = adapter._download
+    failed_download = False
+
+    async def flaky_download(*args, **kwargs):
+        nonlocal failed_download
+        if not failed_download:
+            failed_download = True
+            raise OSError("private result write failure")
+        return await original_download(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_download", flaky_download)
+    with pytest.raises(PortalUpstreamError) as download_error:
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
+    assert download_error.value.retryable is True
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+
+    original_write = adapter._write_index
+    monkeypatch.setattr(
+        adapter,
+        "_write_index",
+        lambda values: (_ for _ in ()).throw(OSError("private index write failure")),
+    )
+    with pytest.raises(PortalUpstreamError) as write_error:
+        asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
+    assert write_error.value.retryable is True
+    monkeypatch.setattr(adapter, "_write_index", original_write)
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+    asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
 
 
 def test_ark_seedream_accepts_the_official_fifteen_image_group_bound(tmp_path: Path) -> None:

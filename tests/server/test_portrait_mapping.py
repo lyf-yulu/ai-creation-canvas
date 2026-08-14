@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+import httpx
+import json
 import pytest
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
+from ai_creation_canvas.adapters.portal.client import PortalClient
+from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
 from ai_creation_canvas.domain.models import AssetRef, JobState, ModelSpec, UpstreamJob
@@ -16,6 +20,7 @@ from tests.contracts.test_generation_flow import headers
 class Portrait:
     service_id = "portal-portrait"
     requires_portal_cookie = True
+    requires_request_scoped_polling = True
     def __init__(self): self.received = None; self.upload_calls = 0
     async def list_models(self, context): return (ModelSpec("portrait-video", self.service_id, "Portrait", ("video.image_to_video",), ("text", "image"), {}, "portrait"),)
     async def list_models_with_cookie(self, context, cookie): return await self.list_models(context)
@@ -26,12 +31,55 @@ class Portrait:
     async def submit(self, context, request): raise AssertionError
     async def submit_with_cookie(self, context, request, cookie):
         self.received = request.asset_ids
-        return UpstreamJob(self.service_id, "job-upstream", JobState("job-upstream", "queued"))
+        return UpstreamJob(
+            self.service_id,
+            "job-upstream",
+            JobState("job-upstream", "queued"),
+        )
     async def poll(self, context, job): return JobState(job, "queued")
+    async def poll_with_cookie(self, context, job, cookie):
+        result = AssetRef("portrait-result", "reference", "active", "video/mp4")
+        return JobState(job, "succeeded", results=(result,))
 
 
 def test_portrait_local_mapping_hides_upstream_and_enforces_owner(tmp_path):
-    adapter = Portrait(); registry = AdapterRegistry(); registry.register_asset(adapter); registry.register_generation(adapter)
+    received = None
+
+    def portal(request: httpx.Request) -> httpx.Response:
+        nonlocal received
+        path = request.url.path
+        if request.method == "GET" and path == "/portrait/api/config":
+            return httpx.Response(200, json={"models": [{
+                "id": "portrait-video",
+                "display_name": "Portrait",
+                "operations": ["video.image_to_video"],
+                "input_media": ["text", "image"],
+                "parameter_schema": {},
+            }]})
+        if request.method == "POST" and path == "/portrait/api/virtual/groups":
+            return httpx.Response(201, json={"id": "group-1"})
+        if request.method == "POST" and path == "/portrait/api/virtual/assets":
+            return httpx.Response(202, json={"id": "upstream-1", "status": "Processing", "mime_type": "image/png"})
+        if request.method == "GET" and path == "/portrait/api/virtual/assets/upstream-1":
+            return httpx.Response(200, json={"id": "upstream-1", "status": "Active", "mime_type": "image/png"})
+        if request.method == "POST" and path == "/portrait/api/virtual/jobs":
+            received = tuple(json.loads(request.content)["asset_ids"])
+            return httpx.Response(201, json={"id": "job-upstream", "status": "queued"})
+        if request.method == "GET" and path == "/portrait/api/virtual/jobs/job-upstream":
+            return httpx.Response(200, json={"id": "job-upstream", "status": "succeeded", "result_ref": "portrait-result"})
+        raise AssertionError(f"unexpected Portal request: {request.method} {path}")
+
+    adapter = PortalPortraitAdapter(
+        PortraitDeclaration("portal-portrait", "/portrait"),
+        PortalClient(
+            "http://127.0.0.1:45679",
+            allowed_mounts=("/portrait",),
+            allowed_methods=("GET", "POST", "HEAD"),
+            allow_loopback_http=True,
+            transport=httpx.MockTransport(portal),
+        ),
+    )
+    registry = AdapterRegistry(); registry.register_asset(adapter); registry.register_generation(adapter)
     client = TestClient(create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry)), raise_server_exceptions=False)
     png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
     created = client.post("/api/v1/assets", files={"file": ("portrait.png", png, "image/png")}, data={"kind": "portrait"}, headers={**headers(), "Cookie": "s=a"})
@@ -41,7 +89,13 @@ def test_portrait_local_mapping_hides_upstream_and_enforces_owner(tmp_path):
     active = client.get(f"/api/v1/assets/{local_id}", headers={**headers(), "Cookie": "s=a"})
     assert active.json()["status"] == "active" and "upstream" not in active.text
     response = client.post("/api/v1/jobs", json={"operation":"video.image_to_video","model_id":"portrait-video","prompt":"wave","params":{},"asset_ids":[local_id],"idempotency_key":"portrait-key"}, headers={**headers(), "Cookie": "s=a"})
-    assert response.status_code == 201 and adapter.received == ("upstream-1",)
+    assert response.status_code == 201 and response.json()["status"] == "queued"
+    assert received == ("upstream-1",)
+    completed = client.get(
+        f"/api/v1/jobs/{response.json()['id']}",
+        headers={**headers(), "Cookie": "s=a"},
+    )
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
     stored, _ = client.app.state.canvas_store.asset_for_owner(local_id, "u-a")
     assert stored is not None and stored["service_id"] == "portal-portrait" and stored["upstream_asset_id"] == "upstream-1"
 
@@ -122,23 +176,35 @@ def test_restart_marks_unknown_portrait_reservation_failed_without_polling_upstr
     assert local_file.read_bytes() == b"x"
 
 
-class FailingPortrait(Portrait):
-    def __init__(self, failure):
-        super().__init__()
-        self.failure = failure
+def _portrait_client(tmp_path, action, failure):
+    def portal(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path == "/portrait/api/config":
+            return httpx.Response(200, json={"models": [{
+                "id": "portrait-video",
+                "display_name": "Portrait",
+                "operations": ["video.image_to_video"],
+                "input_media": ["text", "image"],
+                "parameter_schema": {},
+            }]})
+        if action == "upload" and request.method == "POST" and path == "/portrait/api/virtual/groups":
+            raise failure
+        if action == "get" and request.method == "GET" and path == "/portrait/api/virtual/assets/upstream-portrait":
+            raise failure
+        if action == "submit" and request.method == "POST" and path == "/portrait/api/virtual/jobs":
+            raise failure
+        raise AssertionError(f"unexpected Portal request: {request.method} {path}")
 
-    async def upload_with_cookie(self, context, asset, source, size, cookie):
-        raise self.failure
-
-    async def get_with_cookie(self, context, asset, cookie):
-        raise self.failure
-
-    async def submit_with_cookie(self, context, request, cookie):
-        raise self.failure
-
-
-def _portrait_client(tmp_path, failure):
-    adapter = FailingPortrait(failure)
+    adapter = PortalPortraitAdapter(
+        PortraitDeclaration("portal-portrait", "/portrait"),
+        PortalClient(
+            "http://127.0.0.1:45679",
+            allowed_mounts=("/portrait",),
+            allowed_methods=("GET", "POST", "HEAD"),
+            allow_loopback_http=True,
+            transport=httpx.MockTransport(portal),
+        ),
+    )
     registry = AdapterRegistry(); registry.register_asset(adapter); registry.register_generation(adapter)
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
     return adapter, app, TestClient(app, raise_server_exceptions=False)
@@ -168,7 +234,7 @@ def _stored_portrait(app, *, status="active"):
 )
 def test_portrait_api_maps_typed_upstream_failures_by_business_path(tmp_path, action, failure, expected_status, expected_code, retryable):
     """The API must preserve typed provider outcomes for group, asset, and job paths."""
-    _, app, client = _portrait_client(tmp_path, failure)
+    _, app, client = _portrait_client(tmp_path, action, failure)
     png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\xaeB`\x82"
     if action == "upload":
         response = client.post("/api/v1/assets", files={"file": ("portrait.png", png, "image/png")}, data={"kind": "portrait"}, headers={**headers(), "Cookie": "s=a"})
