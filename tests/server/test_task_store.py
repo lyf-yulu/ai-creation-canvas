@@ -16,6 +16,45 @@ def test_store_creates_owned_job_reservation(tmp_path):
     assert reservation.job["id"] == "job-a"
 
 
+def test_direct_submission_begin_is_single_owner_cas_and_expires_unknown(tmp_path):
+    now = [1_000.0]
+    store = CanvasStore(tmp_path / "data", clock=lambda: now[0])
+    reservation = store.reserve_job(
+        user_id="user-a",
+        job_id="job-a",
+        service_id="images",
+        operation="image.generate",
+        idempotency_key="key-a",
+        request_hash="a" * 64,
+        lease_seconds=30,
+    )
+    token = str(reservation.job["submission_token"])
+
+    assert store.begin_direct_submission("job-a", token) is True
+    assert store.begin_direct_submission("job-a", token) is False
+    assert store.begin_direct_submission("job-a", "stale-token") is False
+    in_flight, _ = store.job_for_owner("job-a", "user-a")
+    assert in_flight is not None
+    assert in_flight["submission_state"] == "in_flight"
+    assert in_flight["logical_model_id"] is None
+    assert in_flight["route_snapshot_json"] is None
+
+    now[0] += 31
+    repeated = store.reserve_job(
+        user_id="user-a",
+        job_id="other",
+        service_id="images",
+        operation="image.generate",
+        idempotency_key="key-a",
+        request_hash="a" * 64,
+    )
+    assert repeated.created is False
+    assert repeated.job["id"] == "job-a"
+    assert repeated.job["status"] == "submission_unknown"
+    assert repeated.job["submission_state"] == "submission_unknown"
+    assert repeated.job["submission_token"] is None
+
+
 def test_store_uses_wal_and_reclaims_expired_lease(tmp_path):
     store = CanvasStore(tmp_path / "data")
     assert sqlite3.connect(store.database).execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"

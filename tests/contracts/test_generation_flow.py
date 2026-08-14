@@ -816,6 +816,55 @@ def test_direct_malformed_success_is_unknown_and_never_replayed(tmp_path):
     assert app.state.canvas_store.claim_pollable_job(lease_seconds=30) is None
 
 
+@pytest.mark.parametrize(
+    "upstream_job_id",
+    ("unsafe\njob", "unsafe\x00job", "x" * 129),
+    ids=("newline", "control", "overlong"),
+)
+def test_direct_unsafe_upstream_job_id_is_unknown_and_never_saved_or_replayed(
+    tmp_path, upstream_job_id
+):
+    class UnsafeIdGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            return UpstreamJob(
+                self.service_id,
+                upstream_job_id,
+                JobState(upstream_job_id, "queued"),
+            )
+
+    adapter = UnsafeIdGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": f"direct-unsafe-id-{len(upstream_job_id)}",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+    repeated = client.post("/api/v1/jobs", json=request_payload, headers=headers())
+
+    assert first.status_code == 502
+    assert first.json()["code"] == "UPSTREAM_INVALID"
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    stored, _ = app.state.canvas_store.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["upstream_job_id"] is None
+    assert stored["submission_token"] is None
+
+
 def test_direct_cancelled_submission_is_unknown_and_never_replayed(tmp_path):
     class CancelledGeneration(FakeGeneration):
         async def submit(self, context, request):

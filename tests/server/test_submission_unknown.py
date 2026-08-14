@@ -11,7 +11,13 @@ from fastapi.testclient import TestClient
 
 from tests.server.test_jobs_model_routes import ScriptedCoordinator, build_app, headers, payload
 from ai_creation_canvas.coordination import CredentialLease
+from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
+from ai_creation_canvas.app import create_app
+from ai_creation_canvas.config import Settings
+from ai_creation_canvas.domain.models import JobState, UpstreamJob
+from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.storage.sqlite import CanvasStore
+from tests.contracts.test_generation_flow import FakeGeneration, headers as direct_headers
 
 
 def test_credential_lease_repr_does_not_expose_key_identity_or_secret() -> None:
@@ -110,6 +116,77 @@ def test_in_flight_submission_crossing_reservation_lease_is_never_reclaimed(tmp_
     item, _ = store.job_for_owner(repeated.json()["id"], "user-a")
     assert item is not None and item["submission_token"] is None
     assert item["submission_state"] == "submission_unknown"
+
+
+def test_direct_in_flight_submission_crossing_lease_and_restart_never_replays(tmp_path: Path) -> None:
+    now = [100.0]
+    data_dir = tmp_path / "direct-clocked-data"
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingGeneration(FakeGeneration):
+        async def submit(self, context, request):
+            self.submit_count += 1
+            entered.set()
+            assert release.wait(timeout=5)
+            return UpstreamJob(
+                self.service_id,
+                "upstream-1",
+                JobState("upstream-1", "queued"),
+            )
+
+    adapter = BlockingGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    settings = Settings("test", 8992, data_dir, "test-secret")
+    first_store = CanvasStore(data_dir, clock=lambda: now[0])
+    first_app = create_app(
+        settings,
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=first_store,
+    )
+    request_payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "direct-crash-window",
+    }
+    first_result: list[tuple[int, dict[str, object]]] = []
+
+    def first_submit() -> None:
+        response = TestClient(first_app, raise_server_exceptions=False).post(
+            "/api/v1/jobs", json=request_payload, headers=direct_headers()
+        )
+        first_result.append((response.status_code, response.json()))
+
+    thread = threading.Thread(target=first_submit)
+    thread.start()
+    assert entered.wait(timeout=5)
+    now[0] += 31
+    reopened = CanvasStore(data_dir, clock=lambda: now[0])
+    retry_app = create_app(
+        settings,
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=reopened,
+    )
+    repeated = TestClient(retry_app, raise_server_exceptions=False).post(
+        "/api/v1/jobs", json=request_payload, headers=direct_headers()
+    )
+    release.set()
+    thread.join(timeout=5)
+
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    assert first_result == [(201, repeated.json())]
+    stored, _ = reopened.job_for_owner(repeated.json()["id"], "u-a")
+    assert stored is not None
+    assert stored["submission_state"] == "submission_unknown"
+    assert stored["submission_token"] is None
 
 
 def test_get_expires_stale_in_flight_to_submission_unknown(tmp_path: Path) -> None:

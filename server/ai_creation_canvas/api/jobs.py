@@ -500,6 +500,16 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                     tuple(upstream_asset_ids) if not upstream_inputs else (),
                     upstream_inputs,
                 )
+                if not store.begin_direct_submission(job_id, token):
+                    current, _ = store.job_for_owner(job_id, context.user.user_id)
+                    if current is None:
+                        raise problem(
+                            request,
+                            "JOB_NOT_FOUND",
+                            "The job was not found.",
+                            status=404,
+                        )
+                    return _response(current, request)
                 submit_with_cookie = getattr(adapter, "submit_with_cookie", None)
                 if callable(submit_with_cookie):
                     upstream = await submit_with_cookie(
@@ -507,10 +517,13 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                     )
                 else:
                     upstream = await adapter.submit(context, upstream_request)
+                upstream_job_id = _known_upstream_job_id(upstream)
+                if upstream_job_id is None:
+                    raise InvalidUpstreamResult("upstream job ID is invalid")
                 state = validated_provider_job_state(upstream.state)
                 if _sync_only_adapter_returned_nonterminal(adapter, state.status):
                     store.mark_submission_unknown(
-                        job_id, token, upstream_job_id=upstream.upstream_job_id
+                        job_id, token, upstream_job_id=upstream_job_id
                     )
                     raise problem(
                         request,
@@ -520,7 +533,7 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                     )
                 item = store.mark_submitted(
                     job_id,
-                    upstream.upstream_job_id,
+                    upstream_job_id,
                     state.status.value,
                     token,
                     result_ids=state.result_ids or None,

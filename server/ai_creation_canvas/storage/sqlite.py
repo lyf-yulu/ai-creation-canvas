@@ -1869,6 +1869,17 @@ class CanvasStore:
                 self._capture_usage_snapshot(db, job_id, now)
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
+    def begin_direct_submission(self, job_id: str, token: str) -> bool:
+        """Move one token-owned direct reservation into its non-replayable I/O phase."""
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_jobs SET submission_state='in_flight',updated_at=? "
+                "WHERE id=? AND submission_token=? AND status='submitting' "
+                "AND logical_model_id IS NULL AND (submission_state IS NULL OR submission_state='reserved')",
+                (_now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
     def record_routing_snapshot(self, job_id: str, token: str, *, logical_model_id: str, logical_model_revision: int, route_id: str, route_revision: int, pool_revision_digest: str, key_fingerprint: str, route_snapshot_json: str) -> dict[str, object]:
         if not all(isinstance(value, str) and value for value in (logical_model_id, route_id, pool_revision_digest, key_fingerprint, route_snapshot_json)):
             raise ValueError("routing snapshot is invalid")
