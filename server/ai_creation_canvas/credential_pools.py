@@ -125,6 +125,15 @@ def _invalid_configuration() -> ValueError:
     return ValueError("credential pools configuration is invalid")
 
 
+def _unique_json_object(items: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in items:
+        if key in result:
+            raise _invalid_configuration()
+        result[key] = value
+    return result
+
+
 def _reject_duplicate_mapping_fields(payload: str) -> None:
     try:
         document = yaml.compose(payload, Loader=yaml.SafeLoader)
@@ -196,25 +205,8 @@ class CredentialPoolLoader:
             document = _CredentialPoolsInput.model_validate(payload)
         except (TypeError, ValueError, yaml.YAMLError):
             raise _invalid_configuration() from None
-        pools = {
-            pool_id: CredentialPool(
-                pool_id=pool_id,
-                provider_id=pool.provider,
-                group=pool.group,
-                allowed_families=tuple(pool.allowed_families),
-                keys=tuple(
-                    CredentialKey(
-                        key_id=key.key_id,
-                        secret=key.secret,
-                        max_concurrency=key.max_concurrency,
-                    )
-                    for key in pool.keys
-                ),
-                revision_digest=_pool_digest(pool_id, pool),
-            )
-            for pool_id, pool in document.pools.items()
-        }
-        return CredentialPoolSnapshot(pools)
+        return _snapshot_from_document(document)
+
 
     def _read_source(self) -> str:
         try:
@@ -243,6 +235,42 @@ class CredentialPoolLoader:
             return raw.decode("utf-8")
         except (OSError, UnicodeError, ValueError):
             raise _invalid_configuration() from None
+
+
+def _snapshot_from_document(document: _CredentialPoolsInput) -> CredentialPoolSnapshot:
+    pools = {
+            pool_id: CredentialPool(
+                pool_id=pool_id,
+                provider_id=pool.provider,
+                group=pool.group,
+                allowed_families=tuple(pool.allowed_families),
+                keys=tuple(
+                    CredentialKey(
+                        key_id=key.key_id,
+                        secret=key.secret,
+                        max_concurrency=key.max_concurrency,
+                    )
+                    for key in pool.keys
+                ),
+                revision_digest=_pool_digest(pool_id, pool),
+            )
+            for pool_id, pool in document.pools.items()
+        }
+    return CredentialPoolSnapshot(pools)
+
+
+def parse_credential_pool_json(raw: bytes) -> CredentialPoolSnapshot:
+    """Parse the administrator upload contract without accepting YAML syntax."""
+    if not isinstance(raw, bytes) or len(raw) > _MAX_POOL_FILE_BYTES:
+        raise _invalid_configuration()
+    try:
+        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        document = _CredentialPoolsInput.model_validate(payload)
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        raise _invalid_configuration() from None
+    if not document.pools:
+        raise _invalid_configuration()
+    return _snapshot_from_document(document)
 
 
 def _pool_digest(pool_id: str, pool: _CredentialPoolInput) -> str:

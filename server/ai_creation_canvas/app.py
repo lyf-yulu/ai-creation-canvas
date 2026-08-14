@@ -186,12 +186,14 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
                 user_limit=settings.generation_user_concurrency,
             )
     app.state.execution_coordinator = execution_coordinator
+    app.state.credential_pool_loader = None
     if managed_routing_runtime is None and settings.credential_pools_path is not None:
         import os
         if settings.environment == "production" and len(os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "").encode("utf-8")) < 32:
             raise ValueError("a server-only credential HMAC key is required for managed production routes")
         loader = CredentialPoolLoader(Path(settings.credential_pools_path), production=settings.environment == "production")
         loader.load()
+        app.state.credential_pool_loader = loader
         from ai_creation_canvas.trusted_routing import provider_protocol_for_definition
         providers = {}
         for provider in store.list_provider_definitions():

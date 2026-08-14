@@ -8,10 +8,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 from dataclasses import replace
 from typing import Literal
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
+from python_multipart.exceptions import MultipartParseError
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.api.usage import all_usage_projection
 from ai_creation_canvas.auth.local import LocalAuthService
+from ai_creation_canvas.credential_pool_import import import_credential_pool_json
+from ai_creation_canvas.credential_pools import CredentialPoolLoader
 from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.domain.models import ModelInputPort, ModelOperation
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ModelModality, OperationContract, ProviderDefinition
@@ -28,6 +33,60 @@ from ai_creation_canvas.trusted_routing import provider_has_trusted_origin, vali
 
 
 router = APIRouter(prefix="/api/v1/admin")
+_CREDENTIAL_JSON_MAX_BYTES = 1024 * 1024
+_CREDENTIAL_MULTIPART_OVERHEAD = 64 * 1024
+_CREDENTIAL_HEADER_MAX_BYTES = 32 * 1024
+
+
+class _BoundedCredentialStream:
+    def __init__(self, request: Request) -> None:
+        self._source = request.stream()
+        self._consumed = 0
+
+    async def __aiter__(self):
+        async for chunk in self._source:
+            self._consumed += len(chunk)
+            if self._consumed > _CREDENTIAL_JSON_MAX_BYTES + _CREDENTIAL_MULTIPART_OVERHEAD:
+                raise MultiPartException("credential upload is too large")
+            yield chunk
+
+
+class _CredentialJsonParser(MultiPartParser):
+    def __init__(self, request: Request) -> None:
+        super().__init__(request.headers, _BoundedCredentialStream(request), max_files=1, max_fields=0, max_part_size=1024)
+        self.file_bytes = 0
+        self.header_bytes = 0
+
+    def on_part_begin(self) -> None:
+        self.header_bytes = 0
+        super().on_part_begin()
+
+    def on_header_field(self, data: bytes, start: int, end: int) -> None:
+        self.header_bytes += end - start
+        if self.header_bytes > _CREDENTIAL_HEADER_MAX_BYTES:
+            raise MultiPartException("credential upload headers are too large")
+        super().on_header_field(data, start, end)
+
+    def on_header_value(self, data: bytes, start: int, end: int) -> None:
+        self.header_bytes += end - start
+        if self.header_bytes > _CREDENTIAL_HEADER_MAX_BYTES:
+            raise MultiPartException("credential upload headers are too large")
+        super().on_header_value(data, start, end)
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self.file_bytes += end - start
+            if self.file_bytes > _CREDENTIAL_JSON_MAX_BYTES:
+                raise MultiPartException("credential upload is too large")
+        super().on_part_data(data, start, end)
+
+    async def parse(self):
+        try:
+            return await super().parse()
+        except BaseException:
+            for temporary in self._files_to_close_on_error:
+                temporary.close()
+            raise
 
 
 class UserPatch(BaseModel):
@@ -764,3 +823,44 @@ async def list_credential_pools(request: Request) -> dict[str, object]:
             "circuit_open_count": None,
         })
     return {"pools": summaries}
+
+
+@router.post("/credential-pools/import")
+async def import_credential_pools(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    loader = getattr(request.app.state, "credential_pool_loader", None)
+    target = getattr(request.app.state.settings, "credential_pools_path", None)
+    root = getattr(request.app.state.settings, "credential_pools_root", None)
+    if not isinstance(loader, CredentialPoolLoader) or target is None or root is None:
+        raise problem(
+            request,
+            "CREDENTIAL_POOLS_IMPORT_UNAVAILABLE",
+            "Credential import is not configured.",
+            status=409,
+        )
+    stated = request.headers.get("content-length", "")
+    if stated and (not stated.isdecimal() or len(stated) > 20 or int(stated) > _CREDENTIAL_JSON_MAX_BYTES + _CREDENTIAL_MULTIPART_OVERHEAD):
+        raise problem(request, "CREDENTIAL_POOLS_INVALID", "The credential pool file is invalid.", status=400)
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
+        raise problem(request, "CREDENTIAL_POOLS_INVALID", "The credential pool file is invalid.", status=400)
+    form = None
+    try:
+        form = await _CredentialJsonParser(request).parse()
+        upload = form.get("file")
+        if (
+            not isinstance(upload, UploadFile)
+            or not isinstance(upload.filename, str)
+            or not upload.filename.lower().endswith(".json")
+            or upload.content_type != "application/json"
+        ):
+            raise ValueError("invalid credential upload")
+        raw = await upload.read(_CREDENTIAL_JSON_MAX_BYTES + 1)
+        if len(raw) > _CREDENTIAL_JSON_MAX_BYTES:
+            raise ValueError("invalid credential upload")
+        import_credential_pool_json(loader, target, root, raw)
+    except (MultiPartException, MultipartParseError, OSError, ValueError):
+        raise problem(request, "CREDENTIAL_POOLS_INVALID", "The credential pool file is invalid.", status=400) from None
+    finally:
+        if form is not None:
+            await form.close()
+    return await list_credential_pools(request)
