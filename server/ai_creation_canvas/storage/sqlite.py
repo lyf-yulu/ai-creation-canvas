@@ -1941,8 +1941,13 @@ class CanvasStore:
         ranks = {"queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         if status not in ranks:
             raise ValueError("polled status is invalid")
-        if not isinstance(retry_after_seconds, (int, float)) or isinstance(retry_after_seconds, bool) or retry_after_seconds < 0:
-            raise ValueError("retry_after_seconds must not be negative")
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
         if result_ids is not None:
             if (
                 not 1 <= len(result_ids) <= 15
@@ -1960,6 +1965,8 @@ class CanvasStore:
             encoded = json.dumps((result_id,), separators=(",", ":"))
         else:
             encoded = None
+        if status == "succeeded" and result_id is None:
+            raise ValueError("successful poll results are required")
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
@@ -2001,8 +2008,13 @@ class CanvasStore:
         return cursor.rowcount == 1
 
     def release_job_lease(self, job_id: str, *, token: str, retry_after_seconds: float = 2.0) -> dict[str, object]:
-        if not isinstance(retry_after_seconds, (int, float)) or isinstance(retry_after_seconds, bool) or retry_after_seconds < 0:
-            raise ValueError("retry_after_seconds must not be negative")
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:

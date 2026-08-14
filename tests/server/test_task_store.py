@@ -1,5 +1,6 @@
 from ai_creation_canvas.storage.sqlite import CanvasStore, StoreInitializationError
 import json
+import math
 import pytest
 import sqlite3
 import time
@@ -243,6 +244,107 @@ def test_record_polled_job_rejects_invalid_result_ids_without_changing_the_lease
     after, forbidden = store.job_for_owner("invalid-results", "u")
     assert after == before
     assert forbidden is False
+
+
+def test_record_polled_job_rejects_success_without_results_without_changing_or_charging(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    store.set_usage_rates(video_price_fen=25, image_price_fen=120)
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="missing-success-result",
+        service_id="video",
+        operation="video.generate",
+        idempotency_key="missing-success-result-key",
+        request_hash="r" * 64,
+        video_seconds=5,
+    )
+    store.mark_submitted(
+        "missing-success-result",
+        "upstream-missing-success-result",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, forbidden = store.job_for_owner("missing-success-result", "u")
+    assert before is not None and forbidden is False
+
+    with pytest.raises(ValueError, match="successful poll results are required"):
+        store.record_polled_job(
+            "missing-success-result",
+            token=str(claim["submission_token"]),
+            status="succeeded",
+        )
+
+    after, forbidden = store.job_for_owner("missing-success-result", "u")
+    assert after == before
+    assert forbidden is False
+    assert store.usage_for_owner("u")["total_cost_fen"] == 0
+
+
+@pytest.mark.parametrize("retry_after_seconds", (True, math.nan, math.inf, -math.inf, -0.1))
+def test_record_polled_job_rejects_invalid_retry_after_without_changing_the_leased_row(tmp_path, retry_after_seconds):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="invalid-record-retry-after",
+        service_id="s",
+        operation="image.generate",
+        idempotency_key="invalid-record-retry-after-key",
+        request_hash="r" * 64,
+    )
+    store.mark_submitted(
+        "invalid-record-retry-after",
+        "upstream-invalid-record-retry-after",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, _ = store.job_for_owner("invalid-record-retry-after", "u")
+
+    with pytest.raises(ValueError, match="retry_after_seconds is invalid"):
+        store.record_polled_job(
+            "invalid-record-retry-after",
+            token=str(claim["submission_token"]),
+            status="running",
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    after, _ = store.job_for_owner("invalid-record-retry-after", "u")
+    assert after == before
+
+
+@pytest.mark.parametrize("retry_after_seconds", (True, math.nan, math.inf, -math.inf, -0.1))
+def test_release_job_lease_rejects_invalid_retry_after_without_changing_the_leased_row(tmp_path, retry_after_seconds):
+    store = CanvasStore(tmp_path / "data")
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="invalid-release-retry-after",
+        service_id="s",
+        operation="image.generate",
+        idempotency_key="invalid-release-retry-after-key",
+        request_hash="r" * 64,
+    )
+    store.mark_submitted(
+        "invalid-release-retry-after",
+        "upstream-invalid-release-retry-after",
+        "running",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+    before, _ = store.job_for_owner("invalid-release-retry-after", "u")
+
+    with pytest.raises(ValueError, match="retry_after_seconds is invalid"):
+        store.release_job_lease(
+            "invalid-release-retry-after",
+            token=str(claim["submission_token"]),
+            retry_after_seconds=retry_after_seconds,
+        )
+
+    after, _ = store.job_for_owner("invalid-release-retry-after", "u")
+    assert after == before
 
 
 def test_legacy_migration_physically_scrubs_signed_urls_but_keeps_opaque_ids(tmp_path):
