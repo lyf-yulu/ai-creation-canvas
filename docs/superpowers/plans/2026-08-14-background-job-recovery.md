@@ -121,12 +121,21 @@ git commit -m "refactor: share managed job resolution"
 - Create: `server/ai_creation_canvas/job_polling.py`
 - Modify: `server/ai_creation_canvas/job_worker.py`
 - Modify: `server/ai_creation_canvas/adapters/ark.py`
+- Modify: `server/ai_creation_canvas/adapters/chiyun.py`
+- Modify: `server/ai_creation_canvas/adapters/chiyun_gemini.py`
 - Modify: `server/ai_creation_canvas/adapters/demo.py`
+- Modify: `server/ai_creation_canvas/adapters/factory.py`
+- Modify: `server/ai_creation_canvas/catalog.py`
+- Modify: `server/ai_creation_canvas/storage/sqlite.py`
 - Modify: `server/ai_creation_canvas/app.py`
 - Modify: `server/ai_creation_canvas/api/jobs.py`
 - Modify: `tests/server/test_job_worker.py`
 - Modify: `tests/contracts/test_ark_adapter.py`
+- Modify: `tests/contracts/test_chiyun_adapter.py`
+- Modify: `tests/contracts/test_chiyun_gemini_adapter.py`
 - Modify: `tests/contracts/test_generation_flow.py`
+- Modify: `tests/server/test_task_store.py`
+- Modify: `tests/server/test_dynamic_model_catalog.py`
 - Modify: `tests/server/test_jobs_model_routes.py`
 - Modify: `tests/integration/test_core_flows.py`
 - Modify: `tests/integration/test_demo_generation.py`
@@ -140,6 +149,8 @@ git commit -m "refactor: share managed job resolution"
 - [ ] **Step 1: Write failing worker tests**
 
 Cover ordered two-result completion; managed polling through the saved route/fingerprint; missing credential delaying without key rotation; retryable `PortalUpstreamError` releasing the lease; non-retryable error terminating safely; invalid/empty/duplicate/over-limit success failing terminally; `submission_unknown` never claimed; stale token never acknowledging Ark pending; and successful CAS acknowledging once.
+
+Cover the recovery boundary itself: adapters that may return an asynchronous state must explicitly support cookie-free background polling before provider I/O; governed direct adapters must be registered during startup rather than waiting for a browser catalog request; Chiyun and Chiyun Gemini polling must be read-only until an explicit acknowledgement; pending-index updates must be safe across adapter instances; stale CAS tokens must never acknowledge; and acknowledgement failures must remain durably claimable without polling or charging the provider again.
 
 Also cover direct and managed queued jobs through `GET /api/v1/jobs/{job_id}` and assert the endpoint returns stored state without calling either provider adapter. Preserve the local stale `submitting/in_flight` to `submission_unknown` transition. Mark the built-in Demo generation adapter as background-pollable and migrate integration fixtures that represent recoverable providers to declare the same capability; integration flows must explicitly advance `app.state.job_worker.run_once()` before reading completion.
 
@@ -159,6 +170,8 @@ Create a server-owned `RequestContext` from `user_id`. Resolve direct adapters f
 
 Inject `JobPollingService`. Keep start/stop idempotence, event-loop ownership protection, heartbeat renewal, cancellation release, and loop-level isolation. Construct service/worker once in `create_app`. Call Ark `acknowledge_poll_result` only after the current token successfully persisted matching ordered results. Remove provider polling from the GET path so it only performs the safe local in-flight expiry check and returns persisted state; cancel and result endpoints remain unchanged.
 
+Make the store return an explicit CAS-applied result instead of inferring ownership from the returned row. Persist acknowledgement work in SQLite in the same transaction as terminal success, claim it independently of provider polling, and clear it only after idempotent adapter acknowledgement succeeds. Chiyun, Chiyun Gemini, and Ark pending indexes must use a cross-instance safe read-modify-write boundary. An acknowledgement retry must never call `poll()` again.
+
 - [ ] **Step 5: Run GREEN**
 
 ```bash
@@ -168,7 +181,7 @@ PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/co
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_slice1_product.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/chiyun.py server/ai_creation_canvas/adapters/chiyun_gemini.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/adapters/factory.py server/ai_creation_canvas/catalog.py server/ai_creation_canvas/storage/sqlite.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/server/test_task_store.py tests/server/test_dynamic_model_catalog.py tests/contracts/test_ark_adapter.py tests/contracts/test_chiyun_adapter.py tests/contracts/test_chiyun_gemini_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_slice1_product.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
