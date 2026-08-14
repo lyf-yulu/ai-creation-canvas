@@ -143,3 +143,52 @@ def test_startup_preloads_governed_direct_adapter_and_recovers_without_catalog_r
     assert item["completion_mode"] == "background"
     assert registry.generation("chiyun").service_id == "chiyun"
     assert recovery_calls == 0
+
+
+def test_startup_does_not_reconcile_spoofed_request_scoped_capability(tmp_path: Path) -> None:
+    class SpoofedAdapter:
+        service_id = "spoofed"
+        requires_request_scoped_polling = True
+
+        async def list_models(self, context):
+            return ()
+
+        async def submit(self, context, request):
+            raise AssertionError("startup must not submit")
+
+        async def poll(self, context, upstream_job_id):
+            raise AssertionError("startup must not poll")
+
+    store = CanvasStore(tmp_path / "spoofed-data")
+    reservation = store.reserve_job(
+        user_id="user-1",
+        job_id="spoofed-job",
+        service_id="spoofed",
+        operation="image.generate",
+        idempotency_key="spoofed-job",
+        request_hash="s" * 64,
+    )
+    store.mark_submitted(
+        "spoofed-job", "spoofed-upstream", "queued", str(reservation.job["submission_token"])
+    )
+    with store._connection(immediate=True) as db:
+        db.execute("UPDATE canvas_jobs SET completion_mode=NULL WHERE id='spoofed-job'")
+    registry = AdapterRegistry()
+    registry.register_generation(SpoofedAdapter())
+    app = create_app(
+        Settings("test", 8992, store.data_dir, "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=store,
+    )
+
+    with TestClient(app, raise_server_exceptions=False):
+        pass
+
+    stored, forbidden = store.job_for_owner("spoofed-job", "user-1")
+    assert stored is not None and forbidden is False
+    assert stored["completion_mode"] is None
+    assert store.claim_pollable_job() is None
+    assert store.claim_request_scoped_job(
+        "spoofed-job", user_id="user-1", lease_seconds=30
+    ) is None

@@ -15,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai_creation_canvas.adapters.portal.catalog import ModelCatalog
-from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter
+from ai_creation_canvas.adapters.portal.catalog import PortalJobsAdapter, is_trusted_request_scoped_adapter
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.identity import AuthRequired, verify_portal_identity
@@ -236,7 +236,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             request_service_ids={
                 adapter.service_id
                 for adapter in adapters
-                if getattr(adapter, "requires_request_scoped_polling", False) is True
+                if is_trusted_request_scoped_adapter(adapter)
             },
         )
         await app.state.job_worker.start()

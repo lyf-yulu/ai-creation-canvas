@@ -216,6 +216,13 @@ class PortalJobsAdapter:
         return await self._client.open_stream(context, "HEAD" if head else "GET", f"api/results/{quote(result_id, safe='')}", mount=self._declaration.mount, cookie_header=cookie_header, headers=headers)
 
 
+def is_trusted_request_scoped_adapter(adapter: object) -> bool:
+    """Accept request Cookie polling only for the two code-owned Portal adapters."""
+    from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter
+
+    return type(adapter) in {PortalJobsAdapter, PortalPortraitAdapter}
+
+
 class ModelCatalog:
     def __init__(self, registry: AdapterRegistry) -> None:
         self._registry = registry

@@ -18,6 +18,7 @@ from ai_creation_canvas.errors import DomainError, InvalidUpstreamResult, Portal
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, classify_submission_error
+from ai_creation_canvas.adapters.portal.catalog import is_trusted_request_scoped_adapter
 from ai_creation_canvas.managed_jobs import managed_job_adapter, validated_job_route
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteCandidate
@@ -340,7 +341,7 @@ def _adapter_has_server_completion(adapter: object) -> bool:
 
 
 def _adapter_requires_request_scoped_polling(adapter: object) -> bool:
-    return getattr(adapter, "requires_request_scoped_polling", False) is True
+    return is_trusted_request_scoped_adapter(adapter)
 
 
 def _sync_only_adapter_returned_nonterminal(adapter: object, status: JobStatus) -> bool:
@@ -639,7 +640,7 @@ async def get_job(job_id: str, request: Request) -> dict[str, object]:
         claim = request.app.state.canvas_store.claim_request_scoped_job(
             job_id,
             user_id=context.user.user_id,
-            lease_seconds=30,
+            lease_seconds=request.app.state.job_polling_service.request_lease_seconds,
         )
         if claim is not None:
             item = await request.app.state.job_polling_service.poll_request_claim(

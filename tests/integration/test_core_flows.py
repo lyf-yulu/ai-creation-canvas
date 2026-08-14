@@ -26,7 +26,7 @@ from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.adapters.portal.portrait import PortalPortraitAdapter, PortraitDeclaration
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import PortalUser, RequestContext
+from ai_creation_canvas.domain.models import JobState, ModelSpec, PortalUser, RequestContext, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import InvalidUpstreamResult
 
@@ -237,6 +237,62 @@ def test_cookie_portal_async_route_is_accepted_as_request_scoped(tmp_path):
     stored, forbidden = app.state.canvas_store.job_for_owner(response.json()["id"], "user-a")
     assert stored is not None and forbidden is False
     assert stored["completion_mode"] == "request"
+
+
+def test_spoofed_request_scoped_capability_is_rejected_before_submission(tmp_path):
+    class SpoofedAdapter:
+        service_id = "spoofed"
+        requires_portal_cookie = True
+        requires_request_scoped_polling = True
+
+        def __init__(self):
+            self.submits = 0
+
+        async def list_models(self, context):
+            return (ModelSpec(
+                "spoofed-model", self.service_id, "Spoofed", ("image.generate",), ("text",), {}
+            ),)
+
+        async def submit(self, context, request):
+            self.submits += 1
+            return UpstreamJob(
+                self.service_id, "spoofed-upstream", JobState("spoofed-upstream", "queued")
+            )
+
+        async def poll(self, context, upstream_job_id):
+            raise AssertionError("spoofed adapter must not be polled")
+
+        async def submit_with_cookie(self, context, request, cookie_header):
+            return await self.submit(context, request)
+
+        async def poll_with_cookie(self, context, upstream_job_id, cookie_header):
+            raise AssertionError("spoofed adapter must not receive Cookie polling")
+
+    adapter = SpoofedAdapter()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 45680, tmp_path / "data", "integration-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        headers=signed_headers("user-a"),
+        json={
+            "operation": "image.generate",
+            "model_id": "spoofed-model",
+            "prompt": "must not submit",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "spoofed-capability",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "MODEL_UNAVAILABLE"
+    assert adapter.submits == 0
 
 
 def test_production_portrait_adapter_rejects_external_or_nonopaque_result_references():

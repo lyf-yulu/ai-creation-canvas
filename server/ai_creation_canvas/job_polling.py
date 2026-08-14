@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ai_creation_canvas.catalog import ManagedRoutingRuntime
+from ai_creation_canvas.adapters.portal.catalog import is_trusted_request_scoped_adapter
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.domain.models import JobState, JobStatus, PortalUser, RequestContext
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
@@ -54,10 +56,26 @@ def validated_provider_job_state(state: object) -> ValidatedProviderJobState:
 class JobPollingService:
     """Resolve the saved adapter, poll it, and CAS the complete result."""
 
-    def __init__(self, store, registry, managed_runtime: ManagedRoutingRuntime | None = None) -> None:
+    def __init__(
+        self,
+        store,
+        registry,
+        managed_runtime: ManagedRoutingRuntime | None = None,
+        *,
+        request_lease_seconds: float = 30.0,
+    ) -> None:
+        if (
+            not isinstance(request_lease_seconds, (int, float))
+            or isinstance(request_lease_seconds, bool)
+            or not math.isfinite(request_lease_seconds)
+            or request_lease_seconds <= 0
+        ):
+            raise ValueError("request lease seconds must be positive")
         self._store = store
         self._registry = registry
         self._managed_runtime = managed_runtime
+        self.request_lease_seconds = float(request_lease_seconds)
+        self._sleep = asyncio.sleep
 
     async def poll_claim(self, item: Mapping[str, object], token: str) -> dict[str, object]:
         job_id = str(item["id"])
@@ -103,21 +121,50 @@ class JobPollingService:
             or item.get("user_id") != context.user.user_id
         ):
             return dict(item)
+        adapter = self._registry.generation(str(item["service_id"]))
+        if not is_trusted_request_scoped_adapter(adapter):
+            return self._fail(job_id, token, "INVALID_UPSTREAM_RESULT")
+        poll_task = asyncio.create_task(
+            self._poll_request_adapter(adapter, context, item, token, cookie_header),
+            name=f"canvas-request-poll-{job_id}",
+        )
+        heartbeat = asyncio.create_task(
+            self._renew_request_lease(job_id, token),
+            name=f"canvas-request-lease-{job_id}",
+        )
         try:
-            adapter = self._registry.generation(str(item["service_id"]))
-            if getattr(adapter, "requires_request_scoped_polling", False) is not True:
-                raise ValueError("request-scoped polling is unavailable")
-            poll = getattr(adapter, "poll_with_cookie", None)
-            if not callable(poll):
-                raise ValueError("request-scoped polling is unavailable")
+            done, _ = await asyncio.wait(
+                (poll_task, heartbeat), return_when=asyncio.FIRST_COMPLETED
+            )
+            if poll_task in done:
+                return await poll_task
+            await self._cancel_task(poll_task)
+            return self._release(job_id, token)
+        except asyncio.CancelledError:
+            await self._cancel_task(poll_task)
+            self._store.release_job_lease(
+                job_id, token=token, retry_after_seconds=0
+            )
+            raise
+        finally:
+            await self._cancel_task(heartbeat)
+
+    async def _poll_request_adapter(
+        self,
+        adapter,
+        context: RequestContext,
+        item: Mapping[str, object],
+        token: str,
+        cookie_header: str,
+    ) -> dict[str, object]:
+        job_id = str(item["id"])
+        try:
+            poll = adapter.poll_with_cookie
             state = validated_provider_job_state(
                 await poll(context, str(item["upstream_job_id"]), cookie_header)
             )
             return self._record_adapter_state(adapter, item, token, state)
         except asyncio.CancelledError:
-            self._store.release_job_lease(
-                job_id, token=token, retry_after_seconds=0
-            )
             raise
         except (CoordinationUnavailable, ExecutionCapacityExceeded):
             return self._release(job_id, token)
@@ -130,6 +177,31 @@ class JobPollingService:
         except Exception:
             _LOG.warning("generation job polling failed transiently")
             return self._release(job_id, token)
+
+    async def _renew_request_lease(self, job_id: str, token: str) -> bool:
+        interval = self.request_lease_seconds / 3
+        while True:
+            await self._sleep(interval)
+            try:
+                renewed = self._store.renew_job_lease(
+                    job_id,
+                    token=token,
+                    lease_seconds=self.request_lease_seconds,
+                )
+            except Exception:
+                _LOG.warning("generation request job lease renewal failed")
+                return False
+            if not renewed:
+                return False
+
+    @staticmethod
+    async def _cancel_task(task: asyncio.Task[object]) -> None:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def acknowledge_claim(self, item: Mapping[str, object], token: str) -> None:
         """Clear one durable provider acknowledgement without polling again."""

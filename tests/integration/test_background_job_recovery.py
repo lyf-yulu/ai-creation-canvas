@@ -298,20 +298,25 @@ class RequestScopedPortalTransport:
         raise AssertionError(f"unexpected request-scoped Portal call: {request.method} {request.url.path}")
 
 
-def _request_scoped_app(data_dir: Path, transport: RequestScopedPortalTransport):
+def _request_scoped_app(
+    data_dir: Path,
+    transport,
+    *,
+    store: CanvasStore | None = None,
+):
     registry = AdapterRegistry()
     portal_client = PortalClient(
         "http://127.0.0.1:46122",
         allowed_mounts=("/portal",),
         allowed_methods=("GET", "POST"),
         allow_loopback_http=True,
-        transport=httpx.MockTransport(transport),
+        transport=transport if isinstance(transport, httpx.AsyncBaseTransport) else httpx.MockTransport(transport),
     )
     registry.register_generation(PortalJobsAdapter(
         ServiceDeclaration("portal-fixture", "/portal", "image", ("image.generate",)),
         portal_client,
     ))
-    store = CanvasStore(data_dir)
+    store = store or CanvasStore(data_dir)
     app = create_app(
         Settings("test", 46121, data_dir, SIGNING_SECRET.decode(), allowed_origins=(ORIGIN,)),
         static_dir=data_dir / "missing-static",
@@ -422,6 +427,83 @@ def test_concurrent_owner_gets_execute_exactly_one_request_scoped_poll(tmp_path:
     assert transport.polls == 1 and transport.poll_cookies == [cookie]
 
 
+def test_request_scoped_poll_renews_lease_while_provider_is_blocked(tmp_path: Path) -> None:
+    class BlockingPortalTransport(httpx.AsyncBaseTransport):
+        def __init__(self) -> None:
+            self.polls = 0
+            self.poll_started = threading.Event()
+            self.release_poll = threading.Event()
+
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/portal/api/config":
+                return httpx.Response(200, json={"models": [{
+                    "id": "portal-image",
+                    "display_name": "Request Portal",
+                    "operations": ["image.generate"],
+                    "input_media": ["text"],
+                    "parameter_schema": {},
+                }]})
+            if request.method == "POST" and request.url.path == "/portal/api/jobs":
+                return httpx.Response(201, json={"id": "request-upstream", "status": "queued"})
+            if request.method == "GET" and request.url.path == "/portal/api/jobs/request-upstream":
+                self.polls += 1
+                self.poll_started.set()
+                assert await asyncio.to_thread(self.release_poll.wait, 2)
+                return httpx.Response(200, json={
+                    "id": "request-upstream",
+                    "status": "succeeded",
+                    "result_ref": "request-result",
+                })
+            raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    class ControlledHeartbeatSleep:
+        def __init__(self, clock: MutableClock) -> None:
+            self.clock = clock
+            self.calls = 0
+            self.crossed_original_lease = threading.Event()
+            self.release = threading.Event()
+
+        async def __call__(self, interval: float) -> None:
+            assert interval == 10.0
+            self.calls += 1
+            self.clock.advance(11)
+            if self.calls == 4:
+                self.crossed_original_lease.set()
+                assert await asyncio.to_thread(self.release.wait, 2)
+            else:
+                await asyncio.sleep(0)
+
+    data_dir = tmp_path / "heartbeat"
+    clock = MutableClock()
+    store = CanvasStore(data_dir, clock=clock)
+    transport = BlockingPortalTransport()
+    app, _ = _request_scoped_app(data_dir, transport, store=store)
+    heartbeat_sleep = ControlledHeartbeatSleep(clock)
+    app.state.job_polling_service._sleep = heartbeat_sleep
+    headers = {**_headers("request-owner"), "Cookie": "portal_session=heartbeat"}
+
+    with (
+        TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as first_client,
+        TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as second_client,
+    ):
+        job_id = _submit_request_scoped_job(first_client, cookie="portal_session=heartbeat")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(first_client.get, f"/api/v1/jobs/{job_id}", headers=headers)
+            try:
+                assert transport.poll_started.wait(timeout=2)
+                assert heartbeat_sleep.crossed_original_lease.wait(timeout=0.2)
+                second = second_client.get(f"/api/v1/jobs/{job_id}", headers=headers)
+                assert second.status_code == 200 and second.json()["status"] == "queued"
+                assert transport.polls == 1
+            finally:
+                heartbeat_sleep.release.set()
+                transport.release_poll.set()
+            completed = first.result(timeout=2)
+
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert transport.polls == 1
+
+
 def test_request_scoped_restart_waits_for_fresh_authenticated_get(tmp_path: Path) -> None:
     data_dir = tmp_path / "request-restart"
     transport = RequestScopedPortalTransport()
@@ -453,27 +535,11 @@ def test_request_scoped_restart_waits_for_fresh_authenticated_get(tmp_path: Path
 
 
 def test_cancelled_request_scoped_poll_immediately_releases_its_lease(tmp_path: Path) -> None:
-    class CancelledPortalAdapter:
-        service_id = "cancelled-portal"
-        requires_request_scoped_polling = True
-
-        async def list_models(self, context):
-            return ()
-
-        async def submit(self, context, request):
-            raise AssertionError("submission is outside this polling test")
-
-        async def poll(self, context, upstream_job_id):
-            raise AssertionError("background poll is forbidden")
-
-        async def poll_with_cookie(self, context, upstream_job_id, cookie_header):
-            raise asyncio.CancelledError
-
     store = CanvasStore(tmp_path / "cancelled")
     reservation = store.reserve_job(
         user_id="request-owner",
         job_id="cancelled-job",
-        service_id="cancelled-portal",
+        service_id="portal-fixture",
         operation="image.generate",
         idempotency_key="cancelled-key",
         request_hash="c" * 64,
@@ -489,24 +555,126 @@ def test_cancelled_request_scoped_poll_immediately_releases_its_lease(tmp_path: 
         "cancelled-job", user_id="request-owner", lease_seconds=30
     )
     assert claim is not None
+    adapter = PortalJobsAdapter(
+        ServiceDeclaration("portal-fixture", "/portal", "image", ("image.generate",)),
+        PortalClient(
+            "http://127.0.0.1:46122",
+            allowed_mounts=("/portal",),
+            allowed_methods=("GET", "POST"),
+            allow_loopback_http=True,
+            transport=httpx.MockTransport(
+                lambda request: (_ for _ in ()).throw(
+                    AssertionError("cancelled poll must not reach transport")
+                )
+            ),
+        ),
+    )
+
+    async def cancelled_poll(context, upstream_job_id, cookie_header):
+        raise asyncio.CancelledError
+
+    adapter.poll_with_cookie = cancelled_poll
     registry = AdapterRegistry()
-    registry.register_generation(CancelledPortalAdapter())
+    registry.register_generation(adapter)
     context = RequestContext(
         PortalUser("request-owner", "Request Owner", "user"), "request", "trace"
     )
 
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(JobPollingService(store, registry).poll_request_claim(
-            claim,
-            str(claim["submission_token"]),
-            context,
-            "portal_session=current",
-        ))
+    async def scenario() -> set[str]:
+        with pytest.raises(asyncio.CancelledError):
+            await JobPollingService(store, registry).poll_request_claim(
+                claim,
+                str(claim["submission_token"]),
+                context,
+                "portal_session=current",
+            )
+        return {
+            task.get_name()
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+        }
+
+    remaining_tasks = asyncio.run(scenario())
 
     stored, _ = store.job_for_owner("cancelled-job", "request-owner")
     assert stored is not None and stored["status"] == "queued"
     assert stored["submission_token"] is None
     assert stored["lease_until"] is not None and float(stored["lease_until"]) <= time.time()
+    assert not any(name.startswith("canvas-request-") for name in remaining_tasks)
+
+
+def test_failed_request_lease_renewal_cancels_provider_and_ignores_its_work(tmp_path: Path) -> None:
+    store = CanvasStore(tmp_path / "lost-lease")
+    reservation = store.reserve_job(
+        user_id="request-owner",
+        job_id="lost-lease-job",
+        service_id="portal-fixture",
+        operation="image.generate",
+        idempotency_key="lost-lease-key",
+        request_hash="l" * 64,
+        completion_mode="request",
+    )
+    store.mark_submitted(
+        "lost-lease-job",
+        "lost-lease-upstream",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_request_scoped_job(
+        "lost-lease-job", user_id="request-owner", lease_seconds=30
+    )
+    assert claim is not None
+    adapter = PortalJobsAdapter(
+        ServiceDeclaration("portal-fixture", "/portal", "image", ("image.generate",)),
+        PortalClient(
+            "http://127.0.0.1:46122",
+            allowed_mounts=("/portal",),
+            allowed_methods=("GET", "POST"),
+            allow_loopback_http=True,
+            transport=httpx.MockTransport(
+                lambda request: (_ for _ in ()).throw(
+                    AssertionError("lost lease test must not reach transport")
+                )
+            ),
+        ),
+    )
+    provider_started = asyncio.Event()
+    provider_cancelled = asyncio.Event()
+
+    async def blocked_poll(context, upstream_job_id, cookie_header):
+        provider_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            provider_cancelled.set()
+            raise
+
+    adapter.poll_with_cookie = blocked_poll
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    service = JobPollingService(store, registry)
+
+    async def immediate_sleep(interval: float) -> None:
+        await provider_started.wait()
+
+    service._sleep = immediate_sleep
+    store.renew_job_lease = lambda *args, **kwargs: False
+    context = RequestContext(
+        PortalUser("request-owner", "Request Owner", "user"), "request", "trace"
+    )
+
+    result = asyncio.run(service.poll_request_claim(
+        claim,
+        str(claim["submission_token"]),
+        context,
+        "portal_session=current",
+    ))
+
+    assert result["status"] == "queued"
+    assert provider_cancelled.is_set()
+    stored, _ = store.job_for_owner("lost-lease-job", "request-owner")
+    assert stored is not None and stored["status"] == "queued"
+    assert stored["submission_token"] is None
 
 
 def test_background_worker_recovers_direct_and_managed_jobs_after_process_restart(tmp_path: Path) -> None:
