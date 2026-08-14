@@ -265,6 +265,9 @@ def test_background_worker_recovers_direct_and_managed_jobs_after_process_restar
     initial_store.set_usage_rates(video_price_fen=0, image_price_fen=37)
 
     first = _build_app(data_dir, clock, direct_provider, managed_provider, {original_pool.pool_id: original_pool})
+    # The first process owns a real worker lifecycle, but its long idle wait keeps
+    # provider completion strictly on the reconstructed process below.
+    first.app.state.job_worker._idle_seconds = 3600.0
     with TestClient(first.app, base_url=ORIGIN, raise_server_exceptions=False) as first_client:
         direct = first_client.post("/api/v1/jobs", headers=_headers("direct-owner"), json={
             "operation": "image.generate", "model_id": "direct-image",
@@ -295,12 +298,46 @@ def test_background_worker_recovers_direct_and_managed_jobs_after_process_restar
         )
         first.store.mark_submission_unknown("unknown-job", str(unknown.job["submission_token"]))
 
-    assert direct_provider.submits == 1
-    assert managed_provider.submits == 1
+    assert direct_provider.submits == 1 and direct_provider.polls == 0
+    assert managed_provider.submits == 1 and managed_provider.downloads == 0
+    assert managed_provider.authorization == [f"Bearer {ORIGINAL_MANAGED_SECRET}"]
+    managed_upstream_id = str(managed_before["upstream_job_id"])
+    pending_path = data_dir / "ark-results" / "pending.json"
+    pending_before_recovery = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert pending_before_recovery[managed_upstream_id] == {
+        "kind": "image",
+        "urls": [
+            "https://media.volces.com/managed-a.png",
+            "https://media.volces.com/managed-b.png",
+        ],
+    }
+
     second = _build_app(
         data_dir, clock, direct_provider, managed_provider,
         {original_pool.pool_id: original_pool},
     )
+    direct_adapter_before_get = second.app.state.adapter_registry.generation("direct-fixture")
+    provider_counters_before_get = (
+        direct_provider.catalog_gets,
+        direct_provider.polls,
+        managed_provider.submits,
+        managed_provider.downloads,
+        tuple(managed_provider.authorization),
+    )
+    queued_reader = TestClient(second.app, base_url=ORIGIN, raise_server_exceptions=False)
+    direct_queued = queued_reader.get(f"/api/v1/jobs/{direct_job_id}", headers=_headers("direct-owner"))
+    managed_queued = queued_reader.get(f"/api/v1/jobs/{managed_job_id}", headers=_headers("managed-owner"))
+    queued_reader.close()
+    assert direct_queued.status_code == 200 and direct_queued.json() == {"id": direct_job_id, "status": "queued"}
+    assert managed_queued.status_code == 200 and managed_queued.json() == {"id": managed_job_id, "status": "queued"}
+    assert (
+        direct_provider.catalog_gets,
+        direct_provider.polls,
+        managed_provider.submits,
+        managed_provider.downloads,
+        tuple(managed_provider.authorization),
+    ) == provider_counters_before_get
+    assert second.app.state.adapter_registry.generation("direct-fixture") is direct_adapter_before_get
 
     wrong_pool = CredentialPool(
         original_pool.pool_id, original_pool.provider_id, original_pool.group,
@@ -309,25 +346,70 @@ def test_background_worker_recovers_direct_and_managed_jobs_after_process_restar
         hashlib.sha256(b"managed-ark-pool-v2").hexdigest(),
     )
     wrong = _build_app(data_dir, clock, direct_provider, managed_provider, {wrong_pool.pool_id: wrong_pool})
+
+    # Keep the direct job in the same database but beyond this credential test's
+    # retry window, so only the exact managed job can satisfy run_once().
+    for _ in range(2):
+        claim = wrong.store.claim_pollable_job()
+        assert claim is not None
+        if claim["id"] == direct_job_id:
+            direct_retry_boundary = clock.value + 600.0
+            wrong.store.release_job_lease(
+                direct_job_id,
+                token=str(claim["submission_token"]),
+                retry_after_seconds=600.0,
+            )
+            break
+        assert claim["id"] == managed_job_id
+        wrong.store.release_job_lease(
+            managed_job_id,
+            token=str(claim["submission_token"]),
+            retry_after_seconds=0,
+        )
+    else:
+        raise AssertionError("direct job was not isolated from managed recovery")
+
+    wrong_attempt_at = clock.value
     assert asyncio.run(wrong.app.state.job_worker.run_once()) is True
-    clock.advance()
-    assert asyncio.run(wrong.app.state.job_worker.run_once()) is True
-    managed_delayed, _ = wrong.store.job_for_owner(managed_job_id, "managed-owner")
-    assert managed_delayed is not None and managed_delayed["status"] == "queued"
+    managed_wrong_attempt, _ = wrong.store.job_for_owner(managed_job_id, "managed-owner")
+    assert managed_wrong_attempt is not None
+    assert managed_wrong_attempt["status"] == "queued"
+    assert managed_wrong_attempt["submission_token"] is None
+    assert managed_wrong_attempt["lease_until"] == wrong_attempt_at + 2.0
+    assert asyncio.run(wrong.app.state.job_worker.run_once()) is False
     assert managed_provider.downloads == 0
+    assert managed_provider.authorization == [f"Bearer {ORIGINAL_MANAGED_SECRET}"]
 
     missing = _build_app(data_dir, clock, direct_provider, managed_provider, {})
-    clock.advance()
+    clock.advance(2.001)
+    missing_attempt_at = clock.value
     assert asyncio.run(missing.app.state.job_worker.run_once()) is True
-    clock.advance()
-    assert asyncio.run(missing.app.state.job_worker.run_once()) is True
-    managed_delayed, _ = missing.store.job_for_owner(managed_job_id, "managed-owner")
-    assert managed_delayed is not None and managed_delayed["status"] == "queued"
+    managed_missing_attempt, _ = missing.store.job_for_owner(managed_job_id, "managed-owner")
+    assert managed_missing_attempt is not None
+    assert managed_missing_attempt["status"] == "queued"
+    assert managed_missing_attempt["submission_token"] is None
+    assert managed_missing_attempt["lease_until"] == missing_attempt_at + 2.0
+    assert asyncio.run(missing.app.state.job_worker.run_once()) is False
     assert managed_provider.downloads == 0
+    assert managed_provider.authorization == [f"Bearer {ORIGINAL_MANAGED_SECRET}"]
 
     direct_provider.advance()
     managed_provider.advance()
     catalog_gets_before_restart_worker = direct_provider.catalog_gets
+    clock.advance(2.001)
+    assert asyncio.run(second.app.state.job_worker.run_once()) is True
+    managed_after_cas, _ = second.store.job_for_owner(managed_job_id, "managed-owner")
+    assert managed_after_cas is not None and managed_after_cas["status"] == "succeeded"
+    assert managed_upstream_id in json.loads(pending_path.read_text(encoding="utf-8"))
+    assert asyncio.run(second.app.state.job_worker.run_once()) is True
+    pending_after_ack = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert managed_upstream_id not in pending_after_ack
+    assert second.store.claim_job_acknowledgement() is None
+    assert asyncio.run(second.app.state.job_worker.run_once()) is False
+    assert managed_provider.downloads == 2
+    assert managed_provider.authorization == [f"Bearer {ORIGINAL_MANAGED_SECRET}"]
+
+    clock.advance(direct_retry_boundary - clock.value + 0.001)
     _run_worker_until_idle(second.app, clock)
 
     direct_done, direct_forbidden = second.store.job_for_owner(direct_job_id, "direct-owner")
