@@ -106,3 +106,29 @@ def test_parsed_workflow_raw_json_is_recursively_immutable(core_workflow: bytes)
         parsed.raw._values["nodes"] = ()
     with pytest.raises(TypeError):
         parsed.raw["nodes"][0]._values["type"] = "Changed"
+
+
+def test_rejects_lone_surrogate_with_a_stable_encoding_error() -> None:
+    raw = br'{"1":{"class_type":"LoadImage","inputs":{"value":"\ud800"}}}'
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_ENCODING_INVALID"):
+        parse_workflow_json(raw)
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_ENCODING_INVALID"):
+        canonical_checksum({"value": "\ud800"})
+
+
+def test_rejects_an_api_node_id_that_exceeds_the_safe_decimal_bound() -> None:
+    raw = b'{"' + (b"1" * 5_000) + b'":{"class_type":"LoadImage","inputs":{}}}'
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_TOPOLOGY_INVALID"):
+        parse_workflow_json(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"nodes":[{"id":"<svg/onload=1>","type":"LoadImage"}],"links":[]}',
+        b'{"nodes":[{"id":1,"type":"<img src=x>"}],"links":[]}',
+    ],
+)
+def test_rejects_html_delimiters_in_preview_projected_node_strings(raw: bytes) -> None:
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)

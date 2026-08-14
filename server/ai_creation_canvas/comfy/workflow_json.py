@@ -25,6 +25,7 @@ _MAX_NODES = 500
 _MAX_LINKS = 2_000
 _MAX_DEPTH = 64
 _MAX_STRING_BYTES = 64 * 1024
+_MAX_API_NODE_ID_CHARS = 64
 _FORBIDDEN_FIELD_NAMES = frozenset({
     "api_key",
     "apikey",
@@ -52,6 +53,8 @@ def canonical_checksum(value: object) -> str:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise WorkflowValidationError("WORKFLOW_ENCODING_INVALID") from error
     except (TypeError, ValueError) as error:
         raise WorkflowValidationError("WORKFLOW_JSON_INVALID") from error
     return hashlib.sha256(encoded).hexdigest()
@@ -120,7 +123,7 @@ def _assert_value_limits(value: object, *, depth: int) -> None:
     if depth > _MAX_DEPTH:
         raise WorkflowValidationError("WORKFLOW_DEPTH_EXCEEDED")
     if isinstance(value, str):
-        if len(value.encode("utf-8")) > _MAX_STRING_BYTES:
+        if _utf8_length(value) > _MAX_STRING_BYTES:
             raise WorkflowValidationError("WORKFLOW_STRING_TOO_LARGE")
         return
     if isinstance(value, float):
@@ -198,11 +201,11 @@ def _parse_editor(value: dict[str, Any]) -> ParsedWorkflow:
 def _parse_api(value: dict[str, Any]) -> ParsedWorkflow:
     if len(value) > _MAX_NODES:
         raise WorkflowValidationError("WORKFLOW_NODE_LIMIT_EXCEEDED")
-    node_ids = set(value)
+    node_ids = {_api_node_id(node_id) for node_id in value}
     preview_nodes: list[PreviewNode] = []
     node_types: set[str] = set()
     preview_edges: list[PreviewEdge] = []
-    for node_id in sorted(value, key=lambda item: (int(item), item)):
+    for node_id in sorted(node_ids, key=lambda item: (int(item), item)):
         node = value[node_id]
         if not isinstance(node, dict):
             raise WorkflowValidationError("WORKFLOW_TOPOLOGY_INVALID")
@@ -255,12 +258,15 @@ def _parsed(
 def _editor_node_id(value: object) -> int | str:
     if isinstance(value, bool) or not isinstance(value, (int, str)) or (isinstance(value, str) and not value):
         raise WorkflowValidationError("WORKFLOW_TOPOLOGY_INVALID")
+    if isinstance(value, str):
+        _assert_safe_preview_text(value)
     return value
 
 
 def _node_type(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise WorkflowValidationError("WORKFLOW_TOPOLOGY_INVALID")
+    _assert_safe_preview_text(value)
     return value
 
 
@@ -274,9 +280,31 @@ def _editor_position(value: object) -> tuple[int, int] | None:
 
 
 def _safe_title(value: object) -> str | None:
-    if not isinstance(value, str) or "<" in value or ">" in value:
+    if not isinstance(value, str) or not _is_safe_preview_text(value):
         return None
     return value
+
+
+def _utf8_length(value: str) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise WorkflowValidationError("WORKFLOW_ENCODING_INVALID") from error
+
+
+def _api_node_id(value: str) -> str:
+    if not value.isascii() or not value.isdecimal() or len(value) > _MAX_API_NODE_ID_CHARS:
+        raise WorkflowValidationError("WORKFLOW_TOPOLOGY_INVALID")
+    return value
+
+
+def _is_safe_preview_text(value: str) -> bool:
+    return "<" not in value and ">" not in value
+
+
+def _assert_safe_preview_text(value: str) -> None:
+    if not _is_safe_preview_text(value):
+        raise WorkflowValidationError("WORKFLOW_FIELD_REJECTED")
 
 
 def _api_link_source(value: object) -> str | None:
