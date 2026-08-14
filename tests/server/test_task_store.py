@@ -238,6 +238,72 @@ def test_startup_reconciliation_assigns_only_trusted_legacy_completion_modes(tmp
     assert store.claim_pollable_job(lease_seconds=30) is None
 
 
+@pytest.mark.parametrize("completion_mode", ("background", "request"))
+def test_reclaimed_legacy_reservation_persists_current_trusted_completion_mode(
+    tmp_path, completion_mode
+):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / completion_mode, clock=clock)
+    original = store.reserve_job(
+        user_id="u", job_id="legacy", service_id="service", operation="image.generate",
+        idempotency_key="legacy-key", request_hash="h", lease_seconds=1,
+    )
+    with store._connection(immediate=True) as db:
+        db.execute("UPDATE canvas_jobs SET completion_mode=NULL WHERE id='legacy'")
+    clock.value += 2
+
+    reclaimed = store.reserve_job(
+        user_id="u", job_id="other", service_id="service", operation="image.generate",
+        idempotency_key="legacy-key", request_hash="h", completion_mode=completion_mode,
+    )
+    assert reclaimed.created is True
+    assert reclaimed.job["completion_mode"] == completion_mode
+    submitted = store.mark_submitted(
+        "legacy", "upstream", "queued", str(reclaimed.job["submission_token"])
+    )
+    assert submitted["completion_mode"] == completion_mode
+    if completion_mode == "request":
+        assert store.claim_pollable_job() is None
+        assert store.claim_request_scoped_job("legacy", user_id="u") is not None
+    else:
+        assert store.claim_request_scoped_job("legacy", user_id="u") is None
+        assert store.claim_pollable_job() is not None
+
+
+def test_reclaim_with_changed_completion_mode_becomes_nonreplayable(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self):
+            return self.value
+
+    clock = Clock()
+    store = CanvasStore(tmp_path / "mismatch", clock=clock)
+    store.reserve_job(
+        user_id="u", job_id="job", service_id="service", operation="image.generate",
+        idempotency_key="key", request_hash="h", lease_seconds=1,
+        completion_mode="background",
+    )
+    clock.value += 2
+
+    repeated = store.reserve_job(
+        user_id="u", job_id="other", service_id="service", operation="image.generate",
+        idempotency_key="key", request_hash="h", completion_mode="request",
+    )
+
+    assert repeated.created is False
+    assert repeated.job["status"] == "submission_unknown"
+    assert repeated.job["submission_state"] == "submission_unknown"
+    assert repeated.job["submission_token"] is None
+    assert repeated.job["completion_mode"] == "background"
+
+
 def test_pollable_job_lease_claims_direct_and_managed_jobs_but_excludes_ineligible_rows(tmp_path):
     class Clock:
         value = 1_000.0

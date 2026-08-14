@@ -1815,6 +1815,20 @@ class CanvasStore:
                 item = dict(existing)
                 if item["request_hash"] != request_hash:
                     return Reservation(item, False, True)
+                if (
+                    item["status"] == "submitting"
+                    and item.get("submission_state") in {None, "reserved"}
+                    and item.get("completion_mode") is not None
+                    and item.get("completion_mode") != completion_mode
+                ):
+                    db.execute(
+                        "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                        "error_code='SUBMISSION_UNKNOWN',submission_token=NULL,lease_until=NULL,updated_at=? "
+                        "WHERE id=? AND status='submitting' AND (submission_state IS NULL OR submission_state='reserved')",
+                        (now, item["id"]),
+                    )
+                    item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
+                    return Reservation(item, False)
                 lease_expired = float(item.get("lease_until") or 0) <= self._clock()
                 if item["status"] == "submitting" and item.get("submission_state") == "in_flight" and lease_expired:
                     db.execute(
@@ -1826,7 +1840,7 @@ class CanvasStore:
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, False)
                 if item["status"] == "submitting" and item.get("submission_state") in {None, "reserved"} and lease_expired:
-                    db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, updated_at=? WHERE id=? AND submission_token IS ?", (token, lease_until, now, item["id"], item.get("submission_token")))
+                    db.execute("UPDATE canvas_jobs SET submission_token=?, lease_until=?, attempt=attempt+1, error_code=NULL, completion_mode=?, updated_at=? WHERE id=? AND submission_token IS ? AND (completion_mode IS NULL OR completion_mode=?)", (token, lease_until, completion_mode, now, item["id"], item.get("submission_token"), completion_mode))
                     item = dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (item["id"],)).fetchone())
                     return Reservation(item, True)
                 return Reservation(item, False)

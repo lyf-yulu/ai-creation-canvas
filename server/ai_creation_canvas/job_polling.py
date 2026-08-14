@@ -30,6 +30,10 @@ class ValidatedProviderJobState:
     error_code: str | None
 
 
+class RequestPollingAuthRequired(Exception):
+    """The current request Cookie cannot authorize another Portal poll."""
+
+
 def validated_provider_job_state(state: object) -> ValidatedProviderJobState:
     """Normalize the provider state shared by submission and polling paths."""
     if not isinstance(state, JobState):
@@ -169,6 +173,11 @@ class JobPollingService:
         except (CoordinationUnavailable, ExecutionCapacityExceeded):
             return self._release(job_id, token)
         except PortalUpstreamError as error:
+            if error.status_code in {401, 403}:
+                self._store.release_job_lease(
+                    job_id, token=token, retry_after_seconds=0
+                )
+                raise RequestPollingAuthRequired from None
             if error.retryable:
                 return self._release(job_id, token)
             return self._fail(job_id, token, "REQUEST_REJECTED")

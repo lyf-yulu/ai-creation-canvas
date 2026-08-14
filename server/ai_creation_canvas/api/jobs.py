@@ -23,7 +23,7 @@ from ai_creation_canvas.managed_jobs import managed_job_adapter, validated_job_r
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteCandidate
 from ai_creation_canvas.catalog import ProviderSubmissionBudgetExhausted
-from ai_creation_canvas.job_polling import ValidatedProviderJobState, validated_provider_job_state
+from ai_creation_canvas.job_polling import RequestPollingAuthRequired, ValidatedProviderJobState, validated_provider_job_state
 
 _validated_job_route = validated_job_route
 
@@ -643,12 +643,17 @@ async def get_job(job_id: str, request: Request) -> dict[str, object]:
             lease_seconds=request.app.state.job_polling_service.request_lease_seconds,
         )
         if claim is not None:
-            item = await request.app.state.job_polling_service.poll_request_claim(
-                claim,
-                str(claim["submission_token"]),
-                context,
-                cookie_header,
-            )
+            try:
+                item = await request.app.state.job_polling_service.poll_request_claim(
+                    claim,
+                    str(claim["submission_token"]),
+                    context,
+                    cookie_header,
+                )
+            except RequestPollingAuthRequired:
+                raise problem(
+                    request, "AUTH_REQUIRED", "Sign in is required.", status=401
+                ) from None
         else:
             current, _ = request.app.state.canvas_store.job_for_owner(
                 job_id, context.user.user_id

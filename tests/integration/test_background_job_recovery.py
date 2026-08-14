@@ -403,6 +403,64 @@ def test_request_scoped_temporary_poll_error_releases_lease_without_cookie_persi
     assert cookie not in caplog.text
 
 
+@pytest.mark.parametrize("expired_status", (401, 403))
+def test_request_scoped_expired_cookie_releases_for_fresh_authenticated_get(
+    tmp_path: Path, expired_status: int
+) -> None:
+    transport = RequestScopedPortalTransport(httpx.Response(expired_status))
+    app, store = _request_scoped_app(tmp_path / f"expired-{expired_status}", transport)
+    store.set_usage_rates(video_price_fen=0, image_price_fen=25)
+    with TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as client:
+        job_id = _submit_request_scoped_job(
+            client, cookie="portal_session=expired"
+        )
+        before, _ = store.job_for_owner(job_id, "request-owner")
+        assert before is not None
+
+        expired = client.get(
+            f"/api/v1/jobs/{job_id}",
+            headers={
+                **_headers("request-owner"),
+                "Cookie": "portal_session=expired",
+            },
+        )
+
+        assert expired.status_code == 401
+        assert expired.json()["code"] == "AUTH_REQUIRED"
+        after_expired, _ = store.job_for_owner(job_id, "request-owner")
+        assert after_expired is not None
+        for field in ("status", "upstream_job_id", "completion_mode", "result_id", "result_ids_json"):
+            assert after_expired[field] == before[field]
+        assert after_expired["submission_token"] is None
+
+        transport.poll_response = httpx.Response(200, json={
+            "id": "request-upstream",
+            "status": "succeeded",
+            "result_ref": "request-result",
+        })
+        completed = client.get(
+            f"/api/v1/jobs/{job_id}",
+            headers={
+                **_headers("request-owner"),
+                "Cookie": "portal_session=fresh",
+            },
+        )
+        repeated = client.get(
+            f"/api/v1/jobs/{job_id}",
+            headers={
+                **_headers("request-owner"),
+                "Cookie": "portal_session=fresh",
+            },
+        )
+
+    assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert repeated.status_code == 200 and repeated.json()["status"] == "succeeded"
+    assert transport.poll_cookies == ["portal_session=expired", "portal_session=fresh"]
+    usage = store.usage_for_owner("request-owner")
+    assert usage["total_cost_fen"] == 25
+    assert len(usage["jobs"]) == 1
+
+
 def test_concurrent_owner_gets_execute_exactly_one_request_scoped_poll(tmp_path: Path) -> None:
     transport = RequestScopedPortalTransport()
     transport.poll_started = threading.Event()
