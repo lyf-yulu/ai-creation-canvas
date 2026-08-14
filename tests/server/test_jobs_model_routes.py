@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -209,8 +210,11 @@ def test_managed_route_retries_explicit_429_on_next_compatible_key_and_persists_
     legacy_encoded = json.dumps(legacy_snapshot, sort_keys=True, separators=(",", ":"))
     with store._connection(immediate=True) as db:
         db.execute("UPDATE canvas_jobs SET route_snapshot_json=? WHERE id=?", (legacy_encoded, response.json()["id"]))
+    assert asyncio.run(app.state.job_worker.run_once()) is True
+    provider_calls_before_get = len(seen_auth)
     completed = client.get(f"/api/v1/jobs/{response.json()['id']}", headers=headers())
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert len(seen_auth) == provider_calls_before_get
     pools.clear()
     downloaded = client.get(f"/api/v1/results/{response.json()['id']}", headers=headers())
     assert downloaded.status_code == 200
@@ -241,10 +245,18 @@ def test_managed_route_retries_an_explicit_5xx_but_never_a_business_4xx(tmp_path
 
 
 def test_unknown_future_snapshot_version_fails_closed(tmp_path: Path) -> None:
+    provider_calls = 0
+
+    def provider(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+    coordinator = ScriptedCoordinator()
     app, store, _ = build_app(
         tmp_path,
-        lambda request: httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]}),
-        ScriptedCoordinator(),
+        provider,
+        coordinator,
     )
     client = TestClient(app, raise_server_exceptions=False)
     created = client.post("/api/v1/jobs", headers=headers(), json=payload())
@@ -254,8 +266,14 @@ def test_unknown_future_snapshot_version_fails_closed(tmp_path: Path) -> None:
     snapshot["schema_version"] = 999
     with store._connection(immediate=True) as db:
         db.execute("UPDATE canvas_jobs SET route_snapshot_json=? WHERE id=?", (json.dumps(snapshot, sort_keys=True, separators=(",", ":")), created.json()["id"]))
+    acquisitions_before_poll = tuple(coordinator.acquisitions)
+    assert asyncio.run(app.state.job_worker.run_once()) is True
+    provider_calls_before_get = provider_calls
     polled = client.get(f"/api/v1/jobs/{created.json()['id']}", headers=headers())
     assert polled.status_code == 200 and polled.json()["status"] == "failed"
+    assert polled.json()["error"]["code"] == "INVALID_UPSTREAM_RESULT"
+    assert tuple(coordinator.acquisitions) == acquisitions_before_poll
+    assert provider_calls == provider_calls_before_get
 
 
 def test_provider_business_rejection_returns_422_once(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import hashlib, hmac, json, time
 import sqlite3
 from urllib.parse import quote
@@ -15,6 +16,7 @@ from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.api.results import parse_range_header, validate_partial_response
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from tests.server.test_managed_job_adapter import _runtime
 import pytest
 
 
@@ -459,7 +461,7 @@ def test_typed_submission_error_never_returns_created(tmp_path, retryable, expec
     assert response.json()["code"] == expected_code
 
 
-def test_invalid_succeeded_result_fails_a_queued_job_once_and_stops_polling(tmp_path):
+def test_get_does_not_poll_an_adapter_that_would_raise_invalid_result(tmp_path):
     class InvalidResultGeneration(FakeGeneration):
         def __init__(self):
             super().__init__()
@@ -476,12 +478,11 @@ def test_invalid_succeeded_result_fails_a_queued_job_once_and_stops_polling(tmp_
     client = TestClient(app, raise_server_exceptions=False)
     first = client.get("/api/v1/jobs/job", headers=headers())
     second = client.get("/api/v1/jobs/job", headers=headers())
-    assert first.json()["status"] == second.json()["status"] == "failed"
-    assert first.json()["error"]["code"] == "INVALID_UPSTREAM_RESULT"
-    assert adapter.poll_count == 1
+    assert first.json()["status"] == second.json()["status"] == "queued"
+    assert adapter.poll_count == 0
 
 
-def test_value_error_from_adapter_success_protocol_fails_once_and_stops_polling(tmp_path):
+def test_get_does_not_poll_an_adapter_that_would_raise_value_error(tmp_path):
     class MissingResultGeneration(FakeGeneration):
         def __init__(self):
             super().__init__()
@@ -498,14 +499,18 @@ def test_value_error_from_adapter_success_protocol_fails_once_and_stops_polling(
     client = TestClient(app, raise_server_exceptions=False)
     first = client.get("/api/v1/jobs/job", headers=headers())
     second = client.get("/api/v1/jobs/job", headers=headers())
-    assert first.json()["status"] == second.json()["status"] == "failed"
-    assert first.json()["error"]["code"] == "INVALID_UPSTREAM_RESULT"
-    assert adapter.poll_count == 1
+    assert first.json()["status"] == second.json()["status"] == "queued"
+    assert adapter.poll_count == 0
 
 
-def test_nonopaque_result_returned_by_any_adapter_uses_the_same_cas_failure(tmp_path):
+def test_get_does_not_validate_a_provider_result_before_the_worker_polls(tmp_path):
     class NonOpaqueResultGeneration(FakeGeneration):
+        def __init__(self):
+            super().__init__()
+            self.poll_count = 0
+
         async def poll(self, context, upstream_job_id):
+            self.poll_count += 1
             return JobState(upstream_job_id, "succeeded", AssetRef("signed?token=secret", "reference", "active", "application/octet-stream"))
 
     adapter = NonOpaqueResultGeneration()
@@ -514,11 +519,82 @@ def test_nonopaque_result_returned_by_any_adapter_uses_the_same_cas_failure(tmp_
     app.state.canvas_store.reserve_job(user_id="u-a", job_id="job", service_id="images", operation="image.generate", idempotency_key="key", request_hash="a" * 64)
     app.state.canvas_store.mark_submitted("job", "upstream-1", "running")
     response = TestClient(app, raise_server_exceptions=False).get("/api/v1/jobs/job", headers=headers())
-    assert response.json()["status"] == "failed"
-    assert response.json()["error"]["code"] == "INVALID_UPSTREAM_RESULT"
+    assert response.json()["status"] == "running"
+    assert adapter.poll_count == 0
 
 
-def test_poll_forwards_the_current_cookie_to_cookie_protected_adapter(tmp_path):
+def test_get_is_read_only_for_an_adapter_owned_by_the_background_worker(tmp_path):
+    class BackgroundPolling(FakeGeneration):
+        supports_background_polling = True
+
+        def __init__(self):
+            super().__init__()
+            self.poll_count = 0
+
+        async def poll(self, context, upstream_job_id):
+            del context
+            self.poll_count += 1
+            return JobState(upstream_job_id, "queued")
+
+    adapter = BackgroundPolling()
+    registry = AdapterRegistry(); registry.register_generation(adapter)
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), registry=registry, model_catalog=ModelCatalog(registry))
+    app.state.canvas_store.reserve_job(user_id="u-a", job_id="job", service_id="images", operation="image.generate", idempotency_key="key", request_hash="a" * 64)
+    app.state.canvas_store.mark_submitted("job", "upstream-1", "queued")
+
+    response = TestClient(app, raise_server_exceptions=False).get("/api/v1/jobs/job", headers=headers())
+
+    assert response.json()["status"] == "queued"
+    assert adapter.poll_count == 0
+
+
+def test_get_is_read_only_for_a_managed_job_owned_by_the_background_worker(tmp_path):
+    runtime, _context, _item, coordinator = _runtime(tmp_path)
+
+    class ManagedPolling:
+        def __init__(self):
+            self.poll_count = 0
+
+        async def poll(self, context, upstream_job_id):
+            del context
+            self.poll_count += 1
+            return JobState(upstream_job_id, "queued")
+
+    class Factory:
+        def __init__(self, adapter):
+            self.adapter = adapter
+            self.build_count = 0
+
+        def build(self, route, lease):
+            del route, lease
+            self.build_count += 1
+            return self.adapter
+
+    adapter = ManagedPolling()
+    factory = Factory(adapter)
+    runtime = replace(runtime, adapter_factory=factory)
+    registry = AdapterRegistry()
+    app = create_app(
+        Settings("test", 8992, runtime.store.data_dir, "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+        canvas_store=runtime.store,
+        managed_routing_runtime=runtime,
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get(
+        "/api/v1/jobs/managed-job",
+        headers=headers("user-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert adapter.poll_count == 0
+    assert factory.build_count == 0
+    assert coordinator.candidates == []
+
+
+def test_get_does_not_poll_a_cookie_protected_adapter(tmp_path):
     class CookiePolling(FakeGeneration):
         requires_portal_cookie = True
         def __init__(self):
@@ -535,7 +611,8 @@ def test_poll_forwards_the_current_cookie_to_cookie_protected_adapter(tmp_path):
     app.state.canvas_store.mark_submitted("job", "upstream-1", "queued")
     response = TestClient(app, raise_server_exceptions=False).get("/api/v1/jobs/job", headers={**headers(), "cookie": "session=a"})
     assert response.status_code == 200
-    assert adapter.cookies == ["session=a"]
+    assert response.json()["status"] == "queued"
+    assert adapter.cookies == []
 
 
 def test_retry_after_provider_accepted_a_timed_out_submission_reuses_one_upstream_job(tmp_path):

@@ -6,6 +6,7 @@ adapters.  It never opens a connection to a configured Portal or model port.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import shutil
@@ -56,11 +57,13 @@ def signed_headers(user_id: str, *, cookie: bool = True) -> dict[str, str]:
 def canvas(tmp_path):
     usage: list[tuple[str, str]] = []
     jobs: dict[str, tuple[str, str]] = {}
+    provider_calls: list[tuple[str, str]] = []
     sequence = 0
 
     def portal(request: httpx.Request) -> httpx.Response:
         nonlocal sequence
         path = request.url.path
+        provider_calls.append((request.method, path))
         mount, _, resource = path.lstrip("/").partition("/")
         cookie = request.headers.get("cookie", "")
         user = cookie.partition("=")[2]
@@ -109,16 +112,18 @@ def canvas(tmp_path):
     transport = httpx.MockTransport(portal)
     client = PortalClient("http://127.0.0.1:45679", allowed_mounts=("/images", "/videos", "/portrait"), allowed_methods=("GET", "POST", "HEAD"), allow_loopback_http=True, transport=transport)
     registry = AdapterRegistry()
-    registry.register_generation(PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client))
-    registry.register_generation(PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client))
+    images = PortalJobsAdapter(ServiceDeclaration("images", "/images", "image", ("image.generate", "image.edit")), client)
+    videos = PortalJobsAdapter(ServiceDeclaration("videos", "/videos", "video", ("video.generate", "video.image_to_video")), client)
     portrait = PortalPortraitAdapter(PortraitDeclaration("portal-portrait", "/portrait"), client)
+    for adapter in (images, videos, portrait):
+        adapter.supports_background_polling = True
+        registry.register_generation(adapter)
     registry.register_asset(portrait)
-    registry.register_generation(portrait)
     static_dir = tmp_path / "static"
     static_dir.mkdir()
     (static_dir / "index.html").write_text("canvas", encoding="utf-8")
     app = create_app(Settings("test", 45680, tmp_path / "canvas-data", "integration-secret"), static_dir=static_dir, registry=registry, model_catalog=ModelCatalog(registry))
-    return TestClient(app, raise_server_exceptions=False), usage
+    return TestClient(app, raise_server_exceptions=False), usage, provider_calls
 
 
 def _upload(client: TestClient, user: str, *, kind: str = "reference") -> str:
@@ -142,7 +147,7 @@ def _upload(client: TestClient, user: str, *, kind: str = "reference") -> str:
     ],
 )
 def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(canvas, operation, model_id, asset_kind):
-    client, usage = canvas
+    client, usage, provider_calls = canvas
     asset_ids = [_upload(client, "user-a", kind=asset_kind)] if asset_kind else []
     response = client.post("/api/v1/jobs", json={"operation": operation, "model_id": model_id, "prompt": "integration prompt", "params": {}, "asset_ids": asset_ids, "idempotency_key": f"{operation}-{model_id}"}, headers=signed_headers("user-a"))
     assert response.status_code == 201, response.text
@@ -151,8 +156,11 @@ def test_public_api_core_flow_polls_result_records_one_usage_and_isolates_users(
     assert client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-b")).status_code == 404
     if asset_ids:
         assert client.get(f"/api/v1/assets/{asset_ids[0]}", headers=signed_headers("user-b")).status_code == 403
+    assert asyncio.run(client.app.state.job_worker.run_once()) is True
+    provider_calls_before_get = len(provider_calls)
     completed = client.get(f"/api/v1/jobs/{job_id}", headers=signed_headers("user-a"))
     assert completed.status_code == 200 and completed.json()["status"] == "succeeded"
+    assert len(provider_calls) == provider_calls_before_get
     result = client.get(f"/api/v1/results/{job_id}", headers=signed_headers("user-a"))
     assert result.status_code == 200 and result.content
     if model_id == "portrait-model":

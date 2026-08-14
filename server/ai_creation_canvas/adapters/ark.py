@@ -105,6 +105,7 @@ class ArkGenerationAdapter:
     """Maps a data-only Ark model declaration into existing generation ports."""
 
     requires_portal_cookie = False
+    supports_background_polling = True
 
     def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None, reusable_result_services: frozenset[str] | None = None) -> None:
         if not isinstance(api_key, str) or len(api_key.strip()) < 8:
@@ -259,7 +260,6 @@ class ArkGenerationAdapter:
         pending = await self._pending(upstream_job_id)
         if pending is not None:
             results = tuple([await self._download(upstream_job_id if index == 0 else f"{upstream_job_id}\n{index}", url, pending["kind"]) for index, url in enumerate(pending["urls"])])
-            await self._clear_pending(upstream_job_id)
             return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
         if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
             raise ValueError("Ark job is invalid")
@@ -280,6 +280,10 @@ class ArkGenerationAdapter:
         if not _CONTENT_TASK_ID.fullmatch(upstream_job_id):
             raise ValueError("Ark job is invalid")
         await self._api("DELETE", f"/api/v3/contents/generations/tasks/{upstream_job_id}")
+
+    async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+        """Discard image recovery metadata only after the job store commits success."""
+        await self._clear_pending(upstream_job_id)
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header

@@ -297,37 +297,10 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
 
 
 async def _poll(request: Request, context, item: dict[str, object]) -> dict[str, object]:
+    del context
     if item["status"] == "submitting" and item.get("submission_state") == "in_flight":
         item = request.app.state.canvas_store.expire_in_flight(str(item["id"]))
-    if item["status"] in {"succeeded", "failed", "submitting", "submission_unknown"} or not item.get("upstream_job_id"):
-        return item
-    try:
-        if item.get("logical_model_id") is not None:
-            async with managed_job_adapter(request.app.state.managed_routing_runtime, context, item) as adapter:
-                state = await adapter.poll(context, str(item["upstream_job_id"]))
-        else:
-            adapter = request.app.state.adapter_registry.generation(str(item["service_id"]))
-            if getattr(adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
-                raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
-            poll_with_cookie = getattr(adapter, "poll_with_cookie", None)
-            if callable(poll_with_cookie):
-                state = await poll_with_cookie(context, str(item["upstream_job_id"]), request.headers.get("cookie", ""))
-            else:
-                state = await adapter.poll(context, str(item["upstream_job_id"]))
-        result_ids = tuple(result.asset_id for result in state.results)
-        if state.status.value == "succeeded":
-            if not result_ids or len(result_ids) > 15 or any(not _RESULT_ID.fullmatch(result_id) for result_id in result_ids):
-                raise InvalidUpstreamResult("provider success result is invalid")
-        return request.app.state.canvas_store._update(str(item["id"]), status=state.status.value, error_code=state.error.code if state.error else None, result_ids=result_ids or None)
-    except (InvalidUpstreamResult, ValueError):
-        return request.app.state.canvas_store.fail_invalid_upstream_result(
-            str(item["id"]), "INVALID_UPSTREAM_RESULT"
-        )
-    except DomainError:
-        raise
-    except Exception:
-        # A transient poll error is not an upstream terminal state.
-        return item
+    return item
 
 
 @router.post("/jobs", status_code=201)

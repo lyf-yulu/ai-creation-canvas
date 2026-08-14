@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -44,6 +45,7 @@ def test_complete_offline_demo_flow_is_owned_and_idempotent(tmp_path) -> None:
     assert created.json()["id"] == repeated.json()["id"]
     job_id = created.json()["id"]
 
+    assert asyncio.run(app.state.job_worker.run_once()) is True
     finished = user_a.get(f"/api/v1/jobs/{job_id}")
     assert finished.status_code == 200
     assert finished.json()["status"] == "succeeded"

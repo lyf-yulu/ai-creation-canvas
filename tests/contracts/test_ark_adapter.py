@@ -109,6 +109,11 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
         state = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.status.value == "succeeded"
         assert state.result is not None
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id in pending
+        await adapter.acknowledge_poll_result(upstream.upstream_job_id)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id not in pending
         stream = await adapter.open_result(context(), state.result.asset_id, cookie_header="", range_header="bytes=0-3")
         assert stream.status_code == 206
         assert b"".join([chunk async for chunk in stream.aiter_bytes()]) == b"safe"
@@ -133,9 +138,16 @@ def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) 
         )
         upstream = await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "two", "multi"))
         state = await adapter.poll(context(), upstream.upstream_job_id)
+        replayed = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.result is state.results[0]
         assert len(state.results) == 2
         assert len({item.asset_id for item in state.results}) == 2
+        assert tuple(item.asset_id for item in replayed.results) == tuple(item.asset_id for item in state.results)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id in pending
+        await adapter.acknowledge_poll_result(upstream.upstream_job_id)
+        pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+        assert upstream.upstream_job_id not in pending
 
     asyncio.run(scenario())
 

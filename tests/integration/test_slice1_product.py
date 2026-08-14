@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
@@ -119,6 +120,7 @@ def test_slice1_admin_user_project_assignment_and_demo_result(tmp_path) -> None:
     }
     created = user.post("/api/v1/jobs", headers=user_headers, json=payload)
     assert created.status_code == 201
+    assert asyncio.run(app.state.job_worker.run_once()) is True
     done = user.get(f"/api/v1/jobs/{created.json()['id']}")
     assert done.json()["status"] == "succeeded"
     assert user.get(done.json()["result_url"]).headers["content-type"] == "image/png"
