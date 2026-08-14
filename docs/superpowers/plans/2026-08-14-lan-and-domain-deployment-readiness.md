@@ -263,7 +263,7 @@ export AICC_LOCAL_HOST AICC_LOCAL_ORIGIN AICC_LOCAL_DATA
 exec "$script_dir/run-local.sh"
 ```
 
-The documentation must show a LAN command that supplies a real private IP, use non-production test port/data, require a second-device login/change-password/demo-generation check, and state how to stop it. The public deployment section must prescribe `Internet → HTTPS proxy → Portal /ai-canvas/ → Canvas 127.0.0.1`, `--trusted-host canvas.example`, no direct public Canvas port, backend firewall, TLS/HSTS/body limit/rate limit at the public proxy, and the one-Python-replica Redis limitation. It must say that no real server or DNS has been configured by this repository change.
+The documentation must show a LAN command that supplies a real private IP, use non-production test port/data, require a second-device login/change-password/demo-generation check, and state how to stop it. The public deployment section must prescribe `Internet → HTTPS proxy → Portal /ai-canvas/ → Canvas 127.0.0.1`, `--trusted-host 127.0.0.1` (or the actual Portal upstream Host), no direct public Canvas port, backend firewall, TLS/HSTS/body limit/rate limit at the public proxy, and the one-Python-replica Redis limitation. The public domain is handled by the proxy/Portal; the Portal proxy filters external Host and Canvas trusts only the loopback upstream Host. It must say that no real server or DNS has been configured by this repository change.
 
 - [ ] **Step 3: Run shell, command-reference, and release documentation checks**
 

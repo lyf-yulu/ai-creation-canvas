@@ -52,7 +52,7 @@
 
 监听地址与浏览器 Origin 绝不互相推断：`0.0.0.0` 只能表示监听所有接口，不能成为浏览器 Origin。
 
-`Settings` 新增规范化后的 `trusted_hosts`。本地模式从已批准的 public origin 提取；通用/生产 CLI 则由重复 `--trusted-host` 显式提供，生产启动缺失时必须失败。应用启用可信 Host 检查，拒绝 Host 注入。不得相信来自互联网直连客户端的 `X-Forwarded-*`；反向代理只可在网络层向回环 Canvas 转发标准 Host。
+`Settings` 新增规范化后的 `trusted_hosts`。本地模式从已批准的 public origin 提取；通用/生产 CLI 则由重复 `--trusted-host` 显式提供，生产启动缺失时必须失败。应用启用可信 Host 检查，拒绝 Host 注入。不得相信来自互联网直连客户端的 `X-Forwarded-*`；Portal 的受控回环代理会过滤外部 `Host`，并以实际回环上游 Host（首版为 `127.0.0.1`）访问 Canvas，因此生产 Canvas 信任该回环 Host，而非公开域名。
 
 ### 2. 公网/Portal 部署契约
 
