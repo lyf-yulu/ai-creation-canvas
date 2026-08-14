@@ -249,6 +249,16 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
                     ):
                         return snapshot_item
                     adapter = runtime.adapter_factory.build(candidate.route, lease)
+                    if not _adapter_has_server_completion(adapter):
+                        store.mark_submission_rejected(
+                            str(reservation.job["id"]), token, "MODEL_UNAVAILABLE",
+                        )
+                        raise problem(
+                            request,
+                            "MODEL_UNAVAILABLE",
+                            "The selected model is unavailable.",
+                            status=400,
+                        )
                     try:
                         upstream = await adapter.submit(context, upstream_request)
                     except asyncio.CancelledError:
@@ -303,6 +313,13 @@ async def _poll(request: Request, context, item: dict[str, object]) -> dict[str,
     return item
 
 
+def _adapter_has_server_completion(adapter: object) -> bool:
+    return bool(
+        getattr(adapter, "supports_background_polling", False) is True
+        or getattr(adapter, "supports_synchronous_submission", False) is True
+    )
+
+
 @router.post("/jobs", status_code=201)
 async def create_job(payload: Submission, request: Request) -> dict[str, object]:
     context = context_for(request)
@@ -328,6 +345,13 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     runtime = getattr(request.app.state, "managed_routing_runtime", None)
     managed = runtime is not None and runtime.is_managed(domain_request.model_id)
     selected_adapter = None if managed else request.app.state.adapter_registry.generation(model.service_id)
+    if selected_adapter is not None and not _adapter_has_server_completion(selected_adapter):
+        raise problem(
+            request,
+            "MODEL_UNAVAILABLE",
+            "The selected model is unavailable.",
+            status=400,
+        )
     reusable_result_services = frozenset({model.service_id}) if managed else getattr(selected_adapter, "reusable_result_services", frozenset({model.service_id}))
     if selected_adapter is not None and getattr(selected_adapter, "requires_portal_cookie", False) and not request.headers.get("cookie"):
         raise problem(request, "AUTH_REQUIRED", "Sign in is required.", status=401)
@@ -418,7 +442,14 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                 upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
             else:
                 upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
-        item = store.mark_submitted(str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value, str(reservation.job["submission_token"]))
+        result_ids = tuple(result.asset_id for result in upstream.state.results)
+        item = store.mark_submitted(
+            str(reservation.job["id"]),
+            upstream.upstream_job_id,
+            upstream.state.status.value,
+            str(reservation.job["submission_token"]),
+            result_ids=result_ids or None,
+        )
         return _response(item, request)
     except ExecutionCapacityExceeded:
         store.fail_reservation(str(reservation.job["id"]), "TASK_CAPACITY", str(reservation.job["submission_token"]))

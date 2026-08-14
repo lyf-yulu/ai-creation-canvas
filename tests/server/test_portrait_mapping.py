@@ -16,6 +16,7 @@ from tests.contracts.test_generation_flow import headers
 class Portrait:
     service_id = "portal-portrait"
     requires_portal_cookie = True
+    supports_synchronous_submission = True
     def __init__(self): self.received = None; self.upload_calls = 0
     async def list_models(self, context): return (ModelSpec("portrait-video", self.service_id, "Portrait", ("video.image_to_video",), ("text", "image"), {}, "portrait"),)
     async def list_models_with_cookie(self, context, cookie): return await self.list_models(context)
@@ -26,7 +27,12 @@ class Portrait:
     async def submit(self, context, request): raise AssertionError
     async def submit_with_cookie(self, context, request, cookie):
         self.received = request.asset_ids
-        return UpstreamJob(self.service_id, "job-upstream", JobState("job-upstream", "queued"))
+        result = AssetRef("portrait-result", "reference", "active", "video/mp4")
+        return UpstreamJob(
+            self.service_id,
+            "job-upstream",
+            JobState("job-upstream", "succeeded", results=(result,)),
+        )
     async def poll(self, context, job): return JobState(job, "queued")
 
 

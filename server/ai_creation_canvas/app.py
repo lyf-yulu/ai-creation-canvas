@@ -213,6 +213,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             store, lambda: loader.reload().as_mapping(), RouteSelector(trusted_routes_only=True), execution_coordinator, route_factory,
             provider_submission_budget,
         )
+    refresh_background_adapters = getattr(model_catalog, "refresh_background_adapters", None)
     if managed_routing_runtime is not None:
         if managed_routing_runtime.store is not store:
             raise ValueError("managed routing runtime store does not match the app store")
@@ -221,7 +222,13 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.managed_routing_runtime = managed_routing_runtime
     app.state.job_polling_service = JobPollingService(store, registry, managed_routing_runtime)
     app.state.job_worker = JobWorker(store, app.state.job_polling_service)
-    app.router.on_startup.append(app.state.job_worker.start)
+
+    async def start_job_worker() -> None:
+        if callable(refresh_background_adapters):
+            await refresh_background_adapters()
+        await app.state.job_worker.start()
+
+    app.router.on_startup.append(start_job_worker)
     app.router.on_shutdown.append(app.state.job_worker.stop)
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None

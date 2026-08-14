@@ -22,6 +22,7 @@ import pytest
 
 class FakeGeneration:
     service_id = "images"
+    supports_background_polling = True
     def __init__(self): self.submit_count = 0
     async def list_models(self, context: RequestContext):
         return (ModelSpec("model-1", self.service_id, "Model", ("image.generate",)),)
@@ -61,6 +62,37 @@ def test_idempotency_and_job_ownership(tmp_path):
     data["prompt"] = "different"
     assert client.post("/api/v1/jobs", json=data, headers=headers()).status_code == 409
     assert "secret prompt" not in (tmp_path / "data" / "canvas.sqlite3").read_bytes().decode(errors="ignore")
+
+
+def test_async_direct_adapter_without_background_recovery_is_rejected_before_submit(tmp_path):
+    class UnsupportedAsyncGeneration(FakeGeneration):
+        supports_background_polling = False
+
+    adapter = UnsupportedAsyncGeneration()
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.generate",
+            "model_id": "model-1",
+            "prompt": "safe prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "unsupported-async",
+        },
+        headers=headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "MODEL_UNAVAILABLE"
+    assert adapter.submit_count == 0
 
 
 def test_typed_inputs_are_owner_checked_ordered_and_frozen_before_submit(tmp_path):
@@ -628,6 +660,9 @@ def test_retry_after_provider_accepted_a_timed_out_submission_reuses_one_upstrea
         nonlocal create_count, fail_first
         if request.url.path.endswith("/api/config"):
             return httpx.Response(200, json={"models": [{"id": "model-1", "display_name": "Model", "operations": ["image.generate"]}]})
+        if request.method == "GET" and "/api/jobs/" in request.url.path:
+            assert request.headers.get("cookie") is None
+            return httpx.Response(200, json={"id": "provider-job-1", "status": "succeeded", "result_ref": "result-1"})
         key = json.loads(request.content)["idempotency_key"]
         if key not in created:
             create_count += 1
@@ -641,7 +676,10 @@ def test_retry_after_provider_accepted_a_timed_out_submission_reuses_one_upstrea
     store = CanvasStore(settings.data_dir, clock=clock)
     declaration = ServiceDeclaration("images", "/image", "image", ("image.generate",))
     portal = PortalClient("https://portal.test", allowed_mounts=("/image",), allowed_methods=("GET", "POST"), transport=httpx.MockTransport(provider))
-    adapter = PortalJobsAdapter(declaration, portal)
+    class RecoverablePortalJobsAdapter(PortalJobsAdapter):
+        supports_background_polling = True
+
+    adapter = RecoverablePortalJobsAdapter(declaration, portal)
     registry = AdapterRegistry(); registry.register_generation(adapter)
     payload = {"operation":"image.generate", "model_id":"model-1", "prompt":"p", "params":{}, "asset_ids":[], "idempotency_key":"accepted-timeout"}
     first_app = create_app(settings, registry=registry, model_catalog=ModelCatalog(registry), canvas_store=store)

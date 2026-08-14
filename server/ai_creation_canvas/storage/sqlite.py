@@ -53,6 +53,12 @@ class Reservation:
     conflict: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class PolledJobWrite:
+    job: dict[str, object]
+    applied: bool
+
+
 class StoreInitializationError(RuntimeError):
     """Startup cannot safely expose a database whose scrub has not completed."""
 
@@ -466,6 +472,10 @@ class CanvasStore:
             if not isinstance(row["result_id"], str) or not _RESULT_ID.fullmatch(row["result_id"]):
                 scrub_pending = True
                 db.execute("UPDATE canvas_jobs SET result_id=NULL WHERE id=?", (row["id"],))
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_job_acknowledgements (
+                job_id TEXT PRIMARY KEY REFERENCES canvas_jobs(id) ON DELETE CASCADE,
+                token TEXT, lease_until REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
         if scrub_pending:
             db.execute(
                 "INSERT INTO canvas_meta(key,value) VALUES ('legacy_result_scrub_pending','1') "
@@ -1936,7 +1946,8 @@ class CanvasStore:
         result_id: str | None = None,
         result_ids: tuple[str, ...] | None = None,
         retry_after_seconds: float = 2.0,
-    ) -> dict[str, object]:
+        acknowledgement_required: bool = False,
+    ) -> PolledJobWrite:
         """Commit one leased poll result; stale workers cannot overwrite a reclaim."""
         ranks = {"queued": 2, "running": 3, "succeeded": 4, "failed": 4}
         if status not in ranks:
@@ -1967,13 +1978,15 @@ class CanvasStore:
             encoded = None
         if status == "succeeded" and result_id is None:
             raise ValueError("successful poll results are required")
+        if not isinstance(acknowledgement_required, bool):
+            raise ValueError("acknowledgement requirement is invalid")
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise KeyError(job_id)
             old = dict(row)
             if old.get("submission_token") != token or old["status"] not in {"queued", "running"}:
-                return old
+                return PolledJobWrite(old, False)
             if ranks[status] < ranks[str(old["status"])]:
                 status = str(old["status"])
             terminal = status in {"succeeded", "failed"}
@@ -1985,11 +1998,100 @@ class CanvasStore:
                 "submission_token=NULL,lease_until=?,updated_at=? WHERE id=? AND submission_token=?",
                 (status, error_code, result_id, encoded, next_poll, now, job_id, token),
             )
-            if cursor.rowcount == 1 and status == "succeeded":
+            applied = cursor.rowcount == 1
+            if applied and status == "succeeded":
                 self._capture_usage_snapshot(db, job_id, now)
+                if acknowledgement_required:
+                    db.execute(
+                        "INSERT OR IGNORE INTO canvas_job_acknowledgements(job_id,token,lease_until,created_at,updated_at) "
+                        "VALUES (?,NULL,NULL,?,?)",
+                        (job_id, now, now),
+                    )
             updated = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
         assert updated is not None
-        return dict(updated)
+        return PolledJobWrite(dict(updated), applied)
+
+    def claim_job_acknowledgement(self, *, lease_seconds: float = 30.0) -> dict[str, object] | None:
+        """Lease durable provider acknowledgement work independently of polling."""
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        token = os.urandom(16).hex()
+        now = self._clock()
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT j.id FROM canvas_job_acknowledgements a "
+                "JOIN canvas_jobs j ON j.id=a.job_id "
+                "WHERE j.status='succeeded' AND (a.lease_until IS NULL OR a.lease_until<=?) "
+                "ORDER BY a.updated_at,a.job_id LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET token=?,lease_until=?,updated_at=? "
+                "WHERE job_id=? AND (lease_until IS NULL OR lease_until<=?)",
+                (token, now + float(lease_seconds), _now(), row["id"], now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            claimed = db.execute(
+                "SELECT j.*,a.token AS acknowledgement_token,a.lease_until AS acknowledgement_lease_until "
+                "FROM canvas_job_acknowledgements a JOIN canvas_jobs j ON j.id=a.job_id "
+                "WHERE a.job_id=?",
+                (row["id"],),
+            ).fetchone()
+        assert claimed is not None
+        return dict(claimed)
+
+    def renew_job_acknowledgement(self, job_id: str, *, token: str, lease_seconds: float = 30.0) -> bool:
+        if (
+            not isinstance(lease_seconds, (int, float))
+            or isinstance(lease_seconds, bool)
+            or not math.isfinite(lease_seconds)
+            or lease_seconds <= 0
+        ):
+            raise ValueError("lease_seconds must be positive")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET lease_until=?,updated_at=? WHERE job_id=? AND token=?",
+                (self._clock() + float(lease_seconds), _now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def release_job_acknowledgement(
+        self,
+        job_id: str,
+        *,
+        token: str,
+        retry_after_seconds: float = 2.0,
+    ) -> bool:
+        if (
+            not isinstance(retry_after_seconds, (int, float))
+            or isinstance(retry_after_seconds, bool)
+            or not math.isfinite(retry_after_seconds)
+            or retry_after_seconds < 0
+        ):
+            raise ValueError("retry_after_seconds is invalid")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "UPDATE canvas_job_acknowledgements SET token=NULL,lease_until=?,updated_at=? "
+                "WHERE job_id=? AND token=?",
+                (self._clock() + float(retry_after_seconds), _now(), job_id, token),
+            )
+        return cursor.rowcount == 1
+
+    def complete_job_acknowledgement(self, job_id: str, *, token: str) -> bool:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute(
+                "DELETE FROM canvas_job_acknowledgements WHERE job_id=? AND token=?",
+                (job_id, token),
+            )
+        return cursor.rowcount == 1
 
     def renew_job_lease(self, job_id: str, *, token: str, lease_seconds: float = 30.0) -> bool:
         if (

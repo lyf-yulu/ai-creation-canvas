@@ -35,6 +35,9 @@ def test_legacy_result_ref_is_rebuilt_without_legacy_column(tmp_path):
     row, _ = store.job_for_owner("j", "u")
     assert row and row["result_id"] == "opaque_id"
     assert "result_ref" not in {item[1] for item in sqlite3.connect(store.database).execute("PRAGMA table_info(canvas_jobs)")}
+    assert sqlite3.connect(store.database).execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='canvas_job_acknowledgements'"
+    ).fetchone() == (1,)
     assert store.usage_rates() == {"video_price_fen": 0, "image_price_fen": 0}
     assert store.usage_for_owner("u") == {"user_id": "u", "total_cost_fen": 0, "jobs": ()}
 
@@ -86,10 +89,12 @@ def test_pollable_job_lease_excludes_concurrent_workers_and_expired_lease_is_rec
     assert reclaimed["submission_token"] != first["submission_token"]
 
     stale = store.record_polled_job("j", token=str(first["submission_token"]), status="succeeded", result_id="stale_result")
-    assert stale["status"] == "running"
+    assert stale.applied is False
+    assert stale.job["status"] == "running"
     fresh = store.record_polled_job("j", token=str(reclaimed["submission_token"]), status="succeeded", result_id="fresh_result")
-    assert fresh["status"] == "succeeded"
-    assert fresh["result_id"] == "fresh_result"
+    assert fresh.applied is True
+    assert fresh.job["status"] == "succeeded"
+    assert fresh.job["result_id"] == "fresh_result"
 
 
 def test_pollable_job_lease_claims_direct_and_managed_jobs_but_excludes_ineligible_rows(tmp_path):
@@ -193,8 +198,9 @@ def test_polled_success_persists_ordered_multi_results_and_charges_once(tmp_path
         result_ids=("result_1", "result_2"),
     )
 
-    assert json.loads(str(updated["result_ids_json"])) == ["result_1", "result_2"]
-    assert updated["result_id"] == "result_1"
+    assert updated.applied is True
+    assert json.loads(str(updated.job["result_ids_json"])) == ["result_1", "result_2"]
+    assert updated.job["result_id"] == "result_1"
     store.record_polled_job(
         str(claim["id"]),
         token=str(claim["submission_token"]),
@@ -204,6 +210,59 @@ def test_polled_success_persists_ordered_multi_results_and_charges_once(tmp_path
     usage = store.usage_for_owner("user-a")
     assert usage["total_cost_fen"] == 125
     assert len(usage["jobs"]) == 1
+
+
+def test_success_cas_persists_acknowledgement_work_and_only_current_ack_token_clears_it(tmp_path):
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    data_dir = tmp_path / "data"
+    store = CanvasStore(data_dir, clock=clock)
+    reservation = store.reserve_job(
+        user_id="u",
+        job_id="ack-job",
+        service_id="recoverable",
+        operation="image.generate",
+        idempotency_key="ack-key",
+        request_hash="a" * 64,
+    )
+    store.mark_submitted(
+        "ack-job",
+        "upstream-ack-job",
+        "queued",
+        str(reservation.job["submission_token"]),
+    )
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None
+
+    written = store.record_polled_job(
+        "ack-job",
+        token=str(claim["submission_token"]),
+        status="succeeded",
+        result_ids=("result_ack",),
+        acknowledgement_required=True,
+    )
+
+    assert written.applied is True
+    reopened = CanvasStore(data_dir, clock=clock)
+    acknowledgement = reopened.claim_job_acknowledgement(lease_seconds=30)
+    assert acknowledgement is not None
+    assert acknowledgement["id"] == "ack-job"
+    first_token = str(acknowledgement["acknowledgement_token"])
+    assert reopened.claim_job_acknowledgement(lease_seconds=30) is None
+    clock.value += 31
+    reclaimed = reopened.claim_job_acknowledgement(lease_seconds=30)
+    assert reclaimed is not None
+    token = str(reclaimed["acknowledgement_token"])
+    assert token != first_token
+    assert reopened.complete_job_acknowledgement("ack-job", token=first_token) is False
+    assert reopened.complete_job_acknowledgement("ack-job", token="stale-token") is False
+    assert reopened.complete_job_acknowledgement("ack-job", token=token) is True
+    assert reopened.claim_job_acknowledgement(lease_seconds=30) is None
 
 
 @pytest.mark.parametrize(

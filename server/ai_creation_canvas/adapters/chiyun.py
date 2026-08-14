@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -59,6 +61,7 @@ class _FileStream:
 
 class ChiyunGenerationAdapter:
     requires_portal_cookie = False
+    supports_background_polling = True
 
     def __init__(self, *, provider: ProviderDefinition, models: tuple[GovernedModelDefinition, ...], api_key: str, data_dir: Path | str, asset_loader: Callable[[str], tuple[bytes, str]], transport: httpx.AsyncBaseTransport | None = None) -> None:
         if provider.adapter_type != "chiyun_openai_images" or not provider.enabled or not isinstance(api_key, str) or len(api_key.strip()) < 8:
@@ -77,7 +80,7 @@ class ChiyunGenerationAdapter:
             raise ValueError("Chiyun result root is unsafe")
         os.chmod(self._root, 0o700)
         self._index = self._root / "pending.json"
-        self._lock = asyncio.Lock()
+        self._index_lock_path = self._root / "pending.lock"
 
     @property
     def model_ids(self) -> tuple[str, ...]:
@@ -144,7 +147,7 @@ class ChiyunGenerationAdapter:
         try:
             for index, (body, mime) in enumerate(results):
                 materialized.append({"result_id": self._store_result(upstream_id, index, body), "mime": mime})
-            async with self._lock:
+            with self._locked_index():
                 values = self._read_index()
                 values[upstream_id] = list(materialized)
                 self._write_index(values)
@@ -172,11 +175,8 @@ class ChiyunGenerationAdapter:
         del context
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun job is invalid")
-        async with self._lock:
-            values = self._read_index()
-            raw = values.pop(upstream_job_id, None)
-            if raw is not None:
-                self._write_index(values)
+        with self._locked_index():
+            raw = self._read_index().get(upstream_job_id)
         if not isinstance(raw, list) or not 1 <= len(raw) <= 4:
             raise InvalidUpstreamResult("Chiyun result index is invalid")
         normalized: list[tuple[str, str]] = []
@@ -189,6 +189,14 @@ class ChiyunGenerationAdapter:
                 raise InvalidUpstreamResult("Chiyun result index is invalid")
         results = tuple(AssetRef(item, "reference", "active", mime, "image") for item, mime in normalized)
         return JobState(upstream_job_id, JobStatus.SUCCEEDED, results=results)
+
+    async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+        if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
+            raise ValueError("Chiyun job is invalid")
+        with self._locked_index():
+            values = self._read_index()
+            if values.pop(upstream_job_id, None) is not None:
+                self._write_index(values)
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -270,8 +278,23 @@ class ChiyunGenerationAdapter:
             return {}
         return body if isinstance(body, dict) else {}
 
+    @contextmanager
+    def _locked_index(self):
+        descriptor = os.open(
+            self._index_lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.chmod(self._index_lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def _write_index(self, values: Mapping[str, object]) -> None:
-        temporary = self._root / ".pending.tmp"
+        temporary = self._root / f".pending.{os.getpid()}.{os.urandom(8).hex()}.tmp"
         try:
             temporary.write_text(json.dumps(values, sort_keys=True, separators=(",", ":")), encoding="ascii")
             os.chmod(temporary, 0o600)

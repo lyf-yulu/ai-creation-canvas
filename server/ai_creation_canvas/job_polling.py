@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import secrets
@@ -58,6 +57,39 @@ class JobPollingService:
             _LOG.warning("generation job polling failed transiently")
             return self._release(job_id, token)
 
+    async def acknowledge_claim(self, item: Mapping[str, object], token: str) -> None:
+        """Clear one durable provider acknowledgement without polling again."""
+        job_id = str(item["id"])
+        if item.get("acknowledgement_token") != token:
+            return
+        context = self._context(str(item["user_id"]), job_id)
+        try:
+            if item.get("logical_model_id") is not None:
+                if self._managed_runtime is None:
+                    raise ValueError("managed routing is unavailable")
+                async with managed_job_adapter(self._managed_runtime, context, item) as adapter:
+                    await self._acknowledge_adapter(adapter, item)
+            else:
+                adapter = self._registry.generation(str(item["service_id"]))
+                if getattr(adapter, "supports_background_polling", False) is not True:
+                    raise ValueError("background polling is unavailable")
+                await self._acknowledge_adapter(adapter, item)
+            self._store.complete_job_acknowledgement(job_id, token=token)
+        except asyncio.CancelledError:
+            self._store.release_job_acknowledgement(
+                job_id,
+                token=token,
+                retry_after_seconds=0,
+            )
+            raise
+        except Exception:
+            _LOG.warning("generation job acknowledgement failed transiently")
+            self._store.release_job_acknowledgement(
+                job_id,
+                token=token,
+                retry_after_seconds=2.0,
+            )
+
     async def _poll_adapter(
         self,
         adapter,
@@ -81,22 +113,24 @@ class JobPollingService:
             if _ERROR_CODE.fullmatch(error_code) is None:
                 error_code = "TASK_FAILED"
         retry_after = 5.0 if state.status is JobStatus.RUNNING else 2.0
-        updated = self._store.record_polled_job(
+        acknowledge = getattr(adapter, "acknowledge_poll_result", None)
+        written = self._store.record_polled_job(
             str(item["id"]),
             token=token,
             status=state.status.value,
             error_code=error_code,
             result_ids=result_ids or None,
             retry_after_seconds=retry_after,
+            acknowledgement_required=state.status is JobStatus.SUCCEEDED and callable(acknowledge),
         )
+        return written.job
+
+    @staticmethod
+    async def _acknowledge_adapter(adapter, item: Mapping[str, object]) -> None:
         acknowledge = getattr(adapter, "acknowledge_poll_result", None)
-        if (
-            state.status is JobStatus.SUCCEEDED
-            and callable(acknowledge)
-            and self._is_exact_success(updated, result_ids)
-        ):
-            await acknowledge(str(item["upstream_job_id"]))
-        return updated
+        if not callable(acknowledge):
+            raise ValueError("provider acknowledgement is unavailable")
+        await acknowledge(str(item["upstream_job_id"]))
 
     def _release(self, job_id: str, token: str) -> dict[str, object]:
         return self._store.release_job_lease(job_id, token=token, retry_after_seconds=2.0)
@@ -107,7 +141,7 @@ class JobPollingService:
             token=token,
             status="failed",
             error_code=error_code,
-        )
+        ).job
 
     @staticmethod
     def _context(user_id: str, job_id: str) -> RequestContext:
@@ -115,18 +149,4 @@ class JobPollingService:
             PortalUser(user_id, user_id, "user"),
             f"worker-{secrets.token_hex(8)}",
             f"job-{job_id}",
-        )
-
-    @staticmethod
-    def _is_exact_success(updated: Mapping[str, object], result_ids: tuple[str, ...]) -> bool:
-        try:
-            persisted = json.loads(str(updated.get("result_ids_json")))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return False
-        return (
-            updated.get("status") == "succeeded"
-            and updated.get("submission_token") is None
-            and updated.get("result_id") == result_ids[0]
-            and isinstance(persisted, list)
-            and tuple(persisted) == result_ids
         )

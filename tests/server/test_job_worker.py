@@ -323,10 +323,89 @@ async def test_successful_current_token_acknowledges_exactly_once(tmp_path) -> N
     worker = _worker(store, _registry(adapter))
 
     assert await worker.run_once() is True
+    assert adapter.acknowledged == []
+    assert await worker.run_once() is True
     assert await worker.run_once() is False
 
     assert _stored(store)["status"] == "succeeded"
     assert adapter.acknowledged == ["upstream-job-a"]
+
+
+@pytest.mark.anyio
+async def test_acknowledgement_failure_survives_restart_without_polling_provider_again(tmp_path, caplog) -> None:
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class FailsFirstAcknowledgement(RecoverableGeneration):
+        def __init__(self) -> None:
+            super().__init__()
+            self.ack_attempts = 0
+
+        async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+            self.ack_attempts += 1
+            if self.ack_attempts == 1:
+                raise OSError("private acknowledgement failure")
+            await super().acknowledge_poll_result(upstream_job_id)
+
+    clock = Clock()
+    data_dir = tmp_path / "data"
+    store = CanvasStore(data_dir, clock=clock)
+    _submitted(store)
+    adapter = FailsFirstAcknowledgement()
+
+    assert await _worker(store, _registry(adapter)).run_once() is True
+    assert _stored(store)["status"] == "succeeded"
+    assert adapter.poll_count == 1
+    assert adapter.ack_attempts == 0
+
+    reopened = CanvasStore(data_dir, clock=clock)
+    with caplog.at_level(logging.WARNING):
+        assert await _worker(reopened, _registry(adapter)).run_once() is True
+    assert adapter.ack_attempts == 1
+    assert adapter.poll_count == 1
+    assert "private acknowledgement failure" not in caplog.text
+
+    clock.value += 3
+    restarted = CanvasStore(data_dir, clock=clock)
+    retry_worker = _worker(restarted, _registry(adapter))
+    assert await retry_worker.run_once() is True
+    assert await retry_worker.run_once() is False
+    assert adapter.ack_attempts == 2
+    assert adapter.acknowledged == ["upstream-job-a"]
+    assert adapter.poll_count == 1
+
+
+@pytest.mark.anyio
+async def test_worker_cancellation_releases_durable_acknowledgement_lease(tmp_path) -> None:
+    class BlockingAcknowledgement(RecoverableGeneration):
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+
+        async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
+            del upstream_job_id
+            self.started.set()
+            await asyncio.Event().wait()
+
+    store = CanvasStore(tmp_path / "data")
+    _submitted(store)
+    adapter = BlockingAcknowledgement()
+    worker = _worker(store, _registry(adapter))
+    assert await worker.run_once() is True
+    running = asyncio.create_task(worker.run_once())
+    await adapter.started.wait()
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    reclaimed = store.claim_job_acknowledgement(lease_seconds=30)
+    assert reclaimed is not None
+    assert reclaimed["id"] == "job-a"
+    assert adapter.poll_count == 1
 
 
 @pytest.mark.anyio

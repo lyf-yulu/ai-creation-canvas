@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -120,7 +122,8 @@ class ArkGenerationAdapter:
         if root.is_symlink():
             raise ValueError("Ark result root is unsafe")
         os.chmod(root, 0o700)
-        self._root, self._index_path, self._lock = root, root / "pending.json", asyncio.Lock()
+        self._root, self._index_path = root, root / "pending.json"
+        self._index_lock_path = root / "pending.lock"
 
     @property
     def model_ids(self) -> tuple[str, ...]:
@@ -362,11 +365,11 @@ class ArkGenerationAdapter:
             raise InvalidUpstreamResult("Ark result count is invalid")
         for url in urls:
             self._safe_result_url(url)
-        async with self._lock:
+        with self._locked_index():
             values = self._read_index(); values[job_id] = {"urls": list(urls), "kind": kind}; self._write_index(values)
 
     async def _pending(self, job_id: str) -> dict[str, object] | None:
-        async with self._lock:
+        with self._locked_index():
             item = self._read_index().get(job_id)
         if not isinstance(item, dict) or item.get("kind") not in {"image", "video"}:
             return None
@@ -377,8 +380,10 @@ class ArkGenerationAdapter:
         return {"urls": urls, "kind": item["kind"]} if isinstance(urls, list) and 1 <= len(urls) <= maximum and all(isinstance(url, str) for url in urls) else None
 
     async def _clear_pending(self, job_id: str) -> None:
-        async with self._lock:
-            values = self._read_index(); values.pop(job_id, None); self._write_index(values)
+        with self._locked_index():
+            values = self._read_index()
+            if values.pop(job_id, None) is not None:
+                self._write_index(values)
 
     def _read_index(self) -> dict[str, dict[str, object]]:
         if not self._index_path.exists(): return {}
@@ -387,8 +392,23 @@ class ArkGenerationAdapter:
         except (OSError, ValueError): return {}
         return value if isinstance(value, dict) else {}
 
+    @contextmanager
+    def _locked_index(self):
+        descriptor = os.open(
+            self._index_lock_path,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            os.chmod(self._index_lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def _write_index(self, values: Mapping[str, object]) -> None:
-        temporary = self._index_path.with_suffix(".tmp")
+        temporary = self._root / f".pending.{os.getpid()}.{os.urandom(8).hex()}.tmp"
         try:
             temporary.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
             os.chmod(temporary, 0o600)

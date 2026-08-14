@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import struct
+import time
 import zlib
 
 import httpx
@@ -150,6 +152,49 @@ def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) 
         assert upstream.upstream_job_id not in pending
 
     asyncio.run(scenario())
+
+
+def test_ark_pending_updates_are_safe_across_adapter_instances(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    declaration = ArkModelDeclaration(
+        "image-endpoint", "ark-image", "Seedream", ("image.generate",),
+        {"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+    )
+    first = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=transport,
+    )
+    second = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=transport,
+    )
+    job_a = asyncio.run(first.submit(
+        context(), JobRequest("image.generate", "image-endpoint", "a", "job-a")
+    ))
+    original_read = first._read_index
+
+    def slow_read():
+        values = original_read()
+        time.sleep(0.1)
+        return values
+
+    first._read_index = slow_read
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        acknowledgement = pool.submit(
+            lambda: asyncio.run(first.acknowledge_poll_result(job_a.upstream_job_id))
+        )
+        time.sleep(0.02)
+        submitted = pool.submit(
+            lambda: asyncio.run(second.submit(
+                context(), JobRequest("image.generate", "image-endpoint", "b", "job-b")
+            ))
+        ).result()
+        acknowledgement.result()
+
+    pending = json.loads((tmp_path / "ark-results" / "pending.json").read_text(encoding="utf-8"))
+    assert submitted.upstream_job_id in pending
 
 
 def test_ark_seedream_accepts_the_official_fifteen_image_group_bound(tmp_path: Path) -> None:

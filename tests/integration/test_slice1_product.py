@@ -30,6 +30,7 @@ class ImmediateSuccessCostAdapter:
     """Offline image/video adapter used to exercise the public job completion path."""
 
     service_id = "cost-flow-fixture"
+    supports_synchronous_submission = True
 
     async def list_models(self, context: RequestContext) -> tuple[ModelSpec, ...]:
         del context
