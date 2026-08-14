@@ -28,8 +28,7 @@ def test_production_cli_wires_credential_pool_path_under_an_explicit_trusted_roo
         "--services-config", str(tmp_path / "services.json"),
         "--credential-pools", str(pools_path),
         "--credential-pools-root", str(pools_path.parent),
-        "--trusted-host", "canvas.example",
-        "--trusted-host", "portal.example",
+        "--trusted-host", "127.0.0.1",
     ])
     monkeypatch.setattr(entrypoint, "create_app", fake_create_app)
     monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *_args, **_kwargs: None)
@@ -39,7 +38,7 @@ def test_production_cli_wires_credential_pool_path_under_an_explicit_trusted_roo
     settings = received["settings"]
     assert settings.credential_pools_path == pools_path
     assert settings.credential_pools_root == pools_path.parent.resolve()
-    assert settings.trusted_hosts == ("canvas.example", "portal.example")
+    assert settings.trusted_hosts == ("127.0.0.1",)
 
 
 def test_production_cli_requires_an_explicit_trusted_host_before_creating_the_app(tmp_path: Path, monkeypatch) -> None:
@@ -58,6 +57,26 @@ def test_production_cli_requires_an_explicit_trusted_host_before_creating_the_ap
         entrypoint.main()
 
 
+@pytest.mark.parametrize("trusted_hosts", [("canvas.example",), ("192.168.1.20",), ("127.0.0.1", "canvas.example")])
+def test_production_cli_rejects_non_portal_trusted_hosts_before_creating_the_app(tmp_path: Path, monkeypatch, trusted_hosts: tuple[str, ...]) -> None:
+    arguments = [
+        "ai_creation_canvas",
+        "--environment", "production",
+        "--port", "8991",
+        "--data-dir", str(tmp_path / "data"),
+        "--portal-internal-token", "deployment-secret",
+        "--portal-base-url", "https://portal.example",
+        "--services-config", str(tmp_path / "services.json"),
+    ]
+    for trusted_host in trusted_hosts:
+        arguments.extend(("--trusted-host", trusted_host))
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(entrypoint, "create_app", lambda *_args, **_kwargs: pytest.fail("must not construct app"))
+
+    with pytest.raises(SystemExit):
+        entrypoint.main()
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "::1", "not-an-address"])
 def test_production_cli_rejects_non_loopback_or_invalid_bind_hosts_before_creating_the_app(tmp_path: Path, monkeypatch, host: str) -> None:
     monkeypatch.setattr(sys, "argv", [
@@ -69,7 +88,7 @@ def test_production_cli_rejects_non_loopback_or_invalid_bind_hosts_before_creati
         "--portal-internal-token", "deployment-secret",
         "--portal-base-url", "https://portal.example",
         "--services-config", str(tmp_path / "services.json"),
-        "--trusted-host", "canvas.example",
+        "--trusted-host", "127.0.0.1",
     ])
     monkeypatch.setattr(entrypoint, "create_app", lambda *_args, **_kwargs: pytest.fail("must not construct app"))
 
@@ -88,7 +107,7 @@ def test_production_cli_defaults_to_loopback_and_forwards_an_explicit_bind_host(
         "--portal-internal-token", "deployment-secret",
         "--portal-base-url", "https://portal.example",
         "--services-config", str(tmp_path / "services.json"),
-        "--trusted-host", "canvas.example",
+        "--trusted-host", "127.0.0.1",
         "--host", "127.0.0.2",
     ])
     monkeypatch.setattr(entrypoint, "create_app", lambda *_args, **_kwargs: SimpleNamespace())
@@ -97,3 +116,4 @@ def test_production_cli_defaults_to_loopback_and_forwards_an_explicit_bind_host(
     entrypoint.main()
 
     assert received["host"] == "127.0.0.2"
+    assert received["proxy_headers"] is False

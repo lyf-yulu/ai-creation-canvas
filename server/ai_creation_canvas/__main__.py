@@ -220,7 +220,7 @@ def _run_serve_local(argv: list[str]) -> None:
         async def open_after_startup() -> None:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         app.router.on_startup.append(open_after_startup)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
 
 
 def _arguments() -> argparse.Namespace:
@@ -255,9 +255,9 @@ def main() -> None:
         _run_serve_local(sys.argv[2:])
         return
     args = _arguments()
-    if args.environment == "production" and not args.trusted_host:
-        raise SystemExit("production requires at least one --trusted-host")
     if args.environment == "production":
+        if not args.trusted_host or any(host != "127.0.0.1" for host in args.trusted_host):
+            raise SystemExit("production requires --trusted-host 127.0.0.1")
         try:
             bind_address = ipaddress.ip_address(args.host)
         except ValueError as error:
@@ -289,7 +289,7 @@ def main() -> None:
     if args.check_config:
         print(" ".join(adapter.service_id for adapter in app.state.adapter_registry.generation_adapters()))
         return
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
 
 
 if __name__ == "__main__":

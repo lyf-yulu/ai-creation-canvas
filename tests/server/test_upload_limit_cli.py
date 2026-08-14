@@ -56,7 +56,7 @@ def test_serve_local_defaults_to_a_loopback_bind_and_origin(tmp_path, monkeypatc
     ])
 
     assert received["public_origins"] == ()
-    assert received["run"] == {"host": "127.0.0.1", "port": 8993}
+    assert received["run"] == {"host": "127.0.0.1", "port": 8993, "proxy_headers": False}
 
 
 def test_serve_local_rejects_a_non_loopback_bind_without_a_public_origin(tmp_path):
@@ -101,7 +101,7 @@ def test_serve_local_wires_a_lan_bind_and_exact_public_origin(tmp_path, monkeypa
     ])
 
     assert received["public_origins"] == ("http://192.168.1.20:8992",)
-    assert received["run"] == {"host": "0.0.0.0", "port": 8992}
+    assert received["run"] == {"host": "0.0.0.0", "port": 8992, "proxy_headers": False}
 
 
 def test_serve_local_canonicalizes_a_lan_public_origin_before_app_construction(tmp_path, monkeypatch):
