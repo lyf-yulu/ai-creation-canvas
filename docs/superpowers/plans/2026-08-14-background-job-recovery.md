@@ -88,7 +88,7 @@ git commit -m "feat: lease background generation polls"
 
 - [ ] **Step 1: Write failing resolver tests**
 
-Cover legacy-v1, digest-era, and v2 stored snapshots; exact fingerprint selection; inconsistent service/model/route/operation/revision/digest rejection; missing original Key; and proof that another compatible Key is never substituted.
+Cover legacy-v1, digest-era, and v2 stored snapshots; exact fingerprint selection; inconsistent service/model/route/operation/revision/digest rejection; missing original Key; proof that another compatible Key is never substituted; and fail-closed rejection when the current Provider, logical model, or route is disabled, archived, purged, or no longer matches the trusted preset.
 
 - [ ] **Step 2: Run RED**
 
@@ -100,7 +100,7 @@ Expected: shared module is absent and behavior is private to `api/jobs.py`.
 
 - [ ] **Step 3: Extract the boundary**
 
-Move route snapshot parsing, job/route consistency checks, and the managed credential context manager into `managed_jobs.py`. Pass runtime/context/item explicitly; do not import FastAPI `Request`. Keep accepted historical shapes unchanged and fail closed on future/malformed shapes. Update `api/jobs.py` to call the shared functions.
+Move route snapshot parsing, job/route consistency checks, and the managed credential context manager into `managed_jobs.py`. Pass runtime/context/item explicitly; do not import FastAPI `Request`. Keep accepted historical shapes unchanged and fail closed on future/malformed shapes. Before acquiring a credential, re-read the current Provider, logical model, and route through the governed store/runtime, require enabled and non-archived lifecycle state, and require the route to match the trusted preset without changing the immutable snapshot. Update `api/jobs.py` to call the shared functions.
 
 - [ ] **Step 4: Run GREEN**
 
