@@ -15,6 +15,7 @@
 | 多模型与提示词 Skill | 8 个 Ark 模型目录、差异化图片参数、4 类 Skill 预览/应用 | 合同测试 + Chromium 页面验收 + `9001` 隔离实例 |
 | 管理员模型对象与 Chiyun | Provider/模型创建、权限派发、严格图片操作、并发同键一次提交、结果 Range、撤权与跨用户隔离 | 真实 FastAPI/SQLite + 受控 Chiyun HTTP 模拟 + React/Chromium |
 | 模型中心路由 | 逻辑模型、官方/T8 gemini 兼容线路、T8 cc 负例、Redis 协议租约、429 换 Key、幂等、unknown、结果 Range、生命周期与窄屏 | `tests/integration/test_model_centric_routing.py` + Chromium `canvas-responsive.browser.test.tsx` |
+| 后台任务重启恢复 | 双用户直连/受管任务、SQLite 重启接管、原 Key 指纹、两项有序结果、只读 GET、用量仅一次 | `tests/integration/test_background_job_recovery.py` |
 
 记录只保存命令、测试计数、退出状态、临时测试 ID、错误码和版本提交。不保存提示词、Cookie、密钥、资产内容、真实结果 URL 或原始请求/响应。
 
@@ -88,3 +89,17 @@ npm run test:browser --prefix web -- --run src/test/browser/canvas-responsive.br
 后端验证管理员经 API 创建 Nano Banana 逻辑模型、官方与 T8 `gemini` 线路，并拒绝 T8 `cc` 负例；上传两张有序参考图；相同用户、相同幂等键并发提交只形成一个平台任务；明确 429 可在同池换 Key，官方池耗尽后才进入兼容 T8 `gemini`，模糊响应只形成一次调用并进入 `submission_unknown`。还验证不可变路由快照、普通目录不泄露线路/池、撤权、跨用户隐藏，以及结果 GET/HEAD/单段 Range。
 
 Chromium 验收宽度为桌面 1280 px、窄屏 415 px 和 240 px。桌面流程通过真实 React 管理界面创建并编辑逻辑模型、添加两条线路、读取安全池容量、派发普通用户、归档/恢复、展示引用删除阻塞，再切换到普通用户画布创建对应模型节点。两档窄屏检查页面无横向溢出且主要操作按钮保持可见。
+
+## 后台任务重启恢复验收
+
+该验收只使用真实 FastAPI、临时 SQLite 数据目录和进程内伪传输，不打开服务端口、不读取真实 Key，也不访问外网：
+
+```bash
+PYTHONPATH=.:server .venv/bin/pytest -q tests/integration/test_background_job_recovery.py
+```
+
+验收先由两个不同用户分别提交直连任务和受管任务，在提供方完成前关闭第一应用，再用同一数据目录、等价受控配置和原凭据指纹重建应用。只运行后台 worker，不先请求浏览器模型目录，也不借助任务 GET 触发轮询；两项任务都必须完成，受管任务的两个结果顺序保持不变，且 owner 的任务 GET、结果 HEAD、单段 Range 与完整读取均可用。
+
+负例必须证明其他用户和管理员都不能越过当前任务归属合同，任务 GET 保持只读，每个成功任务只产生一条用量/成本记录，不可变线路快照不变化，提供方提交不重放，`submission_unknown` 不被 worker 接管。受管凭据缺失或指纹不匹配时只能延迟重试并失败关闭，不得轮换 Key；恢复原凭据后才能继续。终态之后还要确认待确认记录已由 worker 清理。
+
+本验收产生的媒体只存在于 pytest 临时目录。正式门禁前确认仓库工作树没有 `.local-real-media-data/`、结果文件、凭据或本地验证日志；这些内容已被忽略且不得提交。
