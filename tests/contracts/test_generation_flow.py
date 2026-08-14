@@ -2,6 +2,7 @@ import asyncio
 from dataclasses import replace
 import hashlib, hmac, json, time
 import sqlite3
+from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
@@ -11,11 +12,11 @@ from ai_creation_canvas.adapters.portal.catalog import ModelCatalog, PortalJobsA
 from ai_creation_canvas.adapters.portal.client import PortalClient
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.domain.models import AssetRef, JobState, ModelInputPort, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.models import AssetRef, JobState, JobStatus, ModelInputPort, ModelSpec, RequestContext, UpstreamJob
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.api.results import parse_range_header, validate_partial_response
-from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
 from tests.server.test_managed_job_adapter import _runtime
 import pytest
 
@@ -42,6 +43,35 @@ class FakeGeneration:
             async def aiter_bytes(self): yield data
             async def aclose(self): pass
         return Stream()
+
+
+class SynchronousOutcomeGeneration(FakeGeneration):
+    supports_background_polling = False
+    supports_synchronous_submission = True
+
+    def __init__(self, state) -> None:
+        super().__init__()
+        self.state = state
+        self.opened: list[str] = []
+
+    async def submit(self, context, request):
+        del context, request
+        self.submit_count += 1
+        return SimpleNamespace(
+            service_id=self.service_id,
+            upstream_job_id="sync-upstream-1",
+            state=self.state,
+        )
+
+    async def open_result(self, context, result_id, *, cookie_header, range_header=None, head=False):
+        self.opened.append(result_id)
+        return await super().open_result(
+            context,
+            result_id,
+            cookie_header=cookie_header,
+            range_header=range_header,
+            head=head,
+        )
 
 
 def headers(user="u-a"):
@@ -93,6 +123,183 @@ def test_async_direct_adapter_without_background_recovery_is_rejected_before_sub
     assert response.status_code == 400
     assert response.json()["code"] == "MODEL_UNAVAILABLE"
     assert adapter.submit_count == 0
+
+
+def test_sync_only_adapter_returning_queued_is_unknown_and_never_replayed(tmp_path):
+    adapter = SynchronousOutcomeGeneration(JobState("sync-upstream-1", "queued"))
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "sync-contract-breach",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    first = client.post("/api/v1/jobs", json=payload, headers=headers())
+
+    assert first.status_code == 502
+    assert first.json()["code"] == "UPSTREAM_INVALID"
+    with app.state.canvas_store._connection() as db:
+        stored = dict(db.execute(
+            "SELECT * FROM canvas_jobs WHERE idempotency_key='sync-contract-breach'"
+        ).fetchone())
+    assert stored["status"] == "submission_unknown"
+    assert stored["submission_state"] == "submission_unknown"
+    assert stored["upstream_job_id"] == "sync-upstream-1"
+    assert stored["submission_token"] is None
+    repeated = client.post("/api/v1/jobs", json=payload, headers=headers())
+    assert repeated.status_code == 201
+    assert repeated.json()["status"] == "submission_unknown"
+    assert adapter.submit_count == 1
+    assert asyncio.run(app.state.job_worker.run_once()) is False
+
+
+@pytest.mark.parametrize(
+    "results",
+    (
+        (),
+        (AssetRef("unsafe/result", "reference", "active", "image/png"),),
+        (
+            AssetRef("duplicate", "reference", "active", "image/png"),
+            AssetRef("duplicate", "reference", "active", "image/png"),
+        ),
+        tuple(
+            AssetRef(f"result_{index}", "reference", "active", "image/png")
+            for index in range(16)
+        ),
+    ),
+    ids=("empty", "unsafe", "duplicate", "over-limit"),
+)
+def test_invalid_synchronous_success_is_terminal_unchargeable_failure(tmp_path, results):
+    state = SimpleNamespace(status=JobStatus.SUCCEEDED, results=results, error=None)
+    adapter = SynchronousOutcomeGeneration(state)
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    app.state.canvas_store.set_usage_rates(video_price_fen=0, image_price_fen=125)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.generate",
+            "model_id": "model-1",
+            "prompt": "safe prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": f"invalid-sync-{len(results)}-{str(results)[:8]}",
+        },
+        headers=headers(),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "UPSTREAM_INVALID"
+    with app.state.canvas_store._connection() as db:
+        stored = dict(db.execute("SELECT * FROM canvas_jobs").fetchone())
+    assert stored["status"] == "failed"
+    assert stored["error_code"] == "INVALID_UPSTREAM_RESULT"
+    assert stored["upstream_job_id"] == "sync-upstream-1"
+    assert stored["result_id"] is None
+    assert stored["result_ids_json"] is None
+    assert stored["charged_at"] is None
+    assert app.state.canvas_store.usage_for_owner("u-a")["total_cost_fen"] == 0
+
+
+def test_valid_synchronous_multi_result_persists_legacy_first_and_downloads_each_result(tmp_path):
+    state = JobState(
+        "sync-upstream-1",
+        "succeeded",
+        results=(
+            AssetRef("sync_first", "reference", "active", "image/png"),
+            AssetRef("sync_second", "reference", "active", "image/png"),
+        ),
+    )
+    adapter = SynchronousOutcomeGeneration(state)
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    app.state.canvas_store.set_usage_rates(video_price_fen=0, image_price_fen=125)
+    payload = {
+        "operation": "image.generate",
+        "model_id": "model-1",
+        "prompt": "safe prompt",
+        "params": {},
+        "asset_ids": [],
+        "idempotency_key": "valid-sync-results",
+    }
+    client = TestClient(app, raise_server_exceptions=False)
+
+    created = client.post("/api/v1/jobs", json=payload, headers=headers())
+
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+    assert created.json()["status"] == "succeeded"
+    assert len(created.json()["results"]) == 2
+    stored, forbidden = app.state.canvas_store.job_for_owner(job_id, "u-a")
+    assert stored is not None and forbidden is False
+    assert stored["result_id"] == "sync_first"
+    assert json.loads(str(stored["result_ids_json"])) == ["sync_first", "sync_second"]
+    assert client.get(f"/api/v1/jobs/{job_id}", headers=headers()).json()["results"] == created.json()["results"]
+    assert client.get(f"/api/v1/results/{job_id}", headers=headers()).content == b"abcdef"
+    assert client.get(f"/api/v1/results/{job_id}/1", headers=headers()).content == b"abcdef"
+    assert adapter.opened == ["sync_first", "sync_second"]
+    repeated = client.post("/api/v1/jobs", json=payload, headers=headers())
+    assert repeated.status_code == 201
+    assert adapter.submit_count == 1
+    usage = app.state.canvas_store.usage_for_owner("u-a")
+    assert usage["total_cost_fen"] == 125
+    assert len(usage["jobs"]) == 1
+
+
+def test_synchronous_failure_persists_only_a_safe_error_code(tmp_path):
+    state = JobState(
+        "sync-upstream-1",
+        "failed",
+        error=ApiError("raw provider code!", "private", False, "provider", "generation"),
+    )
+    adapter = SynchronousOutcomeGeneration(state)
+    registry = AdapterRegistry()
+    registry.register_generation(adapter)
+    app = create_app(
+        Settings("test", 8992, tmp_path / "data", "test-secret"),
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.generate",
+            "model_id": "model-1",
+            "prompt": "safe prompt",
+            "params": {},
+            "asset_ids": [],
+            "idempotency_key": "safe-sync-failure",
+        },
+        headers=headers(),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["error"]["code"] == "TASK_FAILED"
+    stored, forbidden = app.state.canvas_store.job_for_owner(response.json()["id"], "u-a")
+    assert stored is not None and forbidden is False
+    assert stored["error_code"] == "TASK_FAILED"
 
 
 def test_typed_inputs_are_owner_checked_ordered_and_frozen_before_submit(tmp_path):

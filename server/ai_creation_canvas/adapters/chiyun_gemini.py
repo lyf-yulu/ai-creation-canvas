@@ -18,7 +18,7 @@ import httpx
 from ai_creation_canvas.adapters.chiyun import _FileStream, _empty_stream, _range, _safe_unlink
 from ai_creation_canvas.adapters.retry import SubmissionError, SubmissionDisposition, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import InvalidUpstreamResult
+from ai_creation_canvas.errors import InvalidUpstreamResult, LocalRecoveryUnavailable
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ProviderDefinition
 from ai_creation_canvas.parameter_schema import validate_parameter_values
 
@@ -122,6 +122,12 @@ class ChiyunGeminiGenerationAdapter:
         return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        try:
+            return await self._poll(context, upstream_job_id)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
+
+    async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun Gemini job is invalid")
@@ -135,10 +141,13 @@ class ChiyunGeminiGenerationAdapter:
     async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun Gemini job is invalid")
-        with self._locked_index():
-            values = self._read_index()
-            if values.pop(upstream_job_id, None) is not None:
-                self._write_index(values)
+        try:
+            with self._locked_index():
+                values = self._read_index()
+                if values.pop(upstream_job_id, None) is not None:
+                    self._write_index(values)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -187,7 +196,7 @@ class ChiyunGeminiGenerationAdapter:
             return {}
         try:
             value = json.loads(self._index.read_text(encoding="ascii"))
-        except (OSError, ValueError, UnicodeError):
+        except (ValueError, UnicodeError):
             return {}
         return value if isinstance(value, dict) else {}
 

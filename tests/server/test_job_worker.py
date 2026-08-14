@@ -203,6 +203,74 @@ async def test_retryable_provider_error_releases_the_lease_for_a_delayed_retry(t
 
 
 @pytest.mark.anyio
+async def test_local_recovery_io_retries_then_succeeds_without_losing_pending_state(tmp_path, caplog) -> None:
+    import base64
+    import httpx
+
+    from ai_creation_canvas.adapters.chiyun import ChiyunGenerationAdapter
+    from ai_creation_canvas.domain.models import JobRequest
+    from ai_creation_canvas.errors import InvalidUpstreamResult
+    from tests.contracts.test_chiyun_adapter import PNG, context, model, provider
+
+    class Clock:
+        value = 1_000.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = Clock()
+    adapter = ChiyunGenerationAdapter(
+        provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+        asset_loader=lambda _: (PNG, "image/png"),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={
+            "data": [{"b64_json": base64.b64encode(PNG).decode()}],
+        })),
+    )
+    upstream = await adapter.submit(context(), JobRequest(
+        "image.edit", "chiyun-gpt-image-2", "recover", "worker-local-io",
+        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+    ))
+    store = CanvasStore(tmp_path / "worker-data", clock=clock)
+    reservation = store.reserve_job(
+        user_id="user-a", job_id="local-io-job", service_id=adapter.service_id,
+        operation="image.edit", idempotency_key="local-io-job", request_hash="l" * 64,
+    )
+    store.mark_submitted(
+        "local-io-job", upstream.upstream_job_id, "queued",
+        str(reservation.job["submission_token"]),
+    )
+    original_read = adapter._read_index
+    read_count = 0
+
+    def flaky_read():
+        nonlocal read_count
+        read_count += 1
+        if read_count == 1:
+            raise OSError("private local recovery failure")
+        return original_read()
+
+    adapter._read_index = flaky_read
+    worker = _worker(store, _registry(adapter))
+
+    with caplog.at_level(logging.WARNING):
+        assert await worker.run_once() is True
+    item, forbidden = store.job_for_owner("local-io-job", "user-a")
+    assert item is not None and forbidden is False
+    assert item["status"] == "queued"
+    assert item["submission_token"] is None
+    assert item["lease_until"] is not None
+    assert "private local recovery failure" not in caplog.text
+
+    clock.value += 3
+    assert await worker.run_once() is True
+    assert store.job_for_owner("local-io-job", "user-a")[0]["status"] == "succeeded"
+    assert await worker.run_once() is True
+    assert await worker.run_once() is False
+    with pytest.raises(InvalidUpstreamResult):
+        await adapter.poll(context(), upstream.upstream_job_id)
+
+
+@pytest.mark.anyio
 async def test_nonretryable_provider_error_is_terminal_and_does_not_log_exception_text(tmp_path, caplog) -> None:
     store = CanvasStore(tmp_path / "data")
     _submitted(store)

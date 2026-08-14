@@ -122,6 +122,7 @@ def test_pollable_job_lease_claims_direct_and_managed_jobs_but_excludes_ineligib
             f"upstream-{job_id}",
             status,
             str(reservation.job["submission_token"]),
+            result_ids=(f"result-{job_id}",) if status == "succeeded" else None,
         )
 
     for job_id, status, managed in (
@@ -529,7 +530,10 @@ def test_synchronous_submission_success_captures_current_rates(tmp_path):
     store = CanvasStore(tmp_path / "data")
     store.set_usage_rates(video_price_fen=25, image_price_fen=120)
     reserved = store.reserve_job(user_id="user-a", job_id="sync", service_id="image", operation="image.generate", idempotency_key="sync-key", request_hash="s" * 64, image_count=1)
-    store.mark_submitted("sync", "up-sync", "succeeded", str(reserved.job["submission_token"]))
+    store.mark_submitted(
+        "sync", "up-sync", "succeeded", str(reserved.job["submission_token"]),
+        result_ids=("sync-result",),
+    )
     store.set_usage_rates(video_price_fen=99, image_price_fen=999)
     usage = store.usage_for_owner("user-a")
     assert usage["total_cost_fen"] == 120
@@ -560,6 +564,7 @@ def test_success_without_a_billable_quantity_keeps_every_snapshot_empty(tmp_path
         "up-unmetered",
         "succeeded",
         str(reserved.job["submission_token"]),
+        result_ids=("unmetered-result",),
     )
 
     assert completed["video_seconds"] == completed["image_count"] == 0

@@ -11,7 +11,7 @@ from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclar
 from ai_creation_canvas.adapters.chiyun import ChiyunGenerationAdapter
 from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, classify_submission_error
 from ai_creation_canvas.domain.models import JobRequest, ModelInputPort, ModelOperation, PortalRole, PortalUser, RequestContext
-from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import InvalidUpstreamResult, LocalRecoveryUnavailable, PortalUpstreamError
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ModelModality, OperationContract, ProviderDefinition
 
 
@@ -298,7 +298,7 @@ def test_ark_provider_success_then_pending_index_failure_is_safe_unknown(tmp_pat
     assert not (tmp_path / "ark-results" / "pending.tmp").exists()
 
 
-def test_ark_provider_success_then_result_download_storage_failure_is_safe_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ark_provider_result_download_storage_failure_is_safe_retryable_recovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/result.png"}]})
@@ -311,9 +311,12 @@ def test_ark_provider_success_then_result_download_storage_failure_is_safe_unkno
         raise OSError("/private/sensitive adapter-secret")
 
     monkeypatch.setattr("ai_creation_canvas.adapters.ark.os.replace", fail_replace)
-    with pytest.raises(SubmissionError) as caught:
+    with pytest.raises(LocalRecoveryUnavailable) as caught:
         asyncio.run(adapter.poll(_context(), submitted.upstream_job_id))
-    _assert_safe_unknown(caught.value)
+    assert caught.value.retryable is True
+    assert caught.value.code == "LOCAL_STATE_UNAVAILABLE"
+    assert "/private/sensitive adapter-secret" not in str(caught.value)
+    assert "/private/sensitive adapter-secret" not in repr(caught.value)
     assert not tuple((tmp_path / "ark-results").glob(".ark_result_*.tmp"))
 
 

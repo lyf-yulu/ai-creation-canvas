@@ -22,6 +22,7 @@ from ai_creation_canvas.managed_jobs import managed_job_adapter, validated_job_r
 from ai_creation_canvas.model_routing import ModelRouteDefinition
 from ai_creation_canvas.routing import RouteCandidate
 from ai_creation_canvas.catalog import ProviderSubmissionBudgetExhausted
+from ai_creation_canvas.job_polling import ValidatedProviderJobState, validated_provider_job_state
 
 _validated_job_route = validated_job_route
 
@@ -275,10 +276,22 @@ async def _submit_managed(request: Request, context, domain_request: JobRequest,
                             return store.mark_submission_unknown(str(reservation.job["id"]), token)
                         store.mark_safe_retry(str(reservation.job["id"]), token)
                         raise
-                    result_ids = tuple(result.asset_id for result in upstream.state.results)
+                    state = _validated_submission_state(request, store, reservation, upstream)
+                    if _sync_only_adapter_returned_nonterminal(adapter, state.status):
+                        store.mark_submission_unknown(
+                            str(reservation.job["id"]),
+                            token,
+                            upstream_job_id=upstream.upstream_job_id,
+                        )
+                        raise problem(
+                            request,
+                            "UPSTREAM_INVALID",
+                            "The generation service returned an invalid response.",
+                            status=502,
+                        )
                     return store.mark_submitted(
-                        str(reservation.job["id"]), upstream.upstream_job_id, upstream.state.status.value,
-                        token, result_ids=result_ids or None,
+                        str(reservation.job["id"]), upstream.upstream_job_id, state.status.value,
+                        token, result_ids=state.result_ids or None, error_code=state.error_code,
                     )
             except ExecutionCapacityExceeded:
                 break
@@ -318,6 +331,38 @@ def _adapter_has_server_completion(adapter: object) -> bool:
         getattr(adapter, "supports_background_polling", False) is True
         or getattr(adapter, "supports_synchronous_submission", False) is True
     )
+
+
+def _sync_only_adapter_returned_nonterminal(adapter: object, status: JobStatus) -> bool:
+    return bool(
+        getattr(adapter, "supports_synchronous_submission", False) is True
+        and getattr(adapter, "supports_background_polling", False) is not True
+        and status in {JobStatus.QUEUED, JobStatus.RUNNING}
+    )
+
+
+def _validated_submission_state(
+    request: Request,
+    store,
+    reservation,
+    upstream,
+) -> ValidatedProviderJobState:
+    try:
+        return validated_provider_job_state(upstream.state)
+    except InvalidUpstreamResult:
+        store.mark_submitted(
+            str(reservation.job["id"]),
+            upstream.upstream_job_id,
+            "failed",
+            str(reservation.job["submission_token"]),
+            error_code="INVALID_UPSTREAM_RESULT",
+        )
+        raise problem(
+            request,
+            "UPSTREAM_INVALID",
+            "The generation service returned an invalid response.",
+            status=502,
+        ) from None
 
 
 @router.post("/jobs", status_code=201)
@@ -442,13 +487,26 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
                 upstream = await submit_with_cookie(context, upstream_request, request.headers.get("cookie", ""))
             else:
                 upstream = await adapter.submit(context, JobRequest(domain_request.operation, domain_request.model_id, domain_request.prompt, domain_request.idempotency_key, domain_request.params, tuple(upstream_asset_ids) if not upstream_inputs else (), upstream_inputs))
-        result_ids = tuple(result.asset_id for result in upstream.state.results)
+        state = _validated_submission_state(request, store, reservation, upstream)
+        if _sync_only_adapter_returned_nonterminal(adapter, state.status):
+            store.mark_submission_unknown(
+                str(reservation.job["id"]),
+                str(reservation.job["submission_token"]),
+                upstream_job_id=upstream.upstream_job_id,
+            )
+            raise problem(
+                request,
+                "UPSTREAM_INVALID",
+                "The generation service returned an invalid response.",
+                status=502,
+            )
         item = store.mark_submitted(
             str(reservation.job["id"]),
             upstream.upstream_job_id,
-            upstream.state.status.value,
+            state.status.value,
             str(reservation.job["submission_token"]),
-            result_ids=result_ids or None,
+            result_ids=state.result_ids or None,
+            error_code=state.error_code,
         )
         return _response(item, request)
     except ExecutionCapacityExceeded:
@@ -457,6 +515,8 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
     except CoordinationUnavailable:
         store.fail_reservation(str(reservation.job["id"]), "COORDINATION_UNAVAILABLE", str(reservation.job["submission_token"]))
         raise problem(request, "UPSTREAM_UNAVAILABLE", "The generation service is unavailable.", status=503, retryable=True) from None
+    except DomainError:
+        raise
     except PortalUpstreamError as error:
         if error.retryable:
             store.fail_reservation(str(reservation.job["id"]), "TASK_FAILED", str(reservation.job["submission_token"]))

@@ -117,6 +117,7 @@ def test_admin_usage_rates_and_cost_projection_are_protected(tmp_path) -> None:
         "upstream-image",
         "succeeded",
         str(reserved.job["submission_token"]),
+        result_ids=("charged-result",),
     )
     usage = admin.get("/api/v1/admin/usage").json()
     assert usage["summary"]["total_cost_fen"] == "120"

@@ -7,6 +7,7 @@ import logging
 import re
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from ai_creation_canvas.catalog import ManagedRoutingRuntime
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
@@ -18,6 +19,36 @@ from ai_creation_canvas.managed_jobs import managed_job_adapter
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedProviderJobState:
+    status: JobStatus
+    result_ids: tuple[str, ...]
+    error_code: str | None
+
+
+def validated_provider_job_state(state: object) -> ValidatedProviderJobState:
+    """Normalize the provider state shared by submission and polling paths."""
+    if not isinstance(state, JobState):
+        raise InvalidUpstreamResult("provider job state is invalid")
+    result_ids = tuple(result.asset_id for result in state.results)
+    if state.status is JobStatus.SUCCEEDED:
+        if (
+            not 1 <= len(result_ids) <= 15
+            or any(_RESULT_ID.fullmatch(result_id) is None for result_id in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+        ):
+            raise InvalidUpstreamResult("provider success result is invalid")
+        return ValidatedProviderJobState(state.status, result_ids, None)
+    if state.status is JobStatus.FAILED:
+        error_code = state.error.code if state.error is not None else "TASK_FAILED"
+        if _ERROR_CODE.fullmatch(error_code) is None:
+            error_code = "TASK_FAILED"
+        return ValidatedProviderJobState(state.status, (), error_code)
+    if state.status not in {JobStatus.QUEUED, JobStatus.RUNNING}:
+        raise InvalidUpstreamResult("provider job status is invalid")
+    return ValidatedProviderJobState(state.status, (), None)
 
 
 class JobPollingService:
@@ -97,29 +128,17 @@ class JobPollingService:
         item: Mapping[str, object],
         token: str,
     ) -> dict[str, object]:
-        state = await adapter.poll(context, str(item["upstream_job_id"]))
-        if not isinstance(state, JobState):
-            raise InvalidUpstreamResult("provider poll state is invalid")
-        result_ids = tuple(result.asset_id for result in state.results)
-        if state.status is JobStatus.SUCCEEDED and (
-            not 1 <= len(result_ids) <= 15
-            or any(_RESULT_ID.fullmatch(result_id) is None for result_id in result_ids)
-            or len(set(result_ids)) != len(result_ids)
-        ):
-            raise InvalidUpstreamResult("provider success result is invalid")
-        error_code = None
-        if state.status is JobStatus.FAILED:
-            error_code = state.error.code if state.error is not None else "TASK_FAILED"
-            if _ERROR_CODE.fullmatch(error_code) is None:
-                error_code = "TASK_FAILED"
+        state = validated_provider_job_state(
+            await adapter.poll(context, str(item["upstream_job_id"]))
+        )
         retry_after = 5.0 if state.status is JobStatus.RUNNING else 2.0
         acknowledge = getattr(adapter, "acknowledge_poll_result", None)
         written = self._store.record_polled_job(
             str(item["id"]),
             token=token,
             status=state.status.value,
-            error_code=error_code,
-            result_ids=result_ids or None,
+            error_code=state.error_code,
+            result_ids=state.result_ids or None,
             retry_after_seconds=retry_after,
             acknowledgement_required=state.status is JobStatus.SUCCEEDED and callable(acknowledge),
         )

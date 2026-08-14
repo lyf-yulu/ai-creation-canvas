@@ -134,6 +134,50 @@ def test_chiyun_pending_updates_are_safe_across_adapter_instances(tmp_path: Path
     assert state.status.value == "succeeded"
 
 
+def test_chiyun_local_index_io_is_retryable_and_pending_is_replayable(tmp_path: Path, monkeypatch) -> None:
+    adapter = ChiyunGenerationAdapter(
+        provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+        asset_loader=lambda _: (PNG, "image/png"),
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={
+            "data": [{"b64_json": base64.b64encode(PNG).decode()}],
+        })),
+    )
+    submitted = asyncio.run(adapter.submit(context(), JobRequest(
+        "image.edit", "chiyun-gpt-image-2", "recover", "local-io",
+        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+    )))
+    original_read_text = Path.read_text
+    failed_read = False
+
+    def flaky_read_text(path, *args, **kwargs):
+        nonlocal failed_read
+        if path == adapter._index and not failed_read:
+            failed_read = True
+            raise OSError("private index read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    with pytest.raises(PortalUpstreamError) as read_error:
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
+    assert read_error.value.retryable is True
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+
+    original_write = adapter._write_index
+    monkeypatch.setattr(
+        adapter,
+        "_write_index",
+        lambda values: (_ for _ in ()).throw(OSError("private index write failure")),
+    )
+    with pytest.raises(PortalUpstreamError) as write_error:
+        asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
+    assert write_error.value.retryable is True
+    monkeypatch.setattr(adapter, "_write_index", original_write)
+    assert asyncio.run(adapter.poll(context(), submitted.upstream_job_id)).status.value == "succeeded"
+    asyncio.run(adapter.acknowledge_poll_result(submitted.upstream_job_id))
+    with pytest.raises(InvalidUpstreamResult):
+        asyncio.run(adapter.poll(context(), submitted.upstream_job_id))
+
+
 def test_chiyun_preserves_the_actual_returned_image_mime(tmp_path: Path) -> None:
     adapter = ChiyunGenerationAdapter(
         provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,

@@ -16,7 +16,7 @@ from typing import Callable, Mapping
 import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import InvalidUpstreamResult, LocalRecoveryUnavailable, PortalUpstreamError
 from ai_creation_canvas.adapters.retry import SubmissionError, SubmissionDisposition, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ProviderDefinition
 from ai_creation_canvas.parameter_schema import validate_parameter_values
@@ -158,18 +158,12 @@ class ChiyunGenerationAdapter:
         return UpstreamJob(self.service_id, upstream_id, JobState(upstream_id, JobStatus.QUEUED))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
-        local_error: SubmissionError | None = None
         try:
             return await self._poll(context, upstream_job_id)
         except SubmissionError:
             raise
-        except OSError:
-            local_error = SubmissionError(
-                SubmissionDisposition.SUBMISSION_UNKNOWN,
-                "LOCAL_STATE_UNAVAILABLE",
-                adapter_template="chiyun_openai_images.image.edit",
-            )
-        raise local_error
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
@@ -193,10 +187,13 @@ class ChiyunGenerationAdapter:
     async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
         if _UPSTREAM_ID.fullmatch(upstream_job_id) is None:
             raise ValueError("Chiyun job is invalid")
-        with self._locked_index():
-            values = self._read_index()
-            if values.pop(upstream_job_id, None) is not None:
-                self._write_index(values)
+        try:
+            with self._locked_index():
+                values = self._read_index()
+                if values.pop(upstream_job_id, None) is not None:
+                    self._write_index(values)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -274,7 +271,7 @@ class ChiyunGenerationAdapter:
             return {}
         try:
             body = json.loads(self._index.read_text(encoding="ascii"))
-        except (OSError, ValueError, UnicodeError):
+        except (ValueError, UnicodeError):
             return {}
         return body if isinstance(body, dict) else {}
 

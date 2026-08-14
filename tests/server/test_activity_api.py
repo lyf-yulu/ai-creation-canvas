@@ -93,8 +93,14 @@ def test_usage_lists_only_current_owner_charged_jobs(tmp_path) -> None:
         request_hash="hash-b",
         image_count=1,
     )
-    store.mark_submitted("job-a", "upstream-a", "succeeded", str(first.job["submission_token"]))
-    store.mark_submitted("job-b", "upstream-b", "succeeded", str(second.job["submission_token"]))
+    store.mark_submitted(
+        "job-a", "upstream-a", "succeeded", str(first.job["submission_token"]),
+        result_ids=("result-a",),
+    )
+    store.mark_submitted(
+        "job-b", "upstream-b", "succeeded", str(second.job["submission_token"]),
+        result_ids=("result-b",),
+    )
 
     response = client.get("/api/v1/usage", headers=identity("user-a"))
 
@@ -134,6 +140,7 @@ def test_usage_excludes_a_successful_job_without_any_billable_quantity(tmp_path)
         "upstream-unmetered",
         "succeeded",
         str(reserved.job["submission_token"]),
+        result_ids=("unmetered-result",),
     )
 
     response = client.get("/api/v1/usage", headers=identity("user-a"))
@@ -175,6 +182,7 @@ def test_usage_serializes_an_aggregate_beyond_javascript_safe_integer_exactly(tm
             f"upstream-{index}",
             "succeeded",
             str(reserved.job["submission_token"]),
+            result_ids=(f"maximum-result-{index}",),
         )
 
     response = client.get("/api/v1/usage", headers=identity("user-a"))

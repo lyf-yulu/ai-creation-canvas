@@ -25,7 +25,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, JobStatus, ModelInputPort, ModelOperation, ModelSpec, RequestContext, UpstreamJob
-from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUpstreamError
+from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, LocalRecoveryUnavailable, PortalUpstreamError
 from ai_creation_canvas.adapters.retry import SubmissionDisposition, SubmissionError, UnknownSubmissionResult, error_from_response, error_from_transport, local_rejection
 from ai_creation_canvas.parameter_schema import validate_parameter_schema, validate_parameter_values
 
@@ -245,18 +245,12 @@ class ArkGenerationAdapter:
         return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
-        local_error: SubmissionError | None = None
         try:
             return await self._poll(context, upstream_job_id)
         except SubmissionError:
             raise
-        except OSError:
-            local_error = SubmissionError(
-                SubmissionDisposition.SUBMISSION_UNKNOWN,
-                "LOCAL_STATE_UNAVAILABLE",
-                adapter_template="ark.video.generate" if _CONTENT_TASK_ID.fullmatch(upstream_job_id) else "ark.image.generate",
-            )
-        raise local_error
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def _poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         del context
@@ -286,7 +280,10 @@ class ArkGenerationAdapter:
 
     async def acknowledge_poll_result(self, upstream_job_id: str) -> None:
         """Discard image recovery metadata only after the job store commits success."""
-        await self._clear_pending(upstream_job_id)
+        try:
+            await self._clear_pending(upstream_job_id)
+        except OSError as error:
+            raise LocalRecoveryUnavailable() from error
 
     async def open_result(self, context: RequestContext, result_id: str, *, cookie_header: str, range_header: str | None = None, head: bool = False):
         del context, cookie_header
@@ -389,7 +386,7 @@ class ArkGenerationAdapter:
         if not self._index_path.exists(): return {}
         try:
             value = json.loads(self._index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError): return {}
+        except ValueError: return {}
         return value if isinstance(value, dict) else {}
 
     @contextmanager
@@ -429,7 +426,6 @@ class ArkGenerationAdapter:
         if media.is_file() and metadata.is_file():
             mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
             return AssetRef(result_id, "reference", "active", mime)
-        local_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(60), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("GET", url, headers={}) as response:
@@ -454,18 +450,12 @@ class ArkGenerationAdapter:
             finally:
                 _safe_unlink(metadata_temporary)
             return AssetRef(result_id, "reference", "active", mime)
-        except OSError:
+        except OSError as error:
             _safe_unlink(media)
             _safe_unlink(metadata)
-            local_error = SubmissionError(
-                SubmissionDisposition.SUBMISSION_UNKNOWN,
-                "LOCAL_STATE_UNAVAILABLE",
-                adapter_template="ark.image.generate" if kind == "image" else "ark.video.generate",
-            )
+            raise LocalRecoveryUnavailable() from error
         finally:
             _safe_unlink(temporary)
-        if local_error is not None:
-            raise local_error
 
 
 def _range(value: str, size: int) -> tuple[int, int] | None:

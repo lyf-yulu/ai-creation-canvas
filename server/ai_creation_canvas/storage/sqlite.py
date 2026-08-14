@@ -23,6 +23,7 @@ def _now() -> str:
 
 
 _RESULT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_ERROR_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 _INIT_ATTEMPTS = 4
 _INIT_BACKOFF_SECONDS = 0.02
 _CHECKPOINT_ATTEMPTS = 4
@@ -1823,15 +1824,47 @@ class CanvasStore:
         assert row is not None
         return Reservation(dict(row), True)
 
-    def mark_submitted(self, job_id: str, upstream_job_id: str, status: str, token: str | None = None, *, result_ids: tuple[str, ...] | None = None) -> dict[str, object]:
+    def mark_submitted(
+        self,
+        job_id: str,
+        upstream_job_id: str,
+        status: str,
+        token: str | None = None,
+        *,
+        result_ids: tuple[str, ...] | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, object]:
+        if status not in {"queued", "running", "succeeded", "failed"}:
+            raise ValueError("submitted status is invalid")
+        if result_ids is not None and (
+            not 1 <= len(result_ids) <= 15
+            or any(not isinstance(item, str) or _RESULT_ID.fullmatch(item) is None for item in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+        ):
+            raise ValueError("result IDs are invalid")
+        if status == "succeeded" and result_ids is None:
+            raise ValueError("successful submission results are required")
+        if status != "succeeded" and result_ids is not None:
+            raise ValueError("result IDs are invalid")
+        if status == "failed":
+            if not isinstance(error_code, str) or _ERROR_CODE.fullmatch(error_code) is None:
+                error_code = "TASK_FAILED"
+        elif error_code is not None:
+            raise ValueError("submitted error code is invalid")
+        encoded = json.dumps(result_ids, separators=(",", ":")) if result_ids is not None else None
+        result_id = result_ids[0] if result_ids is not None else None
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None: raise KeyError(job_id)
             if token is not None and row["submission_token"] != token:
                 return dict(row)
-            encoded = json.dumps(list(result_ids), separators=(",", ":")) if result_ids else None
             now = _now()
-            db.execute("UPDATE canvas_jobs SET status=?, upstream_job_id=?, result_ids_json=COALESCE(?,result_ids_json), submission_state=CASE WHEN submission_state IS NULL THEN NULL ELSE 'submitted' END, submission_token=NULL, lease_until=NULL, updated_at=? WHERE id=?", (status, upstream_job_id, encoded, now, job_id))
+            db.execute(
+                "UPDATE canvas_jobs SET status=?,upstream_job_id=?,error_code=?,result_id=?,result_ids_json=?,"
+                "submission_state=CASE WHEN submission_state IS NULL THEN NULL ELSE 'submitted' END,"
+                "submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                (status, upstream_job_id, error_code, result_id, encoded, now, job_id),
+            )
             if status == "succeeded":
                 self._capture_usage_snapshot(db, job_id, now)
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
@@ -1856,14 +1889,27 @@ class CanvasStore:
                 return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
-    def mark_submission_unknown(self, job_id: str, token: str, error_code: str = "SUBMISSION_UNKNOWN") -> dict[str, object]:
+    def mark_submission_unknown(
+        self,
+        job_id: str,
+        token: str,
+        error_code: str = "SUBMISSION_UNKNOWN",
+        *,
+        upstream_job_id: str | None = None,
+    ) -> dict[str, object]:
+        if upstream_job_id is not None and (not isinstance(upstream_job_id, str) or not upstream_job_id):
+            raise ValueError("upstream job ID is invalid")
         with self._connection(immediate=True) as db:
             row = db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone()
             if row is None:
                 raise KeyError(job_id)
             if row["submission_token"] != token:
                 return dict(row)
-            db.execute("UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',error_code=?,submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?", (error_code, _now(), job_id))
+            db.execute(
+                "UPDATE canvas_jobs SET status='submission_unknown',submission_state='submission_unknown',"
+                "error_code=?,upstream_job_id=COALESCE(?,upstream_job_id),submission_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                (error_code, upstream_job_id, _now(), job_id),
+            )
             return dict(db.execute("SELECT * FROM canvas_jobs WHERE id=?", (job_id,)).fetchone())
 
     def mark_submission_rejected(self, job_id: str, token: str, error_code: str = "REQUEST_REJECTED") -> dict[str, object]:
