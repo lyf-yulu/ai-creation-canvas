@@ -121,12 +121,17 @@ git commit -m "refactor: share managed job resolution"
 - Create: `server/ai_creation_canvas/job_polling.py`
 - Modify: `server/ai_creation_canvas/job_worker.py`
 - Modify: `server/ai_creation_canvas/adapters/ark.py`
+- Modify: `server/ai_creation_canvas/adapters/demo.py`
 - Modify: `server/ai_creation_canvas/app.py`
 - Modify: `server/ai_creation_canvas/api/jobs.py`
 - Modify: `tests/server/test_job_worker.py`
 - Modify: `tests/contracts/test_ark_adapter.py`
 - Modify: `tests/contracts/test_generation_flow.py`
 - Modify: `tests/server/test_jobs_model_routes.py`
+- Modify: `tests/integration/test_core_flows.py`
+- Modify: `tests/integration/test_demo_generation.py`
+- Modify: `tests/integration/test_model_centric_routing.py`
+- Modify: `tests/integration/test_slice1_product.py`
 
 **Interfaces:**
 - Consumes: Task 1 lease API, Task 2 managed adapter resolver, direct `AdapterRegistry`, adapter `JobState.results`.
@@ -136,7 +141,7 @@ git commit -m "refactor: share managed job resolution"
 
 Cover ordered two-result completion; managed polling through the saved route/fingerprint; missing credential delaying without key rotation; retryable `PortalUpstreamError` releasing the lease; non-retryable error terminating safely; invalid/empty/duplicate/over-limit success failing terminally; `submission_unknown` never claimed; stale token never acknowledging Ark pending; and successful CAS acknowledging once.
 
-Also cover direct and managed queued jobs through `GET /api/v1/jobs/{job_id}` and assert the endpoint returns stored state without calling either provider adapter. Preserve the local stale `submitting/in_flight` to `submission_unknown` transition.
+Also cover direct and managed queued jobs through `GET /api/v1/jobs/{job_id}` and assert the endpoint returns stored state without calling either provider adapter. Preserve the local stale `submitting/in_flight` to `submission_unknown` transition. Mark the built-in Demo generation adapter as background-pollable and migrate integration fixtures that represent recoverable providers to declare the same capability; integration flows must explicitly advance `app.state.job_worker.run_once()` before reading completion.
 
 - [ ] **Step 2: Run RED**
 
@@ -163,7 +168,7 @@ PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/co
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/adapters/demo.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py tests/integration/test_core_flows.py tests/integration/test_demo_generation.py tests/integration/test_model_centric_routing.py tests/integration/test_slice1_product.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
