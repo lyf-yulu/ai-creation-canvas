@@ -115,6 +115,28 @@ def test_validated_job_route_rejects_future_snapshot_shape() -> None:
         validated_job_route(item)
 
 
+@pytest.mark.parametrize(
+    "duplicate_member",
+    (
+        '"schema_version":3,',
+        '"route_id":"other-route",',
+        '"pool_revision_digest":"' + "c" * 64 + '",',
+    ),
+    ids=("schema-version", "route", "pool-revision-digest"),
+)
+def test_validated_job_route_rejects_duplicate_snapshot_fields_without_echoing_snapshot(
+    duplicate_member: str,
+) -> None:
+    item = _job(_route())
+    encoded = str(item["route_snapshot_json"])
+    item["route_snapshot_json"] = "{" + duplicate_member + encoded[1:]
+
+    with pytest.raises(ValueError) as raised:
+        validated_job_route(item)
+
+    assert str(raised.value) == "managed route snapshot is invalid"
+
+
 class RecordingCoordinator:
     def __init__(self) -> None:
         self.candidates = []

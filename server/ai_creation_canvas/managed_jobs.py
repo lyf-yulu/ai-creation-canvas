@@ -42,11 +42,20 @@ _ACCEPTED_SNAPSHOT_SHAPES = {
 }
 
 
+def _unique_snapshot_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, item in pairs:
+        if key in result:
+            raise ValueError("managed route snapshot is invalid")
+        result[key] = item
+    return result
+
+
 def _route_from_snapshot(value: object) -> tuple[ModelRouteDefinition, Mapping[str, object]]:
     if not isinstance(value, str) or len(value.encode("utf-8")) > _MAX_SNAPSHOT_BYTES:
         raise ValueError("managed route snapshot is invalid")
     try:
-        body = json.loads(value)
+        body = json.loads(value, object_pairs_hook=_unique_snapshot_object)
     except (TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("managed route snapshot is invalid") from None
     if (
