@@ -126,6 +126,7 @@ git commit -m "refactor: share managed job resolution"
 - Modify: `tests/server/test_job_worker.py`
 - Modify: `tests/contracts/test_ark_adapter.py`
 - Modify: `tests/contracts/test_generation_flow.py`
+- Modify: `tests/server/test_jobs_model_routes.py`
 
 **Interfaces:**
 - Consumes: Task 1 lease API, Task 2 managed adapter resolver, direct `AdapterRegistry`, adapter `JobState.results`.
@@ -162,7 +163,7 @@ PYTHONPATH=.:server .venv/bin/pytest -q tests/server/test_job_worker.py tests/co
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py
+git add server/ai_creation_canvas/job_polling.py server/ai_creation_canvas/job_worker.py server/ai_creation_canvas/adapters/ark.py server/ai_creation_canvas/app.py server/ai_creation_canvas/api/jobs.py tests/server/test_job_worker.py tests/contracts/test_ark_adapter.py tests/contracts/test_generation_flow.py tests/server/test_jobs_model_routes.py
 git commit -m "feat: recover generation jobs in background"
 ```
 
