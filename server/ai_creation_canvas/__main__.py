@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 from pathlib import Path
 import sys
 import threading
 from typing import Callable
+from urllib.parse import urlsplit
 import webbrowser
 
 import uvicorn
@@ -19,6 +21,11 @@ from ai_creation_canvas.auth.local import BootstrapResult
 
 
 _MIB = 1024 * 1024
+_RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
 
 
 def _upload_mib(value: str) -> int:
@@ -51,6 +58,54 @@ def _upload_concurrency(value: str) -> int:
     return amount
 
 
+def _ipv4_host(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("host must be an IPv4 address") from error
+    if not isinstance(address, ipaddress.IPv4Address):
+        raise argparse.ArgumentTypeError("host must be an IPv4 address")
+    return str(address)
+
+
+def _lan_public_origin(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("public origin must be a valid LAN HTTP origin") from error
+    hostname = parsed.hostname
+    if (
+        parsed.scheme != "http"
+        or not parsed.netloc
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or port == 0
+    ):
+        raise argparse.ArgumentTypeError("public origin must be a valid LAN HTTP origin")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if hostname.endswith(".local") and "*" not in hostname:
+            canonical_host = hostname.casefold()
+        else:
+            raise argparse.ArgumentTypeError("public origin host must be a private IPv4 address or .local name")
+    else:
+        if (
+            not isinstance(address, ipaddress.IPv4Address)
+            or address.is_unspecified
+            or not (address.is_loopback or any(address in network for network in _RFC1918_NETWORKS))
+        ):
+            raise argparse.ArgumentTypeError("public origin host must be a private IPv4 address or .local name")
+        canonical_host = str(address)
+    canonical_port = f":{port}" if port is not None and port != 80 else ""
+    return f"http://{canonical_host}{canonical_port}"
+
+
 def _add_upload_limit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-image-upload-mib", dest="max_image_upload_bytes", type=_upload_mib, default=10 * _MIB, metavar="MIB", help="maximum owned image upload size (1-2048 MiB; default: 10)")
     parser.add_argument("--max-video-upload-mib", dest="max_video_upload_bytes", type=_upload_mib, default=64 * _MIB, metavar="MIB", help="maximum owned video upload size (1-2048 MiB; default: 64)")
@@ -78,15 +133,16 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
-    origin = f"http://127.0.0.1:{port}"
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
+    origins = public_origins or (f"http://127.0.0.1:{port}",)
     settings = Settings(
         environment="development",
         port=port,
         data_dir=data_dir,
         portal_internal_token="local-identity-unused-secret",
         identity_mode="local",
-        allowed_origins=(origin,),
+        allowed_origins=origins,
+        trusted_hosts=tuple(urlsplit(origin).hostname for origin in origins),
         enable_demo_adapter=True,
         enable_ark_adapter=ark_models_config is not None,
         ark_models_config_path=ark_models_config,
@@ -139,6 +195,8 @@ def _print_bootstrap(result: BootstrapResult | None) -> None:
 def _run_serve_local(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description="Run the standalone local AI Creation Canvas.")
     parser.add_argument("--port", type=int, default=8992)
+    parser.add_argument("--host", type=_ipv4_host, default="127.0.0.1")
+    parser.add_argument("--public-origin", action="append", default=[], type=_lan_public_origin)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--static-dir", type=Path, required=True)
     parser.add_argument("--bootstrap-if-empty", action="store_true")
@@ -148,20 +206,29 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--redis-url", help="optional Redis coordination URL; governed production models require Redis")
     _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
+    bind_address = ipaddress.IPv4Address(args.host)
+    if not bind_address.is_loopback and not args.public_origin:
+        parser.error("a non-loopback host requires at least one --public-origin")
+    if not bind_address.is_loopback and any((urlsplit(origin).port or 80) != args.port for origin in args.public_origin):
+        parser.error("LAN public origin ports must match --port")
+    if not bind_address.is_loopback and args.open_browser:
+        parser.error("--open is only supported for loopback hosts")
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"
         async def open_after_startup() -> None:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         app.router.on_startup.append(open_after_startup)
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
 
 
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AI Creation Canvas from a staged release.")
     parser.add_argument("--environment", choices=("test", "development", "production"), required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--trusted-host", action="append", default=[])
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--portal-internal-token", required=True)
     parser.add_argument("--portal-base-url", required=True)
@@ -188,6 +255,15 @@ def main() -> None:
         _run_serve_local(sys.argv[2:])
         return
     args = _arguments()
+    if args.environment == "production":
+        if not args.trusted_host or any(host != "127.0.0.1" for host in args.trusted_host):
+            raise SystemExit("production requires --trusted-host 127.0.0.1")
+        try:
+            bind_address = ipaddress.ip_address(args.host)
+        except ValueError as error:
+            raise SystemExit("production host must be an IPv4 loopback address") from error
+        if not isinstance(bind_address, ipaddress.IPv4Address) or not bind_address.is_loopback:
+            raise SystemExit("production host must be an IPv4 loopback address")
     settings = Settings(
         environment=args.environment,
         port=args.port,
@@ -199,6 +275,7 @@ def main() -> None:
         credential_pools_path=args.credential_pools,
         credential_pools_root=args.credential_pools_root,
         portal_allow_loopback_http=args.allow_loopback_http,
+        trusted_hosts=tuple(args.trusted_host),
         max_image_upload_bytes=args.max_image_upload_bytes,
         max_video_upload_bytes=args.max_video_upload_bytes,
         max_audio_upload_bytes=args.max_audio_upload_bytes,
@@ -212,7 +289,7 @@ def main() -> None:
     if args.check_config:
         print(" ".join(adapter.service_id for adapter in app.state.adapter_registry.generation_adapters()))
         return
-    uvicorn.run(app, host="127.0.0.1", port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
 
 
 if __name__ == "__main__":

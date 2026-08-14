@@ -21,6 +21,19 @@ bash scripts/run-local.sh
 
 打开 `http://127.0.0.1:8992/login`。首次启动会在终端显示一次性管理员与普通用户密码，首次登录必须改密。本模式仅使用离线演示模型，不调用外部服务。
 
+## 局域网验证（测试模式）
+
+仅在可信局域网中，用运行机器的实际私有 IPv4 地址显式声明浏览器 Origin；不要使用公网 IP、域名或 `*`：
+
+```bash
+AICC_LAN_ORIGIN=http://192.168.1.20:8992 \
+  AICC_LOCAL_PORT=8992 \
+  AICC_LOCAL_DATA="$(mktemp -d)/aicc-lan-data" \
+  bash scripts/run-lan-local.sh
+```
+
+此命令会监听所有本机网卡，但只信任上述单一私有 Origin，并把测试数据放入临时目录。它不会自动打开浏览器。用同一局域网的第二台设备访问 `http://192.168.1.20:8992/login`，分别登录管理员和普通用户账号、按首次提示修改密码，再以普通用户完成一次“本地演示图片”生成。确认无误后，在启动终端按 `Ctrl-C` 停止进程，并删除该次临时数据目录。不得占用生产建议端口 `8991` 或复用生产数据目录。
+
 ## 3. 构建可迁移发布包
 
 目标目录必须不存在且不得位于源码仓库内：
@@ -54,7 +67,9 @@ sudo install -m 0600 -o aicc -g aicc server/config/credential-pools.example.json
 export AICC_CREDENTIAL_HMAC_KEY="<至少32字节的独立随机值>"
 PYTHONPATH=server .venv/bin/python -m ai_creation_canvas \
   --environment production \
+  --host 127.0.0.1 \
   --port 8991 \
+  --trusted-host 127.0.0.1 \
   --data-dir /srv/aicc/data \
   --portal-internal-token "<Portal内部签名令牌>" \
   --portal-base-url "https://portal.example.com" \
@@ -65,7 +80,15 @@ PYTHONPATH=server .venv/bin/python -m ai_creation_canvas \
   --static-dir web/dist
 ```
 
-上线前可在同一命令末尾追加 `--check-config`。该检查验证配置并退出，不启动 HTTP 服务。反向代理应终止 TLS、限制请求体，并把公开域名加入部署配置的允许 Origin。
+上线前可在同一命令末尾追加 `--check-config`。该检查验证配置并退出，不启动 HTTP 服务。
+
+### 公网入口边界
+
+公网架构固定为：`Internet → HTTPS 反向代理 → Portal 已登录挂载 /ai-canvas/ → Canvas 127.0.0.1`。公开域名由反向代理与 Portal 处理；Portal 完成已登录会话校验并签发身份。其受控回环代理会过滤外部 `Host`，Canvas 只信任 Portal 上游实际使用的回环 Host，因此生产启动使用 `--trusted-host 127.0.0.1`。Canvas 只验证来自受信 Portal 的签名身份，绝不接受浏览器自报用户或管理员字段，且本身仍只绑定回环地址，**不得暴露 Canvas 监听端口** 到公网，防火墙也应拒绝从互联网访问该端口。
+
+HTTPS 反向代理负责 TLS 与 HSTS、请求体大小限制、超时、速率限制以及日志脱敏；不得记录 Cookie、签名头、完整提示词、上传内容、Key 或长期结果地址。代理只将 `/ai-canvas/` 交给 Portal 的已登录挂载，不能把请求直接转发给 Canvas。当前运行模型只支持一个 Python Canvas 服务副本；Redis 仅用于提交租约，不是持久化任务队列，不能据此启用多副本故障接管。
+
+本仓库本次改动只提供上述接口和运行契约，**尚未配置真实服务器、域名或 DNS**。在完成独立服务器、受控 Portal、HTTPS 反代、防火墙和备份演练前，不得把发布包暴露到互联网。
 
 ## 6. 后台导入新 Key
 
@@ -91,7 +114,7 @@ PYTHONPATH=server .venv/bin/python -m ai_creation_canvas \
 
 ```bash
 bash scripts/security-scan.sh
-curl -I https://canvas.example.com/login
+curl -I https://portal.example.com/ai-canvas/login
 ```
 
 - 管理员能登录、改密并导入占位测试 JSON。

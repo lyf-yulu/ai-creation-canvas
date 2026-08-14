@@ -37,6 +37,17 @@ bash scripts/run-local.sh
 
 服务只监听 `127.0.0.1:8992`，首次启动会在终端显示一次性管理员与普通用户密码。两类账号首次登录均需修改密码。内置 `demo-image-v1` 是完全离线的固定演示结果，不调用外部模型，也不需要 API Key。
 
+需要让同一局域网内的另一台设备验证时，使用显式 LAN 入口和测试端口/数据目录：
+
+```bash
+AICC_LAN_ORIGIN=http://192.168.1.20:8992 \
+  AICC_LOCAL_PORT=8992 \
+  AICC_LOCAL_DATA="$(mktemp -d)/aicc-lan-data" \
+  bash scripts/run-lan-local.sh
+```
+
+请把示例 IP 替换为运行机器的实际私有 IPv4 地址；详情、第二台设备验收步骤及停止方式见 [docs/operations.md](docs/operations.md)。此入口不会自动打开浏览器，且不会用于互联网发布。
+
 如管理员已在**服务端环境**设置 `ARK_API_KEY`，可用下面的独立入口测试真实 Seedream 图片和 Seedance 视频。它使用另一份本地数据和 `8994` 端口，不会把 Key 发送给浏览器：
 
 ```bash
@@ -55,4 +66,4 @@ bash scripts/run-real-media-local.sh
 
 ## 发布状态
 
-当前版本可本地运行、构建 Python 静态发布包，并通过管理员 JSON 上传轮换服务端凭据池。正式部署仍需自行提供 Portal 身份边界、Redis、HTTPS 反向代理、数据备份和受限配置目录。运行语义见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。
+当前版本可本地运行、构建 Python 静态发布包，并通过管理员 JSON 上传轮换服务端凭据池。互联网入口的固定边界是“Internet → HTTPS 反向代理 → Portal 已登录挂载 `/ai-canvas/` → 仅监听 `127.0.0.1` 的 Canvas”；Canvas 不直接对公网提供端口。本次改动未配置真实服务器、域名或 DNS。运行语义见 [docs/operations.md](docs/operations.md)，验证证据要求见 [docs/verification.md](docs/verification.md)。

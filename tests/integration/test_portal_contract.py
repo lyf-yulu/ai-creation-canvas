@@ -176,7 +176,13 @@ def portal(tmp_path):
     static_dir.mkdir()
     (static_dir / "index.html").write_text("canvas-spa", encoding="utf-8")
     canvas_app = create_app(
-        Settings("test", 8992, tmp_path / "canvas-data", "fixture-identity-secret"),
+        Settings(
+            "test",
+            8992,
+            tmp_path / "canvas-data",
+            "fixture-identity-secret",
+            trusted_hosts=("127.0.0.1",),
+        ),
         static_dir=static_dir,
         registry=registry,
         model_catalog=ModelCatalog(registry),

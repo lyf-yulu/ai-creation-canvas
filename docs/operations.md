@@ -12,6 +12,25 @@ bash scripts/run-local.sh
 
 Slice 1 只启用不联网、不收费的 `本地演示图片` 模型。浏览器没有 Key 输入框，真实模型 Key 仍应由管理员在未来部署的服务端配置和派发。本阶段不提供 Cloudflare Quick Tunnel 或生产部署命令；正式 Cloudflare、域名与多地区入口放在后续 Slice 6。
 
+## 局域网双设备验证
+
+局域网模式仅用于测试，必须使用测试端口和全新的临时数据目录。以下示例中的 `192.168.1.20` 必须替换为本机实际的私有 IPv4 地址：
+
+```bash
+AICC_LAN_ORIGIN=http://192.168.1.20:8992 \
+  AICC_LOCAL_PORT=8992 \
+  AICC_LOCAL_DATA="$(mktemp -d)/aicc-lan-data" \
+  bash scripts/run-lan-local.sh
+```
+
+`run-lan-local.sh` 默认监听 `0.0.0.0`，但将 CSRF/Origin 边界固定为 `AICC_LAN_ORIGIN`，不会自动打开浏览器。用第二台同一局域网设备访问 `http://192.168.1.20:8992/login`：先以管理员账号登录并按提示修改初始密码，再以普通用户账号登录并修改初始密码；确认普通用户只看到被授权内容，然后完成一次离线“本地演示图片”生成。结束时在运行脚本的终端按 `Ctrl-C`，确认监听已停止，再删除该次 `AICC_LOCAL_DATA` 临时目录。禁止将 LAN 验证指向 `8991`、生产数据、生产 Portal 或任何生产服务端口。
+
+## 互联网发布边界（服务器准备）
+
+互联网请求只能走 `Internet → HTTPS 反向代理 → Portal 已登录挂载 /ai-canvas/ → Canvas 127.0.0.1`。公开域名由 HTTPS 反向代理和 Portal 处理；Portal 负责已登录身份和签名，且其受控回环代理过滤外部 `Host`。Canvas 不公开给浏览器，也不直接处理外部用户身份，生产 Canvas 用 `--host 127.0.0.1 --trusted-host 127.0.0.1` 启动，只信任 Portal 上游实际使用的回环 Host；防火墙必须阻断对 Canvas 监听端口的公网连接。
+
+反向代理应终止 TLS、启用 HSTS，限制请求体、设置连接和上游超时、实施速率限制，并脱敏访问/错误日志。它必须先进入 Portal 的已登录挂载，不能把外部请求直连 Canvas。当前仅支持单个 Python Canvas 服务副本：Redis 只提供提交租约，不是持久化队列或多副本故障接管机制。本次改动未配置真实服务器、域名、DNS、证书或反向代理；它们需在独立服务器就绪后按此边界实施和验收。
+
 ## 本地真实媒体验证（可选、会产生费用）
 
 当管理员已经在启动服务的终端环境中设置了 `ARK_API_KEY` 时，可运行：
@@ -114,7 +133,7 @@ PYTHONPATH=server python -m ai_creation_canvas \
 
 `server/config/services.example.json` 仅是无密钥的声明模板，必须替换 mount 与服务标识并经审批。可使用同样的显式参数追加 `--check-config`，在启动 HTTP 服务前验证服务声明是否能被加载；该检查不会连接模型服务。
 
-`/api/v1/session` 必须由 Portal 已验证身份调用；无身份请求返回 `401`。根路径和前端嵌套路由由静态 SPA 返回。当前版本没有未认证健康检查接口，运行监控应使用平台进程健康机制和经认证的 API 检查。
+`/api/v1/session` 必须由 Portal 已验证身份调用；无身份请求返回 `401`。根路径和前端嵌套路由由静态 SPA 返回。`GET /healthz` 只报告固定、无敏感状态的进程存活信息；`GET /readyz` 只检查可安全提供的静态 `index.html` 是否就绪。它们可由本机或仅能回环访问的代理探测，但不能作为将 Canvas 直接暴露到公网的理由。
 
 ## 环境、端口和数据隔离
 

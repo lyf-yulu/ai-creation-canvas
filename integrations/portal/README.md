@@ -5,8 +5,18 @@ Portal、图像、视频或人像服务的源码、配置、密钥、状态或�
 
 ## 边界
 
-- 仅允许 Portal 的已登录会话访问 `/ai-canvas/`；目标固定为
-  `http://127.0.0.1:8992`，浏览器不能选择上游地址。
+- 仅允许 Portal 的已登录会话访问 `/ai-canvas/`；生产 Canvas 上游只能配置为
+  回环变量/Host（例如 `AICC_CANVAS_UPSTREAM_HOST=127.0.0.1` 与受控端口），
+  浏览器不能选择上游地址，也不能把 Canvas 配为公开域名。Portal 过滤传入的
+  外部 `Host`，并以该受控回环 Host 访问 Canvas；因此 Canvas 使用
+  `--trusted-host 127.0.0.1`，不信任公开域名。
+- 公网路径固定为 `Internet → HTTPS 反向代理 → Portal 已登录挂载 /ai-canvas/ →
+  Canvas 127.0.0.1`。Portal 完成会话校验后签发身份，Canvas 不接受外部浏览器
+  直接访问。**不得暴露 Canvas 监听端口**；后端防火墙应拒绝公网访问该端口。
+- 公开反向代理必须终止 TLS、启用 HSTS、限制请求体、设置上游超时和速率限制，
+  并对访问/错误日志做脱敏，不能记录 Cookie、签名、Key、完整提示词或上传内容。
+  当前仅支持单个 Python Canvas 副本；Redis 只提供提交租约，不能作为多副本的
+  持久化任务队列或故障接管依据。本仓库尚未配置真实服务器、域名或 DNS。
 - Portal 在转发前删除所有浏览器提供的 `X-Portal-*` 身份和签名头，再从
   已认证会话中的 `user_id`、`role` 与 `username` 签发 v2 身份。v2 的规范
   载荷为 `v2\\n{timestamp}\\n{user_id}\\n{role}\\n{rfc3986(username)}`，用

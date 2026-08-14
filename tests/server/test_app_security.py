@@ -35,12 +35,70 @@ def make_client(tmp_path) -> TestClient:
     return TestClient(create_app(settings, static_dir=static_dir), raise_server_exceptions=False)
 
 
+def make_trusted_host_client(tmp_path) -> TestClient:
+    static_dir = tmp_path / "dist"
+    static_dir.mkdir(exist_ok=True)
+    (static_dir / "index.html").write_text("<html>canvas</html>")
+    settings = Settings(
+        environment="test",
+        port=8992,
+        data_dir=tmp_path / "data",
+        portal_internal_token="test-secret",
+        trusted_hosts=("canvas.local",),
+    )
+    return TestClient(create_app(settings, static_dir=static_dir), raise_server_exceptions=False)
+
+
 def assert_security_headers(response) -> None:
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert "connect-src 'self'" in response.headers["content-security-policy"]
     assert "unsafe-eval" not in response.headers["content-security-policy"]
+
+
+def test_trusted_host_rejects_untrusted_host_even_when_forwarded_host_is_trusted(tmp_path):
+    client = make_trusted_host_client(tmp_path)
+
+    allowed = client.get("/healthz", headers={"host": "canvas.local"})
+    assert allowed.status_code == 200
+
+    rejected = client.get(
+        "/healthz",
+        headers={"host": "attacker.example", "x-forwarded-host": "canvas.local"},
+    )
+    assert rejected.status_code == 400
+
+
+def test_healthz_is_unauthenticated_and_returns_fixed_status(tmp_path):
+    client = make_client(tmp_path)
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert_security_headers(response)
+
+
+def test_readyz_is_unauthenticated_and_requires_a_safe_static_entrypoint(tmp_path):
+    ready_client = make_client(tmp_path)
+    ready = ready_client.get("/readyz")
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ready"}
+    assert_security_headers(ready)
+
+    missing_static_dir = tmp_path / "missing-dist"
+    settings = Settings(
+        environment="test",
+        port=8992,
+        data_dir=tmp_path / "missing-data",
+        portal_internal_token="test-secret",
+    )
+    missing_static_client = TestClient(create_app(settings, static_dir=missing_static_dir), raise_server_exceptions=False)
+    not_ready = missing_static_client.get("/readyz")
+    assert not_ready.status_code == 503
+    assert not_ready.json() == {"status": "not_ready"}
+    assert_security_headers(not_ready)
 
 
 def test_session_exposes_only_verified_public_user_fields(tmp_path):

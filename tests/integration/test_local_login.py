@@ -41,6 +41,20 @@ def local_app(tmp_path) -> LocalApp:
     return LocalApp(TestClient(app, base_url=LOCAL_ORIGIN), store, accounts)
 
 
+def make_lan_client(local_app: LocalApp, origin: str) -> TestClient:
+    settings = Settings(
+        environment="test",
+        port=8992,
+        data_dir=local_app.store.data_dir,
+        portal_internal_token="local-test-signing-token-strong",
+        identity_mode="local",
+        allowed_origins=(origin,),
+        trusted_hosts=("192.168.1.20",),
+        session_ttl_seconds=600,
+    )
+    return TestClient(create_app(settings, static_dir=local_app.store.data_dir / "missing-static", canvas_store=local_app.store), base_url=origin)
+
+
 def mutation_headers(csrf_token: str, *, origin: str = LOCAL_ORIGIN) -> dict[str, str]:
     return {"X-CSRF-Token": csrf_token, "Origin": origin}
 
@@ -69,6 +83,15 @@ def test_login_cookie_session_csrf_and_logout(local_app: LocalApp) -> None:
     logout = local_app.client.post("/api/v1/auth/logout", headers=mutation_headers(csrf))
     assert logout.status_code == 204
     assert local_app.client.get("/api/v1/session").status_code == 401
+
+
+def test_lan_origin_can_mutate_only_with_its_exact_csrf_origin(local_app: LocalApp) -> None:
+    origin = "http://192.168.1.20:8992"
+    client = make_lan_client(local_app, origin)
+    login = client.post("/api/v1/auth/login", json={"username": local_app.accounts.user_username, "password": local_app.accounts.user_password})
+    csrf = login.json()["csrf_token"]
+
+    assert client.post("/api/v1/auth/logout", headers={"Origin": origin, "X-CSRF-Token": csrf}).status_code == 204
 
 
 def test_unknown_disabled_and_wrong_password_have_same_public_failure(local_app: LocalApp) -> None:
