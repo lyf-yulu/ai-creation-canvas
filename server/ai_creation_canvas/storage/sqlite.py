@@ -41,6 +41,48 @@ def _legacy_route_id(model_id: str) -> str:
     return f"legacy-{hashlib.sha256(model_id.encode('utf-8')).hexdigest()}"
 
 
+def _validate_comfy_workflow_pair(editor_json: str | None, api_json: str | None) -> None:
+    """Ensure a dual-format revision describes the same node IDs and types."""
+    if editor_json is None or api_json is None:
+        return
+    from ai_creation_canvas.comfy import parse_workflow_json
+
+    editor = parse_workflow_json(editor_json.encode("utf-8"))
+    api = parse_workflow_json(api_json.encode("utf-8"))
+    editor_inventory = {node.id: node.type for node in editor.preview.nodes}
+    api_inventory = {node.id: node.type for node in api.preview.nodes}
+    if editor_inventory != api_inventory:
+        raise ValueError("WORKFLOW_PAIR_MISMATCH")
+
+
+def _validate_comfy_revision_payload(
+    editor_json: str | None,
+    api_json: str | None,
+    editor_checksum: str | None,
+    api_checksum: str | None,
+) -> None:
+    """Require at least one faithful format and its checksum before durable writes."""
+    formats = (
+        ("editor", editor_json, editor_checksum),
+        ("api", api_json, api_checksum),
+    )
+    if all(raw is None for _, raw, _ in formats):
+        raise ValueError("WORKFLOW_FORMAT_REQUIRED")
+    from ai_creation_canvas.comfy import WorkflowFormat, parse_workflow_json
+
+    for format_name, raw, checksum in formats:
+        if raw is None:
+            if checksum is not None:
+                raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+            continue
+        if not isinstance(raw, str) or not isinstance(checksum, str) or not checksum:
+            raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+        parsed = parse_workflow_json(raw.encode("utf-8"))
+        expected_format = WorkflowFormat(format_name)
+        if parsed.formats != frozenset({expected_format}) or parsed.checksum != checksum:
+            raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+
+
 class AssetQuotaExceeded(ValueError):
     """An atomic asset insert would exceed an administrator-owned quota."""
 
@@ -304,6 +346,24 @@ class CanvasStore:
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_user_id TEXT NOT NULL,
                 action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_comfy_workflows (
+                workflow_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, description TEXT NOT NULL,
+                service_id TEXT NOT NULL, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+                archived_at TEXT, revision INTEGER NOT NULL CHECK(revision >= 1),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_comfy_workflow_revisions (
+                workflow_id TEXT NOT NULL REFERENCES canvas_comfy_workflows(workflow_id) ON DELETE RESTRICT,
+                revision INTEGER NOT NULL, source_filename TEXT NOT NULL, editor_json TEXT, api_json TEXT,
+                editor_checksum TEXT, api_checksum TEXT, node_inventory_json TEXT NOT NULL,
+                dependency_inventory_json TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+                PRIMARY KEY(workflow_id, revision)
+            )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_comfy_workflow_access (
+                user_id TEXT NOT NULL, workflow_id TEXT NOT NULL REFERENCES canvas_comfy_workflows(workflow_id) ON DELETE RESTRICT,
+                granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT,
+                PRIMARY KEY(user_id, workflow_id)
             )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_projects (
                 project_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -575,6 +635,280 @@ class CanvasStore:
             "INSERT INTO canvas_admin_audit(actor_user_id,action,target_type,target_id,created_at) VALUES (?,?,?,?,?)",
             (actor_user_id, action, target_type, target_id, _now()),
         )
+
+    def create_comfy_workflow(
+        self,
+        *,
+        workflow_id: str,
+        display_name: str,
+        description: str,
+        service_id: str,
+        source_filename: str,
+        editor_json: str | None,
+        api_json: str | None,
+        editor_checksum: str | None,
+        api_checksum: str | None,
+        node_inventory_json: str,
+        dependency_inventory_json: str,
+        actor_user_id: str,
+    ) -> dict[str, object]:
+        """Create a disabled workflow and its immutable first revision together."""
+        _validate_comfy_revision_payload(editor_json, api_json, editor_checksum, api_checksum)
+        _validate_comfy_workflow_pair(editor_json, api_json)
+        now = _now()
+        try:
+            with self._connection(immediate=True) as db:
+                db.execute(
+                    "INSERT INTO canvas_comfy_workflows("
+                    "workflow_id,display_name,description,service_id,enabled,archived_at,revision,created_at,updated_at"
+                    ") VALUES (?,?,?,?,0,NULL,1,?,?)",
+                    (workflow_id, display_name, description, service_id, now, now),
+                )
+                db.execute(
+                    "INSERT INTO canvas_comfy_workflow_revisions("
+                    "workflow_id,revision,source_filename,editor_json,api_json,editor_checksum,api_checksum,"
+                    "node_inventory_json,dependency_inventory_json,created_by,created_at"
+                    ") VALUES (?,?,?, ?,?,?,?,?,?,?,?)",
+                    (
+                        workflow_id,
+                        1,
+                        source_filename,
+                        editor_json,
+                        api_json,
+                        editor_checksum,
+                        api_checksum,
+                        node_inventory_json,
+                        dependency_inventory_json,
+                        actor_user_id,
+                        now,
+                    ),
+                )
+                self._audit(
+                    db,
+                    actor_user_id=actor_user_id,
+                    action="comfy_workflow.create",
+                    target_type="comfy_workflow",
+                    target_id=workflow_id,
+                )
+                row = db.execute(
+                    "SELECT * FROM canvas_comfy_workflows WHERE workflow_id=?", (workflow_id,)
+                ).fetchone()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("comfy workflow already exists") from error
+        assert row is not None
+        return dict(row)
+
+    def add_comfy_workflow_revision(
+        self,
+        workflow_id: str,
+        *,
+        expected_revision: int,
+        source_filename: str,
+        editor_json: str | None,
+        api_json: str | None,
+        editor_checksum: str | None,
+        api_checksum: str | None,
+        node_inventory_json: str,
+        dependency_inventory_json: str,
+        actor_user_id: str,
+    ) -> dict[str, object]:
+        """Append one revision and disable it in the same immediate transaction."""
+        _validate_comfy_revision_payload(editor_json, api_json, editor_checksum, api_checksum)
+        _validate_comfy_workflow_pair(editor_json, api_json)
+        with self._connection(immediate=True) as db:
+            current = db.execute(
+                "SELECT revision,archived_at FROM canvas_comfy_workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(workflow_id)
+            if int(current["revision"]) != expected_revision or current["archived_at"] is not None:
+                raise ValueError("comfy workflow revision conflict")
+            for checksum_column, checksum in (
+                ("editor_checksum", editor_checksum),
+                ("api_checksum", api_checksum),
+            ):
+                if checksum is None:
+                    continue
+                duplicate = db.execute(
+                    f"SELECT 1 FROM canvas_comfy_workflow_revisions "
+                    f"WHERE workflow_id=? AND {checksum_column}=?",
+                    (workflow_id, checksum),
+                ).fetchone()
+                if duplicate is not None:
+                    raise ValueError("WORKFLOW_DUPLICATE_REVISION")
+            revision = expected_revision + 1
+            now = _now()
+            db.execute(
+                "INSERT INTO canvas_comfy_workflow_revisions("
+                "workflow_id,revision,source_filename,editor_json,api_json,editor_checksum,api_checksum,"
+                "node_inventory_json,dependency_inventory_json,created_by,created_at"
+                ") VALUES (?,?,?, ?,?,?,?,?,?,?,?)",
+                (
+                    workflow_id,
+                    revision,
+                    source_filename,
+                    editor_json,
+                    api_json,
+                    editor_checksum,
+                    api_checksum,
+                    node_inventory_json,
+                    dependency_inventory_json,
+                    actor_user_id,
+                    now,
+                ),
+            )
+            cursor = db.execute(
+                "UPDATE canvas_comfy_workflows SET enabled=0,revision=?,updated_at=? "
+                "WHERE workflow_id=? AND revision=? AND archived_at IS NULL",
+                (revision, now, workflow_id, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("comfy workflow revision conflict")
+            self._audit(
+                db,
+                actor_user_id=actor_user_id,
+                action="comfy_workflow.revision_create",
+                target_type="comfy_workflow",
+                target_id=workflow_id,
+            )
+            row = db.execute(
+                "SELECT * FROM canvas_comfy_workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def set_comfy_workflow_lifecycle(
+        self,
+        workflow_id: str,
+        *,
+        expected_revision: int,
+        enabled: bool | None,
+        archived: bool | None,
+        actor_user_id: str,
+    ) -> dict[str, object]:
+        """Apply one exact-revision enable, disable, archive, or restore transition."""
+        if (enabled is None) == (archived is None):
+            raise ValueError("comfy workflow lifecycle is invalid")
+        if enabled is not None and type(enabled) is not bool:
+            raise ValueError("comfy workflow lifecycle is invalid")
+        if archived is not None and type(archived) is not bool:
+            raise ValueError("comfy workflow lifecycle is invalid")
+        with self._connection(immediate=True) as db:
+            current = db.execute(
+                "SELECT revision,archived_at FROM canvas_comfy_workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()
+            if current is None:
+                raise KeyError(workflow_id)
+            if int(current["revision"]) != expected_revision:
+                raise ValueError("comfy workflow revision conflict")
+            now = _now()
+            if enabled is not None:
+                if current["archived_at"] is not None:
+                    raise ValueError("comfy workflow lifecycle conflict")
+                action = "enable" if enabled else "disable"
+                cursor = db.execute(
+                    "UPDATE canvas_comfy_workflows SET enabled=?,revision=revision+1,updated_at=? "
+                    "WHERE workflow_id=? AND revision=? AND archived_at IS NULL",
+                    (int(enabled), now, workflow_id, expected_revision),
+                )
+            elif archived:
+                if current["archived_at"] is not None:
+                    raise ValueError("comfy workflow lifecycle conflict")
+                action = "archive"
+                cursor = db.execute(
+                    "UPDATE canvas_comfy_workflows SET enabled=0,archived_at=?,revision=revision+1,updated_at=? "
+                    "WHERE workflow_id=? AND revision=? AND archived_at IS NULL",
+                    (now, now, workflow_id, expected_revision),
+                )
+            else:
+                if current["archived_at"] is None:
+                    raise ValueError("comfy workflow lifecycle conflict")
+                action = "restore"
+                cursor = db.execute(
+                    "UPDATE canvas_comfy_workflows SET enabled=0,archived_at=NULL,revision=revision+1,updated_at=? "
+                    "WHERE workflow_id=? AND revision=? AND archived_at IS NOT NULL",
+                    (now, workflow_id, expected_revision),
+                )
+            if cursor.rowcount != 1:
+                raise ValueError("comfy workflow revision conflict")
+            self._audit(
+                db,
+                actor_user_id=actor_user_id,
+                action=f"comfy_workflow.{action}",
+                target_type="comfy_workflow",
+                target_id=workflow_id,
+            )
+            row = db.execute(
+                "SELECT * FROM canvas_comfy_workflows WHERE workflow_id=?", (workflow_id,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def replace_comfy_workflow_assignments(
+        self, user_id: str, workflow_ids: tuple[str, ...], *, actor_user_id: str
+    ) -> tuple[str, ...]:
+        """Replace a user's assignments atomically after validating active templates."""
+        if (
+            len(workflow_ids) > 128
+            or len(workflow_ids) != len(set(workflow_ids))
+            or any(not isinstance(workflow_id, str) or not workflow_id for workflow_id in workflow_ids)
+        ):
+            raise ValueError("comfy workflow assignments are invalid")
+        with self._connection(immediate=True) as db:
+            if workflow_ids:
+                placeholders = ",".join("?" for _ in workflow_ids)
+                found = {
+                    str(row[0])
+                    for row in db.execute(
+                        f"SELECT workflow_id FROM canvas_comfy_workflows "
+                        f"WHERE archived_at IS NULL AND workflow_id IN ({placeholders})",
+                        workflow_ids,
+                    )
+                }
+                if found != set(workflow_ids):
+                    missing = next(workflow_id for workflow_id in workflow_ids if workflow_id not in found)
+                    raise KeyError(missing)
+            now = _now()
+            db.execute("DELETE FROM canvas_comfy_workflow_access WHERE user_id=?", (user_id,))
+            db.executemany(
+                "INSERT INTO canvas_comfy_workflow_access(user_id,workflow_id,granted_by,granted_at,revoked_at) "
+                "VALUES (?,?,?,?,NULL)",
+                ((user_id, workflow_id, actor_user_id, now) for workflow_id in workflow_ids),
+            )
+            self._audit(
+                db,
+                actor_user_id=actor_user_id,
+                action="comfy_workflow.assignments_replace",
+                target_type="comfy_workflow_assignment",
+                target_id=user_id,
+            )
+        return tuple(workflow_ids)
+
+    def list_comfy_workflows(self) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM canvas_comfy_workflows ORDER BY display_name,workflow_id"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def assigned_comfy_workflows(self, user_id: str) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT w.* FROM canvas_comfy_workflows w "
+                "JOIN canvas_comfy_workflow_access a ON a.workflow_id=w.workflow_id "
+                "WHERE a.user_id=? AND a.revoked_at IS NULL AND w.enabled=1 AND w.archived_at IS NULL "
+                "ORDER BY w.display_name,w.workflow_id",
+                (user_id,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def comfy_workflow_revision(self, workflow_id: str, revision: int) -> dict[str, object] | None:
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM canvas_comfy_workflow_revisions WHERE workflow_id=? AND revision=?",
+                (workflow_id, revision),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     @staticmethod
     def _require_revision(expected_revision: int) -> None:

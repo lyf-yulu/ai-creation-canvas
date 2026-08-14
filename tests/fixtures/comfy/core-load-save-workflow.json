@@ -1,0 +1,13 @@
+{
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {"id": 1, "type": "LoadImage", "pos": [0, 0], "size": [220, 100], "inputs": [], "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1]}], "properties": {}, "widgets_values": ["example.png"]},
+    {"id": 2, "type": "SaveImage", "pos": [320, 0], "size": [220, 100], "inputs": [{"name": "images", "type": "IMAGE", "link": 1}], "outputs": [], "properties": {}, "widgets_values": ["aicc"]}
+  ],
+  "links": [[1, 1, 0, 2, 0, "IMAGE"]],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
