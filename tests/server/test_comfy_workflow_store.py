@@ -112,3 +112,111 @@ def test_store_rejects_a_paired_editor_and_api_revision_with_different_inventory
             dependency_inventory_json="{}",
             actor_user_id="admin",
         )
+
+
+def test_paired_revision_rejects_an_already_stored_api_checksum_without_side_effects(tmp_path: Path) -> None:
+    """Checking only the new editor checksum would allow an API revision to be reused."""
+    store = CanvasStore(tmp_path)
+    editor = parse_workflow_json(FIXTURE.read_bytes())
+    api = parse_workflow_json(API_BYTES)
+    store.create_comfy_workflow(
+        workflow_id="cw-paired",
+        display_name="Paired duplicate",
+        description="",
+        service_id="comfy-local",
+        source_filename="workflow.json",
+        editor_json=None,
+        api_json=export_workflow(api, WorkflowFormat.API).decode(),
+        editor_checksum=None,
+        api_checksum=api.checksum,
+        node_inventory_json="{}",
+        dependency_inventory_json="{}",
+        actor_user_id="admin",
+    )
+    before_events = store.admin_audit_events()
+
+    with pytest.raises(ValueError, match="WORKFLOW_DUPLICATE_REVISION"):
+        store.add_comfy_workflow_revision(
+            "cw-paired",
+            expected_revision=1,
+            source_filename="workflow.json",
+            editor_json=export_workflow(editor, WorkflowFormat.EDITOR).decode(),
+            api_json=export_workflow(api, WorkflowFormat.API).decode(),
+            editor_checksum=editor.checksum,
+            api_checksum=api.checksum,
+            node_inventory_json="{}",
+            dependency_inventory_json="{}",
+            actor_user_id="admin",
+        )
+
+    assert store.list_comfy_workflows()[0]["revision"] == 1
+    assert store.admin_audit_events() == before_events
+
+
+def test_store_rejects_no_format_for_template_creation_and_revision_append(tmp_path: Path) -> None:
+    """A revision with no exportable format is corrupt durable workflow history."""
+    store = CanvasStore(tmp_path)
+    empty = {
+        "source_filename": "workflow.json",
+        "editor_json": None,
+        "api_json": None,
+        "editor_checksum": None,
+        "api_checksum": None,
+        "node_inventory_json": "{}",
+        "dependency_inventory_json": "{}",
+        "actor_user_id": "admin",
+    }
+
+    with pytest.raises(ValueError, match="WORKFLOW_FORMAT_REQUIRED"):
+        store.create_comfy_workflow(
+            workflow_id="cw-empty",
+            display_name="Empty",
+            description="",
+            service_id="comfy-local",
+            **empty,
+        )
+
+    api = parse_workflow_json(API_BYTES)
+    store.create_comfy_workflow(
+        workflow_id="cw-valid",
+        display_name="Valid",
+        description="",
+        service_id="comfy-local",
+        source_filename="workflow.json",
+        editor_json=None,
+        api_json=export_workflow(api, WorkflowFormat.API).decode(),
+        editor_checksum=None,
+        api_checksum=api.checksum,
+        node_inventory_json="{}",
+        dependency_inventory_json="{}",
+        actor_user_id="admin",
+    )
+    before_events = store.admin_audit_events()
+
+    with pytest.raises(ValueError, match="WORKFLOW_FORMAT_REQUIRED"):
+        store.add_comfy_workflow_revision("cw-valid", expected_revision=1, **empty)
+
+    assert store.list_comfy_workflows()[0]["revision"] == 1
+    assert store.admin_audit_events() == before_events
+
+
+def test_store_requires_a_checksum_for_each_supplied_format(tmp_path: Path) -> None:
+    """An unchecksummed document cannot be treated as an immutable revision."""
+    store = CanvasStore(tmp_path)
+    editor = parse_workflow_json(FIXTURE.read_bytes())
+
+    with pytest.raises(ValueError, match="WORKFLOW_FORMAT_CHECKSUM_REQUIRED"):
+        store.create_comfy_workflow(
+            workflow_id="cw-no-checksum",
+            display_name="No checksum",
+            description="",
+            service_id="comfy-local",
+            source_filename="workflow.json",
+            editor_json=export_workflow(editor, WorkflowFormat.EDITOR).decode(),
+            api_json=None,
+            editor_checksum=None,
+            api_checksum=None,
+            node_inventory_json="{}",
+            dependency_inventory_json="{}",
+            actor_user_id="admin",
+        )

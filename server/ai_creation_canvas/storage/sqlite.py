@@ -55,6 +55,34 @@ def _validate_comfy_workflow_pair(editor_json: str | None, api_json: str | None)
         raise ValueError("WORKFLOW_PAIR_MISMATCH")
 
 
+def _validate_comfy_revision_payload(
+    editor_json: str | None,
+    api_json: str | None,
+    editor_checksum: str | None,
+    api_checksum: str | None,
+) -> None:
+    """Require at least one faithful format and its checksum before durable writes."""
+    formats = (
+        ("editor", editor_json, editor_checksum),
+        ("api", api_json, api_checksum),
+    )
+    if all(raw is None for _, raw, _ in formats):
+        raise ValueError("WORKFLOW_FORMAT_REQUIRED")
+    from ai_creation_canvas.comfy import WorkflowFormat, parse_workflow_json
+
+    for format_name, raw, checksum in formats:
+        if raw is None:
+            if checksum is not None:
+                raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+            continue
+        if not isinstance(raw, str) or not isinstance(checksum, str) or not checksum:
+            raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+        parsed = parse_workflow_json(raw.encode("utf-8"))
+        expected_format = WorkflowFormat(format_name)
+        if parsed.formats != frozenset({expected_format}) or parsed.checksum != checksum:
+            raise ValueError("WORKFLOW_FORMAT_CHECKSUM_REQUIRED")
+
+
 class AssetQuotaExceeded(ValueError):
     """An atomic asset insert would exceed an administrator-owned quota."""
 
@@ -625,6 +653,7 @@ class CanvasStore:
         actor_user_id: str,
     ) -> dict[str, object]:
         """Create a disabled workflow and its immutable first revision together."""
+        _validate_comfy_revision_payload(editor_json, api_json, editor_checksum, api_checksum)
         _validate_comfy_workflow_pair(editor_json, api_json)
         now = _now()
         try:
@@ -684,6 +713,7 @@ class CanvasStore:
         actor_user_id: str,
     ) -> dict[str, object]:
         """Append one revision and disable it in the same immediate transaction."""
+        _validate_comfy_revision_payload(editor_json, api_json, editor_checksum, api_checksum)
         _validate_comfy_workflow_pair(editor_json, api_json)
         with self._connection(immediate=True) as db:
             current = db.execute(
@@ -693,18 +723,19 @@ class CanvasStore:
                 raise KeyError(workflow_id)
             if int(current["revision"]) != expected_revision or current["archived_at"] is not None:
                 raise ValueError("comfy workflow revision conflict")
-            if editor_checksum is not None:
+            for checksum_column, checksum in (
+                ("editor_checksum", editor_checksum),
+                ("api_checksum", api_checksum),
+            ):
+                if checksum is None:
+                    continue
                 duplicate = db.execute(
-                    "SELECT 1 FROM canvas_comfy_workflow_revisions WHERE workflow_id=? AND editor_checksum=?",
-                    (workflow_id, editor_checksum),
+                    f"SELECT 1 FROM canvas_comfy_workflow_revisions "
+                    f"WHERE workflow_id=? AND {checksum_column}=?",
+                    (workflow_id, checksum),
                 ).fetchone()
-            else:
-                duplicate = db.execute(
-                    "SELECT 1 FROM canvas_comfy_workflow_revisions WHERE workflow_id=? AND api_checksum=?",
-                    (workflow_id, api_checksum),
-                ).fetchone()
-            if duplicate is not None:
-                raise ValueError("WORKFLOW_DUPLICATE_REVISION")
+                if duplicate is not None:
+                    raise ValueError("WORKFLOW_DUPLICATE_REVISION")
             revision = expected_revision + 1
             now = _now()
             db.execute(
