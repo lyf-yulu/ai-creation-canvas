@@ -8,6 +8,25 @@
 
 **Tech Stack:** Python 3.12, FastAPI, asyncio, SQLite, httpx adapters, React/TypeScript, Vitest, pytest.
 
+## Implementation Status and Approved Compatibility Amendment (2026-08-14)
+
+**Status:** Implemented and verified, with the approved Cookie Portal compatibility exception recorded in `2026-08-14-portal-request-scoped-polling.md`.
+
+This document is retained as the historical implementation plan. Its original goal and task steps described server-owned background polling as the common path; implementation review established that the existing Cookie-authenticated Portal image, video, and portrait contracts cannot safely be polled by a browser-independent worker without persisting a user Cookie. The approved follow-up did not weaken the no-Cookie or no-replay constraints. It introduced two persisted completion modes instead:
+
+- `background`: explicitly background-capable direct adapters and managed routes survive browser closure and a single-process restart; their job GET remains read-only.
+- `request`: trusted Cookie Portal image, video, and portrait adapters are never worker-polled. Only the current owner GET may use that request's fresh Cookie for one poll. Portal `401`/`403` releases the lease and leaves the job queued/running so re-login can resume it.
+
+Cookies are never persisted, logged, placed in snapshots, or passed to the worker. Ambiguous direct submissions remain `submission_unknown` and are never replayed; only a failure explicitly classified as `NOT_SUBMITTED` is eligible for controlled retry. The additive SQLite migration classifies legacy nonterminal rows only from trusted server registries and leaves unresolved rows unclaimable. Consequently, every unconditional statement below about direct-job GET being read-only or browser-independent/offline recovery must be read as applying only to `background` mode, not to every provider.
+
+Compatibility follow-up steps completed:
+
+- [x] Seal ambiguous direct submission ownership and replay behavior.
+- [x] Add bounded `background`/`request` completion modes and trusted legacy-row reconciliation.
+- [x] Restore request-scoped Portal image, video, and portrait polling without Cookie persistence.
+- [x] Verify owner-only GET polling, worker exclusion, restart with a fresh Cookie, and `401`/`403` re-login recovery.
+- [x] Update operator and verification documentation with the narrowed recovery claim and single-instance migration/backup boundary.
+
 ## Global Constraints
 
 - Target a company-internal single instance; do not add Redis Streams, Celery, or another queue.
