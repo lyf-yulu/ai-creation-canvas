@@ -83,7 +83,7 @@ it("normalizes model metadata without retaining endpoint, credential, or ComfyUI
             id: "model", type: "config", title: "Model", position: { x: 0, y: 0 }, width: 320, height: 200,
             metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model-1", operation: "image.generate", inputPorts: [], outputPortId: "result", parameters: {}, endpoint: "https://example.invalid", credential: "secret", class_type: "KSampler" } },
         }],
-        connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 },
+        connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines" as const, showImageInfo: false, viewport: { x: 0, y: 0, k: 1 },
     });
 
     expect(project.nodes[0]?.metadata?.graph).toEqual({
@@ -95,4 +95,33 @@ it("normalizes model metadata without retaining endpoint, credential, or ComfyUI
         outputPortId: "result",
         parameters: {},
     });
+});
+
+it("drops malicious outer ComfyUI metadata across normalize/save/reload while retaining only the validated template reference", () => {
+    const submitted = {
+        id: "project",
+        title: "Project",
+        createdAt: "2026-08-16T00:00:00.000Z",
+        updatedAt: "2026-08-16T00:00:00.000Z",
+        nodes: [{
+            id: "workflow", type: "comfy.workflow", title: "Core", position: { x: 0, y: 0 }, width: 320, height: 200,
+            metadata: {
+                status: "idle",
+                graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "comfy-workflow", workflowId: "wf-1", workflowRevision: 2, inputPorts: [], outputPortId: "result", executionEnabled: false },
+                endpoint: "https://example.invalid", base_url: "https://example.invalid", service_url: "https://example.invalid",
+                credential: "secret", credentials: "secret", auth: "secret", token: "secret", headers: { authorization: "secret" },
+                class_type: "KSampler", node_ids: ["1"], code: "run()", plugin: "untrusted",
+            } as never,
+        }],
+        connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines" as const, showImageInfo: false, viewport: { x: 0, y: 0, k: 1 },
+    };
+
+    const saved = normalizeCanvasProject(submitted);
+    const reloaded = normalizeCanvasProject(JSON.parse(JSON.stringify(saved)));
+
+    expect(reloaded.nodes[0]?.metadata).toEqual({
+        status: "idle",
+        graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "comfy-workflow", workflowId: "wf-1", workflowRevision: 2, inputPorts: [], outputPortId: "result", executionEnabled: false },
+    });
+    expect(JSON.stringify(reloaded)).not.toMatch(/example\.invalid|secret|KSampler|run\(\)|untrusted/);
 });

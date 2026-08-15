@@ -130,11 +130,20 @@ function canonicalJson(value: unknown): string {
 function normalizeNode(node: CanvasNodeInput): CanvasNodeData {
     const metadata = node.metadata ? { ...node.metadata } : undefined;
     if (!isBuiltInGraphNode(node.type)) return { ...node, position: { ...node.position }, metadata: metadata as CanvasNodeMetadata | undefined };
+    const graph = normalizeGraphMetadata(node, metadata);
+    if (node.type === "comfy.workflow") {
+        // A later execution slice must re-authorize this ID/revision server-side; local project data never proves assignment.
+        return { ...node, position: { ...node.position }, metadata: { status: safeCanvasNodeStatus(metadata?.status), graph } };
+    }
     return {
         ...node,
         position: { ...node.position },
-        metadata: { ...metadata, graph: normalizeGraphMetadata(node, metadata) },
+        metadata: { ...metadata, graph },
     };
+}
+
+function safeCanvasNodeStatus(value: unknown): CanvasNodeMetadata["status"] {
+    return value === "success" || value === "loading" || value === "error" ? value : "idle";
 }
 
 function isBuiltInGraphNode(type: CanvasNodeData["type"]) {
