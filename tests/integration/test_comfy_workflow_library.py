@@ -56,6 +56,8 @@ def test_assigned_user_can_only_read_safe_metadata_while_other_users_are_hidden(
         json={"revision": 1},
     ).status_code == 200
 
+    assert [item["workflow_id"] for item in user_a.get("/api/v1/comfy-workflows").json()["workflows"]] == [workflow_id]
+    assert user_b.get("/api/v1/comfy-workflows").json()["workflows"] == []
     detail = user_a.get(f"/api/v1/comfy-workflows/{workflow_id}")
     assert detail.status_code == 200
     for client in (user_a, user_b):

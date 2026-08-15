@@ -140,13 +140,13 @@ AICC_LOCAL_DATA="$(mktemp -d "$PWD/.local-data/task7-comfy.XXXXXX")" \
 
 ```bash
 AICC_LOCAL_DATA="/absolute/new-temporary-data-dir" \
-  AICC_COMFYUI_SERVICES="/absolute/new-temporary-config-dir/comfyui-services.json" \
+  AICC_COMFYUI_SERVICES="/absolute/new-temporary-data-dir/config/comfyui-services.json" \
   AICC_LOCAL_PORT=8992 \
   bash scripts/run-local.sh
 ```
 
-声明只能指定测试用服务 ID 与测试用回环 URL；本验收不启动、连接或请求真实 ComfyUI。启动前须确认脚本仅传入临时数据目录、该受信声明、`web/dist`、回环地址和端口 `8992`，绝不传入生产目录、生产端口或生产配置。
+声明必须是该新数据目录 `config/` 内的普通非符号链接文件，只能指定测试用服务 ID 与数值回环 URL（`127.0.0.1` 或 `::1`）；本验收不启动、连接或请求真实 ComfyUI。启动前须确认脚本仅传入临时数据目录、该受信声明、`web/dist`、回环地址和端口 `8992`，绝不传入生产目录、生产端口或生产配置。
 
 管理员应原样导入、预览并导出三个输入，启用仓库自写模板并派发给测试用户 A；测试用户 A 必须可列出并读取该模板，测试用户 B 的列表必须为空且读取该模板必须为 404。测试结束后确认 `8992` 已停止且生产端口/进程未发生变化。
 
-本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 137 项通过（含本地 Comfy 服务声明启动保护），前端定向门禁为 5 个文件、70 项通过，`lint` typecheck 与生产构建均成功（保留既有 chunk 警告）。隔离实例仅使用 8992、全新忽略数据目录和无监听的测试回环服务 URL；三份工作流完成原样导入、预览和 editor 导出，核心样例完成启用与用户 A 派发，用户 A 可列出/读取，用户 B 列表为空且详情为 404。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。
+本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 143 项通过（含本地 Comfy 服务声明启动保护与双用户目录隔离回归），前端定向门禁为 5 个文件、70 项通过，`lint` typecheck 与生产构建均成功（保留既有 chunk 警告）。隔离实例仅使用 8992、全新忽略数据目录内的 `config/` 声明以及无监听的数值回环服务 URL；三份工作流完成原样导入、预览和 editor 导出，核心样例完成启用与用户 A 派发，用户 A 可列出/读取，用户 B 列表为空且详情为 404。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。
