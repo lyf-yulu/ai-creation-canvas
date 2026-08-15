@@ -15,9 +15,9 @@ from ai_creation_canvas.errors import AdapterNotFoundError
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "comfy" / "core-load-save-workflow.json"
 
 
-def _write_services(path: Path, *, auth_header_ref: str | None = None) -> None:
+def _write_services(path: Path, *, auth_header_ref: str | None = None, base_url: str = "http://127.0.0.1:8188") -> None:
     path.write_text(json.dumps({"services": [{
-        "service_id": "comfy-local", "base_url": "http://127.0.0.1:8188",
+        "service_id": "comfy-local", "base_url": base_url,
         "timeout_seconds": 3, "auth_header_ref": auth_header_ref,
     }]}), encoding="utf-8")
 
@@ -33,11 +33,12 @@ def _admin_headers(client: TestClient, password: str) -> dict[str, str]:
 
 
 def test_local_app_loads_trusted_comfy_services_and_allows_lifecycle_enable_without_network(tmp_path: Path) -> None:
-    config = tmp_path / "trusted" / "comfyui-services.json"
-    config.parent.mkdir()
+    data_dir = tmp_path / "data"
+    config = data_dir / "config" / "comfyui-services.json"
+    config.parent.mkdir(parents=True)
     _write_services(config, auth_header_ref="local-reference-not-a-secret")
     app, accounts = create_local_app(
-        port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist",
+        port=8993, data_dir=data_dir, static_dir=tmp_path / "dist",
         bootstrap_if_empty=True, comfyui_services_config=config,
     )
     assert accounts is not None and accounts.created
@@ -63,8 +64,8 @@ def test_local_app_loads_trusted_comfy_services_and_allows_lifecycle_enable_with
 
 
 def test_local_app_rejects_unsafe_comfy_service_path(tmp_path: Path) -> None:
-    trusted = tmp_path / "trusted"
-    trusted.mkdir()
+    trusted = tmp_path / "data" / "config"
+    trusted.mkdir(parents=True)
     target = trusted / "services.json"
     _write_services(target)
     symlink = trusted / "comfyui-services.json"
@@ -73,6 +74,40 @@ def test_local_app_rejects_unsafe_comfy_service_path(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="regular non-symlink"):
         create_local_app(
             port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist", comfyui_services_config=symlink
+        )
+
+
+def test_local_app_rejects_comfy_config_outside_its_data_config_root(tmp_path: Path) -> None:
+    external = tmp_path / "external" / "comfyui-services.json"
+    external.parent.mkdir()
+    _write_services(external)
+
+    with pytest.raises(ValueError, match="local data config root"):
+        create_local_app(
+            port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist", comfyui_services_config=external
+        )
+
+
+@pytest.mark.parametrize("base_url", ("http://localhost:8188", "https://comfy.example:8188"))
+def test_local_app_rejects_non_numeric_loopback_comfy_hosts(tmp_path: Path, base_url: str) -> None:
+    config = tmp_path / "data" / "config" / "comfyui-services.json"
+    config.parent.mkdir(parents=True)
+    _write_services(config, base_url=base_url)
+
+    with pytest.raises(ValueError, match="numeric loopback"):
+        create_local_app(
+            port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist", comfyui_services_config=config
+        )
+
+
+def test_local_app_retains_production_port_refusal_for_comfy_services(tmp_path: Path) -> None:
+    config = tmp_path / "data" / "config" / "comfyui-services.json"
+    config.parent.mkdir(parents=True)
+    _write_services(config, base_url="http://127.0.0.1:8991")
+
+    with pytest.raises(ValueError, match="ComfyUI services configuration is invalid"):
+        create_local_app(
+            port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist", comfyui_services_config=config
         )
 
 

@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import stat
 import sys
 import threading
 from typing import Callable
+from urllib.parse import urlsplit
 import webbrowser
 
 import uvicorn
 
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.config import Settings
+from ai_creation_canvas.config import Settings, load_comfyui_service_declarations
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.auth.local import BootstrapResult
 
 
 _MIB = 1024 * 1024
+_LOCAL_COMFYUI_HOSTS = frozenset({"127.0.0.1", "::1"})
 
 
 def _upload_mib(value: str) -> int:
@@ -78,10 +81,31 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
+def _local_comfyui_config(data_dir: Path, configured_path: Path | None) -> tuple[Path | None, Path | None]:
+    """Validate a local-only ComfyUI declaration without broadening production policy."""
+    if configured_path is None:
+        return None, None
+    root = Path(data_dir).expanduser().resolve(strict=False) / "config"
+    candidate = Path(configured_path).expanduser()
+    try:
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        declarations = load_comfyui_service_declarations(candidate, root)
+    except (OSError, ValueError) as error:
+        if isinstance(error, ValueError) and str(error) == "ComfyUI services configuration is invalid":
+            raise
+        raise ValueError("local ComfyUI services configuration must be a regular non-symlink file within the local data config root") from None
+    if any(urlsplit(declaration.base_url).hostname not in _LOCAL_COMFYUI_HOSTS for declaration in declarations):
+        raise ValueError("local ComfyUI services must use a numeric loopback host")
+    return candidate, root
+
+
 def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origin = f"http://127.0.0.1:{port}"
-    comfy_config_path = Path(comfyui_services_config).expanduser() if comfyui_services_config is not None else None
-    comfy_config_root = comfy_config_path.parent.resolve(strict=False) if comfy_config_path is not None else None
+    comfy_config_path, comfy_config_root = _local_comfyui_config(data_dir, comfyui_services_config)
     settings = Settings(
         environment="development",
         port=port,
