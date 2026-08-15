@@ -167,7 +167,9 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         )
         services = []
         for declaration in declarations:
-            adapter = ComfyHttpWorkflowService(declaration, auth_header_resolver=comfy_auth_header_resolver)
+            adapter = ComfyHttpWorkflowService(
+                declaration, prompt_owner_store=store, auth_header_resolver=comfy_auth_header_resolver
+            )
             registry.register_comfy_workflow(adapter)
             services.append(adapter)
         app.state.comfy_workflow_services = tuple(services)

@@ -114,6 +114,20 @@ def test_store_rejects_a_paired_editor_and_api_revision_with_different_inventory
         )
 
 
+def test_comfy_prompt_owner_is_durable_and_cannot_be_reassigned_to_another_user(tmp_path: Path) -> None:
+    store = CanvasStore(tmp_path)
+
+    assert store.record_comfy_prompt_owner(
+        service_id="comfy-local", prompt_id="prompt-1", user_id="owner-a", idempotency_key="idem-a"
+    ) is True
+    assert store.record_comfy_prompt_owner(
+        service_id="comfy-local", prompt_id="prompt-1", user_id="owner-b", idempotency_key="idem-b"
+    ) is False
+
+    restored = CanvasStore(tmp_path)
+    assert restored.comfy_prompt_owner("comfy-local", "prompt-1") == "owner-a"
+
+
 def test_paired_revision_rejects_an_already_stored_api_checksum_without_side_effects(tmp_path: Path) -> None:
     """Checking only the new editor checksum would allow an API revision to be reused."""
     store = CanvasStore(tmp_path)

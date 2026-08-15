@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 import re
-from typing import TypeAlias
+from typing import Protocol, TypeAlias
 
 import httpx
 
@@ -20,6 +20,16 @@ _UPSTREAM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 AuthHeaderResolver: TypeAlias = Callable[[str], Mapping[str, str] | None]
 _SubmissionKey: TypeAlias = tuple[str, str]
 _SubmissionOutcome: TypeAlias = tuple[UpstreamJob | None, Exception | None]
+
+
+class ComfyPromptOwnershipStore(Protocol):
+    """Minimal durable boundary for post-submit prompt ownership."""
+
+    def record_comfy_prompt_owner(
+        self, *, service_id: str, prompt_id: str, user_id: str, idempotency_key: str
+    ) -> bool: ...
+
+    def comfy_prompt_owner(self, service_id: str, prompt_id: str) -> str | None: ...
 
 
 class ComfyServiceStatus(StrEnum):
@@ -100,6 +110,7 @@ class ComfyHttpWorkflowService:
         self,
         declaration: ComfyServiceDeclaration,
         *,
+        prompt_owner_store: ComfyPromptOwnershipStore,
         auth_header_resolver: AuthHeaderResolver | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -117,6 +128,7 @@ class ComfyHttpWorkflowService:
             ):
                 self._misconfigured = True
         self.service_id = declaration.service_id
+        self._prompt_owner_store = prompt_owner_store
         self._client = None if self._misconfigured else httpx.AsyncClient(
             base_url=declaration.base_url, timeout=httpx.Timeout(float(declaration.timeout_seconds)),
             headers=dict(headers or {}), transport=transport,
@@ -124,7 +136,7 @@ class ComfyHttpWorkflowService:
         self._submissions: dict[_SubmissionKey, UpstreamJob] = {}
         self._unknown_submissions: set[_SubmissionKey] = set()
         self._in_flight: dict[_SubmissionKey, asyncio.Future[_SubmissionOutcome]] = {}
-        self._prompt_owners: dict[str, str | None] = {}
+        self._prompt_owners: dict[str, str] = {}
 
     async def health(self, context: RequestContext) -> ComfyServiceHealth:
         if self._misconfigured:
@@ -183,13 +195,22 @@ class ComfyHttpWorkflowService:
             self._complete_submission(in_flight, error)
             raise
         else:
+            try:
+                recorded = self._prompt_owner_store.record_comfy_prompt_owner(
+                    service_id=self.service_id,
+                    prompt_id=prompt_id,
+                    user_id=context.user.user_id,
+                    idempotency_key=request.idempotency_key,
+                )
+            except Exception:
+                recorded = False
+            if not recorded:
+                self._unknown_submissions.add(key)
+                error = PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False)
+                self._complete_submission(in_flight, error)
+                raise error
             job = UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
-            # An upstream identifier must be globally unique. If a broken
-            # upstream reuses one, no user may subsequently control it.
-            if prompt_id not in self._prompt_owners:
-                self._prompt_owners[prompt_id] = context.user.user_id
-            elif self._prompt_owners[prompt_id] != context.user.user_id:
-                self._prompt_owners[prompt_id] = None
+            self._prompt_owners[prompt_id] = context.user.user_id
             self._submissions[key] = job
             self._complete_submission(in_flight, None, job)
             return job
@@ -287,7 +308,15 @@ class ComfyHttpWorkflowService:
         return value
 
     def _require_prompt_owner(self, context: RequestContext, prompt_id: str) -> None:
-        if self._prompt_owners.get(prompt_id) != context.user.user_id:
+        owner = self._prompt_owners.get(prompt_id)
+        if owner is None:
+            try:
+                owner = self._prompt_owner_store.comfy_prompt_owner(self.service_id, prompt_id)
+            except Exception:
+                owner = None
+            if owner is not None:
+                self._prompt_owners[prompt_id] = owner
+        if owner != context.user.user_id:
             raise PortalUpstreamError("UPSTREAM_JOB_UNKNOWN", retryable=False)
 
 

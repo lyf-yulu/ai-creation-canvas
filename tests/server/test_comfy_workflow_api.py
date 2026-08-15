@@ -71,6 +71,25 @@ def test_admin_imports_exports_and_assigns_without_exposing_raw_api_json(tmp_pat
     assert user.get(f"/api/v1/comfy-workflows/{workflow_id}/revisions/1/preview").status_code == 404
 
 
+def test_workflow_apis_never_project_durable_comfy_prompt_owner_ids(tmp_path) -> None:
+    app, _accounts, admin, _user, admin_headers, _user_headers = local_clients(tmp_path)
+    _configure_service(app)
+    owner_id = "durable-owner-not-for-http"
+    assert app.state.canvas_store.record_comfy_prompt_owner(
+        service_id="comfy-local", prompt_id="prompt-owner-hidden", user_id=owner_id, idempotency_key="idem-owner-hidden"
+    ) is True
+    workflow_id = _import(admin, admin_headers)
+
+    responses = (
+        admin.get("/api/v1/admin/comfy-workflows"),
+        admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}"),
+        admin.get("/api/v1/admin/comfy-workflows/capabilities"),
+    )
+
+    assert all(response.status_code == 200 for response in responses)
+    assert all(owner_id not in response.text for response in responses)
+
+
 def test_portal_admin_can_manage_library_without_a_local_user_directory(tmp_path) -> None:
     app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), static_dir=tmp_path / "dist")
     admin = TestClient(app)
