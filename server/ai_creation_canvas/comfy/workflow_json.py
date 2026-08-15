@@ -33,27 +33,39 @@ def _canonical_field_name(value: str) -> str:
 
 _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
     "apikey",
-    "api_key",
+    "auth",
+    "auth_header",
+    "auth_token",
     "authorization",
-    "base_url",
-    "callback_url",
+    "access_token",
+    "refresh_token",
     "credential",
     "credentials",
+    "credential_ref",
+    "header",
     "headers",
+    "key",
     "password",
+    "private_key",
+    "public_key",
     "secret",
     "secret_ref",
     "script",
+    "scripts",
     "plugin",
+    "plugins",
     "code",
     "token",
-    "url",
     "webhook",
     "auth_header_ref",
-    "service_url",
-    "endpoint_url",
-    "server_url",
+    "endpoint",
 })
+
+
+def _is_forbidden_field_name(value: str) -> bool:
+    """Permit only a generic URL metadata key; reject all URL-bearing aliases."""
+    name = _canonical_field_name(value)
+    return name != "url" and ("url" in name or name in _FORBIDDEN_FIELD_NAMES)
 
 
 def canonical_checksum(value: object) -> str:
@@ -148,7 +160,7 @@ def _assert_value_limits(value: object, *, depth: int) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             _assert_value_limits(key, depth=depth + 1)
-            if _canonical_field_name(key) in _FORBIDDEN_FIELD_NAMES:
+            if _is_forbidden_field_name(key):
                 raise WorkflowValidationError("WORKFLOW_FIELD_REJECTED")
             _assert_value_limits(item, depth=depth + 1)
         return

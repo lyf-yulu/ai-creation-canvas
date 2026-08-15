@@ -47,7 +47,38 @@ def test_rejects_dangling_link_and_sensitive_key() -> None:
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_TOPOLOGY_INVALID"):
         parse_workflow_json(b'{"nodes":[{"id":1,"type":"LoadImage"}],"links":[[1,1,0,2,0,"IMAGE"]]}')
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
-        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"uRl":"https://bad.example"}}}')
+        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"base_URL":"https://bad.example"}}}')
+
+
+@pytest.mark.parametrize("field", ("url", "URL", "_url_", "u-r_l"))
+def test_allows_only_generic_url_key_variants_without_projecting_the_value(field: str) -> None:
+    url = "https://workflow.example/metadata"
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: url}}}).encode()
+
+    parsed = parse_workflow_json(raw)
+
+    assert parsed.formats == frozenset({WorkflowFormat.API})
+    assert url not in repr(parsed.preview)
+    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.API))) == parsed.checksum
+
+
+@pytest.mark.parametrize("field", ("base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url"))
+def test_rejects_non_generic_url_key_variants(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "https://bad.example"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
+def test_locally_supplied_minimax_workflow_round_trips_without_printing_contents() -> None:
+    path = Path("/Users/260413a/Downloads/▶▷MiniMaxH3-加速视频流整合.json")
+    if not path.is_file():
+        pytest.skip("locally supplied MiniMax workflow is unavailable")
+
+    parsed = parse_workflow_json(path.read_bytes())
+
+    assert parsed.formats == frozenset({WorkflowFormat.EDITOR})
+    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.EDITOR))) == parsed.checksum
 
 
 @pytest.mark.parametrize("field", (" api_key ", "\tSeCrEt\n", "\tcredential\n"))

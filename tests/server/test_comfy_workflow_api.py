@@ -112,7 +112,7 @@ def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> Non
 @pytest.mark.parametrize(
     "field",
     (
-        "auth_header_ref", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
+        "auth_header_ref", "base_url", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
         " api_key ", "\tSeCrEt\n", "\tcredential\n",
     ),
 )
@@ -133,6 +133,26 @@ def test_admin_import_rejects_recursive_sensitive_workflow_fields_before_persist
     assert response.json()["code"] == "WORKFLOW_FIELD_REJECTED"
     assert secret not in response.text
     assert app.state.comfy_workflow_library.admin_list() == ()
+
+
+def test_admin_import_allows_generic_url_without_projecting_its_value(tmp_path) -> None:
+    app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
+    url = "https://workflow.example/metadata"
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    payload["extra"]["URL"] = url
+
+    response = admin.post(
+        "/api/v1/admin/comfy-workflows/import",
+        headers=headers,
+        files={"file": ("url.json", json.dumps(payload).encode("utf-8"), "application/json")},
+        data={"display_name": "URL workflow", "service_id": "comfy-local"},
+    )
+
+    assert response.status_code == 201
+    workflow_id = str(response.json()["workflow_id"])
+    preview = admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}/revisions/1/preview")
+    assert preview.status_code == 200
+    assert url not in preview.text
 
 
 def test_admin_import_accepts_normal_workflow_fixture(tmp_path) -> None:
