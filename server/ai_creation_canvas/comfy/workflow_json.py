@@ -26,9 +26,11 @@ _MAX_LINKS = 2_000
 _MAX_DEPTH = 64
 _MAX_STRING_BYTES = 64 * 1024
 _MAX_API_NODE_ID_CHARS = 64
+
+
 def _canonical_field_name(value: str) -> str:
-    """Normalize surrounding whitespace plus deliberate case, underscore, and hyphen variants."""
-    return value.strip().casefold().replace("_", "").replace("-", "")
+    """Normalize case and remove every non-alphanumeric separator for deny checks."""
+    return "".join(character for character in value.casefold() if character.isalnum())
 
 
 _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
@@ -59,13 +61,20 @@ _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
     "webhook",
     "auth_header_ref",
     "endpoint",
+    "base_url",
+    "callback_url",
+    "service_url",
+    "server_url",
+    "webhook_url",
+    "endpoint_url",
+    "service_endpoint",
+    "callback_endpoint",
 })
 
 
 def _is_forbidden_field_name(value: str) -> bool:
-    """Permit only a generic URL metadata key; reject all URL-bearing aliases."""
-    name = _canonical_field_name(value)
-    return name != "url" and ("url" in name or name in _FORBIDDEN_FIELD_NAMES)
+    """Reject only explicit control and credential field names after canonicalization."""
+    return _canonical_field_name(value) in _FORBIDDEN_FIELD_NAMES
 
 
 def canonical_checksum(value: object) -> str:

@@ -112,7 +112,8 @@ def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> Non
 @pytest.mark.parametrize(
     "field",
     (
-        "auth_header_ref", "base_url", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
+        "auth_header_ref", "base_url", "callback_url", "webhook_url", "endpoint", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
+        "api key", "auth\ttoken", "credential.ref", "service u r l", "endpoint\nu-r_l", "s.c.r.i.p.t",
         " api_key ", "\tSeCrEt\n", "\tcredential\n",
     ),
 )
@@ -135,11 +136,11 @@ def test_admin_import_rejects_recursive_sensitive_workflow_fields_before_persist
     assert app.state.comfy_workflow_library.admin_list() == ()
 
 
-def test_admin_import_allows_generic_url_without_projecting_its_value(tmp_path) -> None:
+def test_admin_import_allows_resource_url_metadata_without_projecting_its_value(tmp_path) -> None:
     app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
     url = "https://workflow.example/metadata"
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    payload["extra"]["URL"] = url
+    payload["extra"]["CoS-URL"] = url
 
     response = admin.post(
         "/api/v1/admin/comfy-workflows/import",

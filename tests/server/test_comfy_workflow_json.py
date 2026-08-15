@@ -50,8 +50,8 @@ def test_rejects_dangling_link_and_sensitive_key() -> None:
         parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"base_URL":"https://bad.example"}}}')
 
 
-@pytest.mark.parametrize("field", ("url", "URL", "_url_", "u-r_l"))
-def test_allows_only_generic_url_key_variants_without_projecting_the_value(field: str) -> None:
+@pytest.mark.parametrize("field", ("url", "URL", "_url_", "u-r_l", "cosurl", "cos_url", "CoS-UrL"))
+def test_allows_resource_url_metadata_key_variants_without_projecting_the_value(field: str) -> None:
     url = "https://workflow.example/metadata"
     raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: url}}}).encode()
 
@@ -62,8 +62,11 @@ def test_allows_only_generic_url_key_variants_without_projecting_the_value(field
     assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.API))) == parsed.checksum
 
 
-@pytest.mark.parametrize("field", ("base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url"))
-def test_rejects_non_generic_url_key_variants(field: str) -> None:
+@pytest.mark.parametrize(
+    "field",
+    ("base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url", "webhook_url", "endpoint"),
+)
+def test_rejects_control_endpoint_key_variants(field: str) -> None:
     raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "https://bad.example"}}}).encode()
 
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
@@ -79,6 +82,38 @@ def test_locally_supplied_minimax_workflow_round_trips_without_printing_contents
 
     assert parsed.formats == frozenset({WorkflowFormat.EDITOR})
     assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.EDITOR))) == parsed.checksum
+
+
+def test_locally_supplied_bernini_workflow_round_trips_without_printing_contents() -> None:
+    path = Path("/Users/260413a/Downloads/贝尔尼尼Bernini+Studio工作流.json")
+    if not path.is_file():
+        pytest.skip("locally supplied Bernini workflow is unavailable")
+    try:
+        parsed = parse_workflow_json(path.read_bytes())
+    except WorkflowValidationError:
+        pytest.fail("locally supplied Bernini workflow was rejected", pytrace=False)
+
+    assert parsed.formats == frozenset({WorkflowFormat.EDITOR})
+    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.EDITOR))) == parsed.checksum
+
+
+@pytest.mark.parametrize("field", ("api_key", "auth_token", "header", "script", "plugin", "code"))
+def test_rejects_sensitive_key_names_after_resource_url_relaxation(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("api key", "auth\ttoken", "credential.ref", "service u r l", "endpoint\nu-r_l", "s.c.r.i.p.t"),
+)
+def test_rejects_separator_obfuscated_control_and_sensitive_key_names(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
 
 
 @pytest.mark.parametrize("field", (" api_key ", "\tSeCrEt\n", "\tcredential\n"))
