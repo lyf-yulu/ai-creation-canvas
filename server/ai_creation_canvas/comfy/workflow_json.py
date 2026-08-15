@@ -79,11 +79,17 @@ _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
     "server_endpoint_url",
     "server_url_endpoint",
 })
+_CONTROL_URL_MARKERS = frozenset({"base", "callback", "service", "server", "webhook"})
 
 
 def _is_forbidden_field_name(value: str) -> bool:
-    """Reject only explicit control and credential field names after canonicalization."""
-    return _canonical_field_name(value) in _FORBIDDEN_FIELD_NAMES
+    """Reject sensitive names plus endpoint and control-URL combinations."""
+    name = _canonical_field_name(value)
+    return (
+        name in _FORBIDDEN_FIELD_NAMES
+        or "endpoint" in name
+        or ("url" in name and any(marker in name for marker in _CONTROL_URL_MARKERS))
+    )
 
 
 def canonical_checksum(value: object) -> str:

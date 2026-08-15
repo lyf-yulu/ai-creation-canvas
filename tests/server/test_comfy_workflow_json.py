@@ -67,6 +67,7 @@ def test_allows_resource_url_metadata_key_variants_without_projecting_the_value(
     (
         "base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url", "webhook_url", "endpoint",
         "base endpoint", "webhook\tendpoint", "server.endpoint",
+        "service endpoint url", "service-url-endpoint", "callback endpoint url", "callback_url_endpoint", "resource_endpoint",
     ),
 )
 def test_rejects_control_endpoint_key_variants(field: str) -> None:

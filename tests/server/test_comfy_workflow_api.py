@@ -112,7 +112,7 @@ def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> Non
 @pytest.mark.parametrize(
     "field",
     (
-        "auth_header_ref", "base_url", "callback_url", "webhook_url", "endpoint", "base endpoint", "webhook\tendpoint", "server.endpoint", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
+        "auth_header_ref", "base_url", "callback_url", "webhook_url", "endpoint", "base endpoint", "webhook\tendpoint", "server.endpoint", "service endpoint url", "service-url-endpoint", "callback endpoint url", "callback_url_endpoint", "resource_endpoint", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
         "api key", "auth\ttoken", "credential.ref", "service u r l", "endpoint\nu-r_l", "s.c.r.i.p.t",
         " api_key ", "\tSeCrEt\n", "\tcredential\n",
     ),
