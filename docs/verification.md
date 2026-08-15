@@ -88,3 +88,56 @@ npm run test:browser --prefix web -- --run src/test/browser/canvas-responsive.br
 后端验证管理员经 API 创建 Nano Banana 逻辑模型、官方与 T8 `gemini` 线路，并拒绝 T8 `cc` 负例；上传两张有序参考图；相同用户、相同幂等键并发提交只形成一个平台任务；明确 429 可在同池换 Key，官方池耗尽后才进入兼容 T8 `gemini`，模糊响应只形成一次调用并进入 `submission_unknown`。还验证不可变路由快照、普通目录不泄露线路/池、撤权、跨用户隐藏，以及结果 GET/HEAD/单段 Range。
 
 Chromium 验收宽度为桌面 1280 px、窄屏 415 px 和 240 px。桌面流程通过真实 React 管理界面创建并编辑逻辑模型、添加两条线路、读取安全池容量、派发普通用户、归档/恢复、展示引用删除阻塞，再切换到普通用户画布创建对应模型节点。两档窄屏检查页面无横向溢出且主要操作按钮保持可见。
+
+## ComfyUI 工作流库验收
+
+工作流 round-trip 只做本地解析与重新编码，不向 ComfyUI、模型服务或第三方网络发送请求，也不会证明自定义节点或模型在任何 ComfyUI 实例中可用。它不创建任务、不产生费用，并且不会将外部工作流复制进仓库。
+
+在已安装项目锁定依赖的工作树中执行：
+
+```bash
+.venv/bin/python scripts/verify-comfy-workflow-roundtrip.py \
+  tests/fixtures/comfy/core-load-save-workflow.json \
+  '/Users/260413a/Downloads/▶▷MiniMaxH3-加速视频流整合.json' \
+  '/Users/260413a/Downloads/贝尔尼尼Bernini+Studio工作流.json'
+```
+
+成功时每个输入只输出其 basename、检测到的格式、校验和前缀、节点数和连线数。命令绝不输出节点类型、widgets、提示词或原始 JSON；非零退出也只输出 basename 和稳定错误码。
+
+相应的自动化发布门禁为：
+
+```bash
+PYTHONPATH=.:server .venv/bin/pytest -q \
+  tests/server/test_comfy_workflow_json.py \
+  tests/server/test_comfy_workflow_store.py \
+  tests/server/test_comfy_service.py \
+  tests/server/test_comfy_workflow_api.py \
+  tests/integration/test_comfy_workflow_library.py \
+  tests/server/test_app_security.py \
+  tests/server/test_model_assignments.py
+npm test --prefix web -- --run \
+  src/test/admin-comfy-workflows.test.tsx \
+  src/test/comfy-workflow-preview.test.tsx \
+  src/test/comfy-workflow-node.test.tsx \
+  src/test/extension-registry.test.ts \
+  src/test/canvas-connections.test.tsx
+npm run lint --prefix web
+npm run build --prefix web
+```
+
+`npm run lint --prefix web` remains an explicit release-gate command, but the current package has no `lint` script; it exits nonzero with `Missing script: "lint"`. Do not treat `typecheck` or formatting checks as a substitute for that absent gate.
+
+手工冒烟只可使用 Canvas 测试端口 `127.0.0.1:8992` 和 Git 忽略的全新数据目录：
+
+```bash
+mkdir -p .local-data
+AICC_LOCAL_DATA="$(mktemp -d "$PWD/.local-data/task7-comfy.XXXXXX")" \
+  AICC_LOCAL_PORT=8992 \
+  bash scripts/run-local.sh
+```
+
+启动前须确认 `scripts/run-local.sh` 仅传入该临时目录、`web/dist`、回环地址和端口 `8992`；不得传入生产目录、生产端口或任何生产配置。管理员可通过工作流库页面原样导入、预览并导出三个输入，随后将仓库自写工作流派发给测试用户 A。测试用户 B 必须不能列出或读取该模板。
+
+当前标准 `serve-local` / `run-local.sh` 入口不接受受信 ComfyUI 服务声明，因此它不会装配 `comfy-local` 等服务。此状态下启用操作会被安全拒绝，已派发工作流不会出现在普通用户可见目录中；不得通过浏览器 URL、未声明本地服务或生产服务绕过该边界。完整的“启用后用户 A 可见、用户 B 为 404”手工步骤须待增加一个同样受隔离检查的本地 ComfyUI 服务声明启动入口后再执行。测试结束后确认 `8992` 已停止且生产端口/进程未发生变化。
+
+本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 116 项通过，前端定向门禁为 5 个文件、70 项通过，生产构建成功（保留既有 chunk 警告）。缺失 `lint` 脚本仍使该命令非零退出。手工页面验证完成管理员登录、三份原样导入、两个外部保存图的只读预览、三个 editor 导出触发，以及核心样例向测试用户 A 的派发；启用和普通用户可见性检查受上述安全启动入口边界阻止。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。

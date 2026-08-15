@@ -1,10 +1,31 @@
 from __future__ import annotations
 
+from pathlib import Path
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 
 from ai_creation_canvas.auth.passwords import PasswordHasher
 from tests.server.test_comfy_workflow_api import _configure_service, _import
 from tests.server.test_model_assignments import ORIGIN, local_clients
+
+
+FIXTURE = Path("tests/fixtures/comfy/core-load-save-workflow.json")
+
+
+def test_roundtrip_cli_reports_only_safe_summary(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [sys.executable, "scripts/verify-comfy-workflow-roundtrip.py", str(FIXTURE)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "core-load-save-workflow.json" in completed.stdout
+    assert "LoadImage" not in completed.stdout
+    assert "widgets_values" not in completed.stdout
 
 
 def test_assigned_user_can_only_read_safe_metadata_while_other_users_are_hidden(tmp_path) -> None:
