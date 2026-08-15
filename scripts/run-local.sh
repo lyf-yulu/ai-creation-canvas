@@ -20,9 +20,15 @@ fi
 
 npm ci --prefix "$aicc_repo_root/web"
 npm run build --prefix "$aicc_repo_root/web"
+if [ -n "${AICC_COMFYUI_SERVICES:-}" ]; then
+    set -- --comfyui-services "$AICC_COMFYUI_SERVICES"
+else
+    set --
+fi
 PYTHONPATH="$aicc_repo_root/server" exec "$aicc_python" -m ai_creation_canvas serve-local \
     --port "$AICC_LOCAL_PORT" \
     --data-dir "$AICC_LOCAL_DATA" \
     --static-dir "$aicc_repo_root/web/dist" \
     --bootstrap-if-empty \
-    --open
+    --open \
+    "$@"
