@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import APIRouter, Query, Request
@@ -137,12 +139,18 @@ async def _single_workflow_form(request: Request, *, keys: frozenset[str]) -> _W
     return _WorkflowForm(file=file, fields=fields)
 
 
-async def _bounded_upload_bytes(upload: UploadFile) -> bytes:
+@asynccontextmanager
+async def _workflow_form(request: Request, *, keys: frozenset[str]) -> AsyncIterator[_WorkflowForm]:
+    form = await _single_workflow_form(request, keys=keys)
     try:
-        await upload.seek(0)
-        data = await upload.read(_WORKFLOW_JSON_MAX_BYTES + 1)
+        yield form
     finally:
-        await upload.close()
+        await form.file.close()
+
+
+async def _bounded_upload_bytes(upload: UploadFile) -> bytes:
+    await upload.seek(0)
+    data = await upload.read(_WORKFLOW_JSON_MAX_BYTES + 1)
     if len(data) > _WORKFLOW_JSON_MAX_BYTES:
         raise WorkflowValidationError("WORKFLOW_SIZE_EXCEEDED")
     return data
@@ -182,7 +190,7 @@ def _assigned_template(request: Request, workflow_id: str) -> ComfyWorkflowProje
     raise problem(request, "WORKFLOW_NOT_FOUND", "The requested workflow was not found.", status=404)
 
 
-def _template_projection(item: ComfyWorkflowTemplate | ComfyWorkflowProjection) -> dict[str, object]:
+def _template_projection(request: Request, item: ComfyWorkflowTemplate | ComfyWorkflowProjection) -> dict[str, object]:
     archived_at = item.archived_at if isinstance(item, ComfyWorkflowTemplate) else None
     return {
         "workflow_id": item.workflow_id,
@@ -190,7 +198,8 @@ def _template_projection(item: ComfyWorkflowTemplate | ComfyWorkflowProjection) 
         "description": item.description,
         "service_id": item.service_id,
         "lifecycle": {"enabled": item.enabled, "archived": archived_at is not None},
-        "revision": item.revision,
+        "revision": _latest_document_revision(request, item),
+        "lifecycle_revision": item.revision,
         "execution_available": False,
     }
 
@@ -251,28 +260,28 @@ def _export(request: Request, workflow_id: str, revision: int, format: WorkflowF
 @router.post("/admin/comfy-workflows/import", status_code=201)
 async def import_workflow(request: Request) -> dict[str, object]:
     actor_user_id = _require_admin(request)
-    form = await _single_workflow_form(request, keys=frozenset({"file", "display_name", "service_id"}))
-    try:
-        parsed = parse_workflow_json(await _bounded_upload_bytes(form.file))
-        item = request.app.state.comfy_workflow_library.create_template(
-            form.fields["display_name"], form.fields["service_id"], parsed, actor_user_id=actor_user_id
-        )
-    except (ValueError, WorkflowValidationError) as error:
-        _workflow_error(request, error)
-    return _template_projection(item)
+    async with _workflow_form(request, keys=frozenset({"file", "display_name", "service_id"})) as form:
+        try:
+            parsed = parse_workflow_json(await _bounded_upload_bytes(form.file))
+            item = request.app.state.comfy_workflow_library.create_template(
+                form.fields["display_name"], form.fields["service_id"], parsed, actor_user_id=actor_user_id
+            )
+        except (ValueError, WorkflowValidationError) as error:
+            _workflow_error(request, error)
+        return _template_projection(request, item)
 
 
 @router.get("/admin/comfy-workflows")
 async def admin_list_workflows(request: Request) -> dict[str, object]:
     _require_admin(request)
-    return {"workflows": [_template_projection(item) for item in request.app.state.comfy_workflow_library.admin_list()]}
+    return {"workflows": [_template_projection(request, item) for item in request.app.state.comfy_workflow_library.admin_list()]}
 
 
 @router.get("/admin/comfy-workflows/{workflow_id}")
 async def admin_get_workflow(workflow_id: str, request: Request) -> dict[str, object]:
     _require_admin(request)
     item = _admin_template(request, workflow_id)
-    return {**_template_projection(item), "current_revision": _revision_projection(request, workflow_id, _latest_document_revision(request, item))}
+    return {**_template_projection(request, item), "current_revision": _revision_projection(request, workflow_id, _latest_document_revision(request, item))}
 
 
 @router.get("/admin/comfy-workflows/{workflow_id}/revisions/{revision}/preview")
@@ -295,16 +304,16 @@ async def add_workflow_revision(workflow_id: str, request: Request) -> dict[str,
     current = _admin_template(request, workflow_id)
     if current.enabled:
         raise problem(request, "WORKFLOW_REVISION_CONFLICT", "The workflow must be disabled before revision changes.")
-    form = await _single_workflow_form(request, keys=frozenset({"file", "revision"}))
-    expected_revision = _revision_from_form(request, form.fields.get("revision"))
-    try:
-        parsed = parse_workflow_json(await _bounded_upload_bytes(form.file))
-        item = request.app.state.comfy_workflow_library.add_revision(
-            workflow_id, parsed, expected_revision=expected_revision, actor_user_id=actor_user_id
-        )
-    except (ValueError, WorkflowValidationError) as error:
-        _workflow_error(request, error)
-    return _template_projection(item)
+    async with _workflow_form(request, keys=frozenset({"file", "revision"})) as form:
+        expected_revision = _revision_from_form(request, form.fields.get("revision"))
+        try:
+            parsed = parse_workflow_json(await _bounded_upload_bytes(form.file))
+            item = request.app.state.comfy_workflow_library.add_revision(
+                workflow_id, parsed, expected_revision=expected_revision, actor_user_id=actor_user_id
+            )
+        except (ValueError, WorkflowValidationError) as error:
+            _workflow_error(request, error)
+        return _template_projection(request, item)
 
 
 async def _transition(workflow_id: str, request: Request, *, enabled: bool | None = None, archived: bool | None = None) -> dict[str, object]:
@@ -325,7 +334,7 @@ async def _transition(workflow_id: str, request: Request, *, enabled: bool | Non
         )
     except (ValidationError, ValueError, WorkflowValidationError) as error:
         _workflow_error(request, error)
-    return _template_projection(item)
+    return _template_projection(request, item)
 
 
 @router.post("/admin/comfy-workflows/{workflow_id}/enable")
@@ -366,28 +375,10 @@ async def replace_workflow_assignments(user_id: str, request: Request) -> dict[s
 @router.get("/comfy-workflows")
 async def list_assigned_workflows(request: Request) -> dict[str, object]:
     context_for(request)
-    return {"workflows": [_template_projection(item) for item in request.app.state.comfy_workflow_library.assigned_list(context_for(request).user.user_id)]}
+    return {"workflows": [_template_projection(request, item) for item in request.app.state.comfy_workflow_library.assigned_list(context_for(request).user.user_id)]}
 
 
 @router.get("/comfy-workflows/{workflow_id}")
 async def get_assigned_workflow(workflow_id: str, request: Request) -> dict[str, object]:
     item = _assigned_template(request, workflow_id)
-    return {**_template_projection(item), "current_revision": _revision_projection(request, workflow_id, _latest_document_revision(request, item))}
-
-
-@router.get("/comfy-workflows/{workflow_id}/revisions/{revision}/preview")
-async def preview_assigned_workflow(workflow_id: str, revision: int, request: Request) -> dict[str, object]:
-    item = _assigned_template(request, workflow_id)
-    if revision != _latest_document_revision(request, item):
-        raise problem(request, "WORKFLOW_NOT_FOUND", "The requested workflow was not found.", status=404)
-    return _revision_projection(request, workflow_id, revision)
-
-
-@router.get("/comfy-workflows/{workflow_id}/revisions/{revision}/export")
-async def export_assigned_workflow(workflow_id: str, revision: int, request: Request, format: WorkflowFormat = Query(...)) -> Response:
-    item = _assigned_template(request, workflow_id)
-    if revision != _latest_document_revision(request, item):
-        raise problem(request, "WORKFLOW_NOT_FOUND", "The requested workflow was not found.", status=404)
-    if format is WorkflowFormat.API:
-        raise problem(request, "WORKFLOW_FORMAT_UNAVAILABLE", "The requested workflow format is unavailable.")
-    return _export(request, workflow_id, revision, format)
+    return {**_template_projection(request, item), "current_revision": _revision_projection(request, workflow_id, _latest_document_revision(request, item))}

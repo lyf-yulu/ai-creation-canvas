@@ -28,18 +28,19 @@ _MAX_STRING_BYTES = 64 * 1024
 _MAX_API_NODE_ID_CHARS = 64
 _FORBIDDEN_FIELD_NAMES = frozenset({
     "api_key",
-    "apikey",
     "authorization",
     "base_url",
-    "credential",
-    "credentials",
+    "callback_url",
     "headers",
-    "password",
-    "secret",
-    "secret_ref",
+    "script",
+    "plugin",
+    "code",
     "token",
     "url",
-    "webhook",
+    "auth_header_ref",
+    "service_url",
+    "endpoint_url",
+    "server_url",
 })
 
 
