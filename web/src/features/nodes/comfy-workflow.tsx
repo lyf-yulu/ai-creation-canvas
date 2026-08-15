@@ -60,6 +60,11 @@ export function createComfyWorkflowNode(template: ComfyWorkflowNodeTemplate, pos
     };
 }
 
+/** Creates the sole generic platform node; template selection remains a later controlled slice. */
+export function createUnassignedComfyWorkflowNode(position?: Position) {
+    return createComfyWorkflowNode(placeholderTemplate, position);
+}
+
 export function ComfyWorkflowNodeCard({ node }: { node: CanvasNodeData }) {
     const graph = node.metadata?.graph;
     if (graph?.role !== "comfy-workflow") return null;

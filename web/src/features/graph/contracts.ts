@@ -2,7 +2,11 @@ export const GRAPH_SCHEMA_VERSION = 1 as const;
 
 export type GraphParameterValue = string | number | boolean | null;
 export type GraphMediaType = "image" | "video" | "audio";
-export type GraphNodeRole = "prompt" | "media-collection" | "model" | "result";
+export type GraphNodeRole = "prompt" | "media-collection" | "model" | "comfy-workflow" | "result";
+
+export function isGraphNodeRole(value: unknown): value is GraphNodeRole {
+    return value === "prompt" || value === "media-collection" || value === "model" || value === "comfy-workflow" || value === "result";
+}
 export type GraphPortValueType = "prompt" | GraphMediaType | "result" | "any";
 
 export type GraphInputPortDescriptor = {

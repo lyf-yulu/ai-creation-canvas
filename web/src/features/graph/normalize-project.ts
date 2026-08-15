@@ -1,4 +1,4 @@
-import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, graphInputPortDescriptor, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, graphInputPortDescriptor, isGraphNodeRole, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
 import type { NodeDefinition } from "@/features/nodes/types";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
@@ -201,6 +201,7 @@ function isCurrentGraphMetadata(value: unknown): value is CanvasGraphNodeMetadat
     if (!value || typeof value !== "object") return false;
     const candidate = value as Record<string, unknown>;
     if (candidate.schemaVersion !== GRAPH_SCHEMA_VERSION) return false;
+    if (!isGraphNodeRole(candidate.role)) return false;
     if (candidate.role === "prompt") return typeof candidate.text === "string" && typeof candidate.outputPortId === "string";
     if (candidate.role === "media-collection") {
         return isMediaType(candidate.mediaType)
@@ -302,7 +303,15 @@ function isParameterRecord(value: unknown): value is Record<string, GraphParamet
 
 function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeMetadata {
     if (metadata.role === "media-collection") return { ...metadata, items: metadata.items.map((item) => ({ ...item })) };
-    if (metadata.role === "model") return { ...metadata, inputPorts: metadata.inputPorts.map((port) => ({ ...port })), parameters: { ...metadata.parameters } };
+    if (metadata.role === "model") return {
+        schemaVersion: GRAPH_SCHEMA_VERSION,
+        role: "model",
+        modelId: metadata.modelId,
+        operation: metadata.operation,
+        inputPorts: metadata.inputPorts.map((port) => ({ ...port })),
+        outputPortId: metadata.outputPortId,
+        parameters: { ...metadata.parameters },
+    };
     if (metadata.role === "comfy-workflow") return {
         schemaVersion: GRAPH_SCHEMA_VERSION,
         role: "comfy-workflow",

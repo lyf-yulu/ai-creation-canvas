@@ -72,3 +72,27 @@ it("normalizes ComfyUI workflow metadata without retaining non-project workflow 
         executionEnabled: false,
     });
 });
+
+it("normalizes model metadata without retaining endpoint, credential, or ComfyUI implementation fields", () => {
+    const project = normalizeCanvasProject({
+        id: "project",
+        title: "Project",
+        createdAt: "2026-08-16T00:00:00.000Z",
+        updatedAt: "2026-08-16T00:00:00.000Z",
+        nodes: [{
+            id: "model", type: "config", title: "Model", position: { x: 0, y: 0 }, width: 320, height: 200,
+            metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model-1", operation: "image.generate", inputPorts: [], outputPortId: "result", parameters: {}, endpoint: "https://example.invalid", credential: "secret", class_type: "KSampler" } },
+        }],
+        connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines", showImageInfo: false, viewport: { x: 0, y: 0, k: 1 },
+    });
+
+    expect(project.nodes[0]?.metadata?.graph).toEqual({
+        schemaVersion: GRAPH_SCHEMA_VERSION,
+        role: "model",
+        modelId: "model-1",
+        operation: "image.generate",
+        inputPorts: [],
+        outputPortId: "result",
+        parameters: {},
+    });
+});

@@ -202,7 +202,7 @@ function portsAreCompatible(source: GraphPortRef, target: GraphPortRef, sourceNo
     const targetGraph = targetNode.metadata?.graph;
     if (targetGraph?.role === "result" && target.portId === targetGraph.inputPortId) {
         const sourceGraph = sourceNode.metadata?.graph;
-        return sourceGraph?.role === "model" && source.portId === sourceGraph.outputPortId && source.valueType === "result" && target.valueType === "result";
+        return (sourceGraph?.role === "model" || sourceGraph?.role === "comfy-workflow") && source.portId === sourceGraph.outputPortId && source.valueType === "result" && target.valueType === "result";
     }
     const standard = targetGraph?.role === "model" || targetNode.type === "config" ? STANDARD_MODEL_INPUT_PORTS[target.portId] : undefined;
     if (standard) return source.valueType === standard.accepts;
