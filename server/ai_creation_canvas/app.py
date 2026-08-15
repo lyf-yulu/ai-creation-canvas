@@ -33,6 +33,7 @@ from ai_creation_canvas.api.admin import router as admin_router
 from ai_creation_canvas.api.usage import router as usage_router
 from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
+from ai_creation_canvas.api.comfy_workflows import router as comfy_workflows_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog, LogicalModelCatalog, ManagedRoutingRuntime, ProviderSubmissionBudget
@@ -327,6 +328,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(prompt_skills_router)
+    app.include_router(comfy_workflows_router)
     app.include_router(assets_router)
     app.include_router(jobs_router)
     app.include_router(results_router)
