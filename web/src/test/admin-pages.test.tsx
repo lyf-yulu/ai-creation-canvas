@@ -67,6 +67,7 @@ it("shows server-owned per-user image and video usage", async () => {
 
     render(<AdminUsagePage />);
 
+    expect(await screen.findByRole("heading", { name: "使用统计" })).toBeVisible();
     expect(await screen.findByText("4", { selector: "strong" })).toBeVisible();
     expect(screen.getByRole("row", { name: /普通用户.*canvas-user.*3.*2.*1.*1.*1/ })).toBeVisible();
 });

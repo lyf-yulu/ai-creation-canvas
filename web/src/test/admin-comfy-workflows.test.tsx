@@ -64,6 +64,7 @@ it("prevents duplicate imports and does not show server error details", async ()
 });
 
 it("lists safe workflow projections, previews a selected workflow, and saves user assignments", async () => {
+    let resolveAssignment!: (response: Response) => void;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
         const path = String(input);
         if (path === "/api/v1/admin/comfy-workflows") return new Response(JSON.stringify({ workflows: [workflow] }), { status: 200, headers: { "content-type": "application/json" } });
@@ -93,7 +94,7 @@ it("lists safe workflow projections, previews a selected workflow, and saves use
                 }),
                 { status: 200, headers: { "content-type": "application/json" } },
             );
-        if (path === "/api/v1/admin/users/user-1/comfy-workflows" && init?.method === "PUT") return new Response(JSON.stringify({ user_id: "user-1", workflow_ids: [] }), { status: 200, headers: { "content-type": "application/json" } });
+        if (path === "/api/v1/admin/users/user-1/comfy-workflows" && init?.method === "PUT") return new Promise<Response>((resolve) => { resolveAssignment = resolve; });
         throw new Error(`unexpected ${path}`);
     });
     render(<AdminComfyWorkflowsPage />);
@@ -108,5 +109,12 @@ it("lists safe workflow projections, previews a selected workflow, and saves use
     fireEvent.click(screen.getByLabelText("向创作者派发 Core workflow"));
     fireEvent.click(screen.getByRole("button", { name: "保存派发" }));
     await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith("/api/v1/admin/users/user-1/comfy-workflows", expect.objectContaining({ method: "PUT", body: JSON.stringify({ workflow_ids: [] }) })));
+    const assignment = screen.getByLabelText("向创作者派发 Core workflow");
+    expect(assignment).toBeDisabled();
+    expect(screen.getByLabelText("向创作者派发 Core workflow")).not.toBeChecked();
+    resolveAssignment(new Response(JSON.stringify({ user_id: "user-1", workflow_ids: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    await waitFor(() => expect(assignment).toBeEnabled());
+    expect(screen.getByLabelText("向创作者派发 Core workflow")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "保存派发" })).toBeDisabled();
     expect(screen.queryByText(/api_key|server_url|endpoint/i)).not.toBeInTheDocument();
 });

@@ -230,6 +230,7 @@ export default function AdminComfyWorkflowsPage() {
                                                             type="checkbox"
                                                             checked={(assignments[user.user_id] || []).includes(selected.workflow_id)}
                                                             onChange={() => toggleAssignment(user.user_id)}
+                                                            disabled={status === "saving"}
                                                             className="accent-[#58ed87]"
                                                         />
                                                         {user.display_name} <span className="text-xs text-[#86a991]">{user.username}</span>
@@ -242,7 +243,7 @@ export default function AdminComfyWorkflowsPage() {
                                             onClick={() => void saveAssignments()}
                                             className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40"
                                         >
-                                            保存派发
+                                            {status === "saving" ? "正在保存派发…" : "保存派发"}
                                         </button>
                                     </section>
                                 </div>
