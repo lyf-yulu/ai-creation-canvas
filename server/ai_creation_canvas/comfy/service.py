@@ -136,7 +136,6 @@ class ComfyHttpWorkflowService:
         self._submissions: dict[_SubmissionKey, UpstreamJob] = {}
         self._unknown_submissions: set[_SubmissionKey] = set()
         self._in_flight: dict[_SubmissionKey, asyncio.Future[_SubmissionOutcome]] = {}
-        self._prompt_owners: dict[str, str] = {}
 
     async def health(self, context: RequestContext) -> ComfyServiceHealth:
         if self._misconfigured:
@@ -210,7 +209,6 @@ class ComfyHttpWorkflowService:
                 self._complete_submission(in_flight, error)
                 raise error
             job = UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
-            self._prompt_owners[prompt_id] = context.user.user_id
             self._submissions[key] = job
             self._complete_submission(in_flight, None, job)
             return job
@@ -308,14 +306,10 @@ class ComfyHttpWorkflowService:
         return value
 
     def _require_prompt_owner(self, context: RequestContext, prompt_id: str) -> None:
-        owner = self._prompt_owners.get(prompt_id)
-        if owner is None:
-            try:
-                owner = self._prompt_owner_store.comfy_prompt_owner(self.service_id, prompt_id)
-            except Exception:
-                owner = None
-            if owner is not None:
-                self._prompt_owners[prompt_id] = owner
+        try:
+            owner = self._prompt_owner_store.comfy_prompt_owner(self.service_id, prompt_id)
+        except Exception:
+            owner = None
         if owner != context.user.user_id:
             raise PortalUpstreamError("UPSTREAM_JOB_UNKNOWN", retryable=False)
 

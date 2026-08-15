@@ -370,9 +370,16 @@ class CanvasStore:
             )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_comfy_prompt_owners (
                 service_id TEXT NOT NULL, prompt_id TEXT NOT NULL, user_id TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL, created_at TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, ambiguous INTEGER NOT NULL DEFAULT 0 CHECK(ambiguous IN (0,1)),
+                created_at TEXT NOT NULL,
                 PRIMARY KEY(service_id, prompt_id)
             )""")
+        prompt_owner_columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_comfy_prompt_owners)")}
+        if "ambiguous" not in prompt_owner_columns:
+            db.execute(
+                "ALTER TABLE canvas_comfy_prompt_owners "
+                "ADD COLUMN ambiguous INTEGER NOT NULL DEFAULT 0 CHECK(ambiguous IN (0,1))"
+            )
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_projects (
                 project_id TEXT NOT NULL, user_id TEXT NOT NULL,
                 title TEXT NOT NULL, document_json TEXT NOT NULL,
@@ -675,25 +682,34 @@ class CanvasStore:
         with self._connection(immediate=True) as db:
             db.execute(
                 "INSERT OR IGNORE INTO canvas_comfy_prompt_owners("
-                "service_id,prompt_id,user_id,idempotency_key,created_at"
-                ") VALUES (?,?,?,?,?)",
+                "service_id,prompt_id,user_id,idempotency_key,ambiguous,created_at"
+                ") VALUES (?,?,?,?,0,?)",
                 (service_id, prompt_id, user_id, idempotency_key, _now()),
             )
             row = db.execute(
-                "SELECT user_id FROM canvas_comfy_prompt_owners WHERE service_id=? AND prompt_id=?",
+                "SELECT user_id,idempotency_key,ambiguous FROM canvas_comfy_prompt_owners "
+                "WHERE service_id=? AND prompt_id=?",
                 (service_id, prompt_id),
             ).fetchone()
-        return row is not None and str(row["user_id"]) == user_id
+            if row is None or int(row["ambiguous"]) == 1:
+                return False
+            if str(row["user_id"]) == user_id and str(row["idempotency_key"]) == idempotency_key:
+                return True
+            db.execute(
+                "UPDATE canvas_comfy_prompt_owners SET ambiguous=1 WHERE service_id=? AND prompt_id=?",
+                (service_id, prompt_id),
+            )
+        return False
 
     def comfy_prompt_owner(self, service_id: str, prompt_id: str) -> str | None:
         """Return a previously recorded owner without exposing it through HTTP APIs."""
         self._validate_comfy_prompt_key(service_id, prompt_id)
         with self._connection() as db:
             row = db.execute(
-                "SELECT user_id FROM canvas_comfy_prompt_owners WHERE service_id=? AND prompt_id=?",
+                "SELECT user_id,ambiguous FROM canvas_comfy_prompt_owners WHERE service_id=? AND prompt_id=?",
                 (service_id, prompt_id),
             ).fetchone()
-        return str(row["user_id"]) if row is not None else None
+        return str(row["user_id"]) if row is not None and int(row["ambiguous"]) == 0 else None
 
     def create_comfy_workflow(
         self,

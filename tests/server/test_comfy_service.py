@@ -269,6 +269,39 @@ async def test_adapter_marks_an_accepted_submission_unknown_when_owner_persisten
     assert submissions == 1
 
 
+async def test_prompt_id_collision_revokes_poll_and_cancel_for_all_users_before_upstream_io(tmp_path: Path) -> None:
+    store = CanvasStore(tmp_path)
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "prompt-collision"}, request=request)
+        raise AssertionError("an ambiguous prompt must not reach upstream")
+
+    declaration = ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None)
+    first = ComfyHttpWorkflowService(declaration, prompt_owner_store=store, transport=mock_transport(handler))
+    second = ComfyHttpWorkflowService(declaration, prompt_owner_store=store, transport=mock_transport(handler))
+    request_a = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-a")
+    request_b = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-b")
+    job = await first.submit(context("owner-a"), request_a)
+
+    with pytest.raises(PortalUpstreamError) as collision:
+        await second.submit(context("owner-b"), request_b)
+    assert collision.value.code == "SUBMISSION_UNKNOWN"
+
+    restarted = ComfyHttpWorkflowService(declaration, prompt_owner_store=store, transport=mock_transport(handler))
+    for adapter, user_id in ((first, "owner-a"), (second, "owner-b"), (restarted, "owner-a"), (restarted, "owner-b")):
+        with pytest.raises(PortalUpstreamError) as poll_error:
+            await adapter.poll(context(user_id), job.upstream_job_id)
+        with pytest.raises(PortalUpstreamError) as cancel_error:
+            await adapter.cancel(context(user_id), job.upstream_job_id)
+        assert poll_error.value.retryable is False
+        assert cancel_error.value.retryable is False
+
+    assert seen == [("POST", "/prompt"), ("POST", "/prompt")]
+
+
 async def test_concurrent_submissions_bind_prompt_polling_and_cancellation_to_the_submitter() -> None:
     seen: list[tuple[str, str]] = []
 
