@@ -125,3 +125,37 @@ it("drops malicious outer ComfyUI metadata across normalize/save/reload while re
     });
     expect(JSON.stringify(reloaded)).not.toMatch(/example\.invalid|secret|KSampler|run\(\)|untrusted/);
 });
+
+it("projects nested ComfyUI and model input ports to approved descriptors across normalize/save/reload", () => {
+    const inputPort = {
+        id: "prompt",
+        accepts: "prompt",
+        label: "提示词",
+        endpoint: "https://example.invalid",
+        credential: "secret",
+        class_type: "KSampler",
+        code: "run()",
+        plugin: "untrusted",
+        headers: { authorization: "secret" },
+    };
+    const project = normalizeCanvasProject({
+        id: "project", title: "Project", createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-16T00:00:00.000Z",
+        nodes: [
+            { id: "workflow", type: "comfy.workflow", title: "Core", position: { x: 0, y: 0 }, width: 320, height: 200, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "comfy-workflow", workflowId: "wf-1", workflowRevision: 2, inputPorts: [inputPort], outputPortId: "result", executionEnabled: false } } as never },
+            { id: "model", type: "config", title: "Model", position: { x: 400, y: 0 }, width: 320, height: 200, metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "model", modelId: "model-1", operation: "image.generate", inputPorts: [inputPort], outputPortId: "result", parameters: {} } } as never },
+        ],
+        connections: [], chatSessions: [], activeChatId: null, backgroundMode: "lines" as const, showImageInfo: false, viewport: { x: 0, y: 0, k: 1 },
+    });
+    const reloaded = normalizeCanvasProject(JSON.parse(JSON.stringify(project)));
+
+    const inputPorts = reloaded.nodes.map((node) => {
+        const graph = node.metadata?.graph;
+        if (!graph || (graph.role !== "comfy-workflow" && graph.role !== "model")) throw new Error("expected workflow input ports");
+        return graph.inputPorts;
+    });
+    expect(inputPorts).toEqual([
+        [{ id: "prompt", accepts: "prompt", label: "提示词" }],
+        [{ id: "prompt", accepts: "prompt", label: "提示词" }],
+    ]);
+    expect(JSON.stringify(reloaded)).not.toMatch(/example\.invalid|secret|KSampler|run\(\)|untrusted/);
+});

@@ -317,7 +317,7 @@ function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeM
         role: "model",
         modelId: metadata.modelId,
         operation: metadata.operation,
-        inputPorts: metadata.inputPorts.map((port) => ({ ...port })),
+        inputPorts: metadata.inputPorts.map(projectGraphInputPortDescriptor),
         outputPortId: metadata.outputPortId,
         parameters: { ...metadata.parameters },
     };
@@ -326,11 +326,16 @@ function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeM
         role: "comfy-workflow",
         workflowId: metadata.workflowId,
         workflowRevision: metadata.workflowRevision,
-        inputPorts: metadata.inputPorts.map((port) => ({ ...port })),
+        inputPorts: metadata.inputPorts.map(projectGraphInputPortDescriptor),
         outputPortId: metadata.outputPortId,
         executionEnabled: false,
     };
     return { ...metadata };
+}
+
+function projectGraphInputPortDescriptor(port: GraphInputPortDescriptor): GraphInputPortDescriptor {
+    const label = typeof port.label === "string" && port.label.length > 0 && port.label.length <= 64 && !/[\u0000-\u001f\u007f]/.test(port.label) ? port.label : undefined;
+    return { id: port.id, accepts: port.accepts, ...(label === undefined ? {} : { label }) };
 }
 
 function inferLegacyOperation(metadata?: CanvasNodeInput["metadata"]) {
