@@ -111,7 +111,10 @@ def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> Non
 
 @pytest.mark.parametrize(
     "field",
-    ("auth_header_ref", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref"),
+    (
+        "auth_header_ref", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref",
+        " api_key ", "\tSeCrEt\n", "\tcredential\n",
+    ),
 )
 def test_admin_import_rejects_recursive_sensitive_workflow_fields_before_persistence(tmp_path, field: str) -> None:
     app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)

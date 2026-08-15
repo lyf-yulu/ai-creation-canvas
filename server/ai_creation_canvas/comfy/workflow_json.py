@@ -27,8 +27,8 @@ _MAX_DEPTH = 64
 _MAX_STRING_BYTES = 64 * 1024
 _MAX_API_NODE_ID_CHARS = 64
 def _canonical_field_name(value: str) -> str:
-    """Normalize only deliberate case, underscore, and hyphen spelling variants."""
-    return value.casefold().replace("_", "").replace("-", "")
+    """Normalize surrounding whitespace plus deliberate case, underscore, and hyphen variants."""
+    return value.strip().casefold().replace("_", "").replace("-", "")
 
 
 _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {

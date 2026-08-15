@@ -50,6 +50,14 @@ def test_rejects_dangling_link_and_sensitive_key() -> None:
         parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"uRl":"https://bad.example"}}}')
 
 
+@pytest.mark.parametrize("field", (" api_key ", "\tSeCrEt\n", "\tcredential\n"))
+def test_rejects_whitespace_wrapped_sensitive_keys(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
 @pytest.mark.parametrize(
     ("raw", "code"),
     [
