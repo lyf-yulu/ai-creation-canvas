@@ -125,7 +125,7 @@ npm run lint --prefix web
 npm run build --prefix web
 ```
 
-`npm run lint --prefix web` remains an explicit release-gate command, but the current package has no `lint` script; it exits nonzero with `Missing script: "lint"`. Do not treat `typecheck` or formatting checks as a substitute for that absent gate.
+`npm run lint --prefix web` 是发布门禁；当前它执行前端 TypeScript typecheck，必须与测试和构建一起成功退出。
 
 手工冒烟只可使用 Canvas 测试端口 `127.0.0.1:8992` 和 Git 忽略的全新数据目录：
 
@@ -136,8 +136,17 @@ AICC_LOCAL_DATA="$(mktemp -d "$PWD/.local-data/task7-comfy.XXXXXX")" \
   bash scripts/run-local.sh
 ```
 
-启动前须确认 `scripts/run-local.sh` 仅传入该临时目录、`web/dist`、回环地址和端口 `8992`；不得传入生产目录、生产端口或任何生产配置。管理员可通过工作流库页面原样导入、预览并导出三个输入，随后将仓库自写工作流派发给测试用户 A。测试用户 B 必须不能列出或读取该模板。
+若要验证启用和普通用户可见性，管理员可创建一个仅位于上述临时目录内、普通文件且非符号链接的 ComfyUI 服务声明，然后使用：
 
-当前标准 `serve-local` / `run-local.sh` 入口不接受受信 ComfyUI 服务声明，因此它不会装配 `comfy-local` 等服务。此状态下启用操作会被安全拒绝，已派发工作流不会出现在普通用户可见目录中；不得通过浏览器 URL、未声明本地服务或生产服务绕过该边界。完整的“启用后用户 A 可见、用户 B 为 404”手工步骤须待增加一个同样受隔离检查的本地 ComfyUI 服务声明启动入口后再执行。测试结束后确认 `8992` 已停止且生产端口/进程未发生变化。
+```bash
+AICC_LOCAL_DATA="/absolute/new-temporary-data-dir" \
+  AICC_COMFYUI_SERVICES="/absolute/new-temporary-config-dir/comfyui-services.json" \
+  AICC_LOCAL_PORT=8992 \
+  bash scripts/run-local.sh
+```
 
-本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 116 项通过，前端定向门禁为 5 个文件、70 项通过，生产构建成功（保留既有 chunk 警告）。缺失 `lint` 脚本仍使该命令非零退出。手工页面验证完成管理员登录、三份原样导入、两个外部保存图的只读预览、三个 editor 导出触发，以及核心样例向测试用户 A 的派发；启用和普通用户可见性检查受上述安全启动入口边界阻止。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。
+声明只能指定测试用服务 ID 与测试用回环 URL；本验收不启动、连接或请求真实 ComfyUI。启动前须确认脚本仅传入临时数据目录、该受信声明、`web/dist`、回环地址和端口 `8992`，绝不传入生产目录、生产端口或生产配置。
+
+管理员应原样导入、预览并导出三个输入，启用仓库自写模板并派发给测试用户 A；测试用户 A 必须可列出并读取该模板，测试用户 B 的列表必须为空且读取该模板必须为 404。测试结束后确认 `8992` 已停止且生产端口/进程未发生变化。
+
+本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 137 项通过（含本地 Comfy 服务声明启动保护），前端定向门禁为 5 个文件、70 项通过，`lint` typecheck 与生产构建均成功（保留既有 chunk 警告）。隔离实例仅使用 8992、全新忽略数据目录和无监听的测试回环服务 URL；三份工作流完成原样导入、预览和 editor 导出，核心样例完成启用与用户 A 派发，用户 A 可列出/读取，用户 B 列表为空且详情为 404。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。
