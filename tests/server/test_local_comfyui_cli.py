@@ -88,6 +88,33 @@ def test_local_app_rejects_comfy_config_outside_its_data_config_root(tmp_path: P
         )
 
 
+def test_local_app_rejects_config_dotdot_escape_from_its_data_config_root(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    config_root = data_dir / "config"
+    config_root.mkdir(parents=True)
+    escaped = data_dir / "escaped-services.json"
+    _write_services(escaped)
+    escaped_reference = config_root / ".." / "escaped-services.json"
+
+    with pytest.raises(ValueError, match="local data config root"):
+        create_local_app(
+            port=8993, data_dir=data_dir, static_dir=tmp_path / "dist", comfyui_services_config=escaped_reference
+        )
+
+
+def test_local_app_accepts_ipv6_numeric_loopback_comfy_host_without_connecting(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    config = data_dir / "config" / "comfyui-services.json"
+    config.parent.mkdir(parents=True)
+    _write_services(config, base_url="http://[::1]:8188")
+
+    app, _accounts = create_local_app(
+        port=8993, data_dir=data_dir, static_dir=tmp_path / "dist", comfyui_services_config=config
+    )
+
+    assert tuple(adapter.service_id for adapter in app.state.comfy_workflow_services) == ("comfy-local",)
+
+
 @pytest.mark.parametrize("base_url", ("http://localhost:8188", "https://comfy.example:8188"))
 def test_local_app_rejects_non_numeric_loopback_comfy_hosts(tmp_path: Path, base_url: str) -> None:
     config = tmp_path / "data" / "config" / "comfyui-services.json"
