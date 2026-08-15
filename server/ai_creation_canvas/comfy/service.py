@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -103,30 +104,35 @@ class ComfyHttpWorkflowService:
         if not isinstance(declaration, ComfyServiceDeclaration):
             raise ValueError("ComfyUI service declaration is invalid")
         headers: Mapping[str, str] | None = None
+        self._misconfigured = False
         if declaration.auth_header_ref is not None:
-            if auth_header_resolver is None:
-                raise ValueError("ComfyUI auth header resolver is required")
             try:
-                headers = auth_header_resolver(declaration.auth_header_ref)
+                headers = auth_header_resolver(declaration.auth_header_ref) if auth_header_resolver is not None else None
             except Exception:
-                raise ValueError("ComfyUI auth header resolver failed") from None
+                headers = None
             if not isinstance(headers, Mapping) or not headers or any(
                 not isinstance(key, str) or not isinstance(value, str) for key, value in headers.items()
             ):
-                raise ValueError("ComfyUI auth header resolver returned invalid headers")
+                self._misconfigured = True
         self.service_id = declaration.service_id
-        self._client = httpx.AsyncClient(
-            base_url=declaration.base_url,
-            timeout=httpx.Timeout(float(declaration.timeout_seconds)),
-            headers=dict(headers or {}),
-            transport=transport,
+        self._client = None if self._misconfigured else httpx.AsyncClient(
+            base_url=declaration.base_url, timeout=httpx.Timeout(float(declaration.timeout_seconds)),
+            headers=dict(headers or {}), transport=transport,
         )
+        self._submissions: dict[str, UpstreamJob] = {}
+        self._unknown_submissions: set[str] = set()
+        self._submission_lock = asyncio.Lock()
 
     async def health(self, context: RequestContext) -> ComfyServiceHealth:
+        if self._misconfigured:
+            return ComfyServiceHealth(self.service_id, ComfyServiceStatus.MISCONFIGURED)
         try:
             node_types = await self._node_types()
-        except PortalUpstreamError:
-            return ComfyServiceHealth(self.service_id, ComfyServiceStatus.UNAVAILABLE)
+        except PortalUpstreamError as error:
+            return ComfyServiceHealth(
+                self.service_id,
+                ComfyServiceStatus.UNAVAILABLE if error.retryable else ComfyServiceStatus.MISCONFIGURED,
+            )
         except InvalidUpstreamResult:
             return ComfyServiceHealth(self.service_id, ComfyServiceStatus.MISCONFIGURED)
         return ComfyServiceHealth(self.service_id, ComfyServiceStatus.HEALTHY, node_types)
@@ -137,12 +143,31 @@ class ComfyHttpWorkflowService:
     async def submit(self, context: RequestContext, request: ComfyWorkflowRequest) -> UpstreamJob:
         if not isinstance(request, ComfyWorkflowRequest):
             raise ValueError("ComfyUI workflow request is invalid")
-        response = await self._request("POST", "/prompt", json={"prompt": _thaw_json(request.api_workflow), "client_id": context.request_id})
-        payload = self._json_object(response)
-        prompt_id = payload.get("prompt_id")
-        if not isinstance(prompt_id, str) or _UPSTREAM_ID.fullmatch(prompt_id) is None:
-            raise InvalidUpstreamResult("ComfyUI prompt identifier is invalid")
-        return UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
+        async with self._submission_lock:
+            submitted = self._submissions.get(request.idempotency_key)
+            if submitted is not None:
+                return submitted
+            if request.idempotency_key in self._unknown_submissions:
+                raise PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False)
+            try:
+                response = await self._request(
+                    "POST", "/prompt", json={"prompt": _thaw_json(request.api_workflow), "client_id": request.idempotency_key}
+                )
+                payload = self._json_object(response)
+                prompt_id = payload.get("prompt_id")
+                if not isinstance(prompt_id, str) or _UPSTREAM_ID.fullmatch(prompt_id) is None:
+                    raise InvalidUpstreamResult("ComfyUI prompt identifier is invalid")
+            except PortalUpstreamError as error:
+                if error.retryable:
+                    self._unknown_submissions.add(request.idempotency_key)
+                    raise PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False) from error
+                raise
+            except InvalidUpstreamResult:
+                self._unknown_submissions.add(request.idempotency_key)
+                raise
+            job = UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
+            self._submissions[request.idempotency_key] = job
+            return job
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         prompt_id = self._prompt_id(upstream_job_id)
@@ -174,7 +199,8 @@ class ComfyHttpWorkflowService:
         await self._request("POST", "/queue", json={"delete": [prompt_id]})
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
 
     async def _node_types(self) -> frozenset[str]:
         payload = self._json_object(await self._request("GET", "/object_info"))
@@ -184,12 +210,20 @@ class ComfyHttpWorkflowService:
         return node_types
 
     async def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+        if self._client is None:
+            raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=False)
         try:
             response = await self._client.request(method, path, **kwargs)
-            response.raise_for_status()
-            return response
-        except httpx.HTTPError as error:
+        except httpx.RequestError as error:
             raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error
+        if response.is_success:
+            return response
+        retryable = response.status_code in {408, 429} or response.status_code >= 500
+        raise PortalUpstreamError(
+            "UPSTREAM_UNAVAILABLE" if retryable else "REQUEST_REJECTED",
+            retryable=retryable,
+            status_code=response.status_code,
+        )
 
     @staticmethod
     def _json_object(response: httpx.Response) -> Mapping[str, object]:
