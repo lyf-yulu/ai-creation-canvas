@@ -30,6 +30,15 @@ export type AdminComfyWorkflow = {
     current_revision?: WorkflowRevision;
 };
 export type WorkflowImportMetadata = { displayName: string; serviceId: string };
+export type ComfyWorkflowServiceCapability = {
+    service_id: string;
+    status: "healthy" | "unavailable" | "misconfigured";
+    node_types: string[];
+};
+export type ComfyWorkflowCapabilities = {
+    assignments: { available: boolean; reason?: "PORTAL_USER_DIRECTORY_UNAVAILABLE" };
+    services: ComfyWorkflowServiceCapability[];
+};
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -42,6 +51,7 @@ export function importAdminComfyWorkflow(file: File, metadata: WorkflowImportMet
 }
 
 export const fetchAdminComfyWorkflows = async () => (await apiFetch<{ workflows: AdminComfyWorkflow[] }>("/api/v1/admin/comfy-workflows")).workflows;
+export const fetchAdminComfyWorkflowCapabilities = () => apiFetch<ComfyWorkflowCapabilities>("/api/v1/admin/comfy-workflows/capabilities");
 export const fetchAdminComfyWorkflow = (workflowId: string) => apiFetch<AdminComfyWorkflow>(`/api/v1/admin/comfy-workflows/${encodeURIComponent(workflowId)}`);
 export const fetchAdminComfyWorkflowPreview = (workflowId: string, revision: number) => apiFetch<WorkflowRevision>(`/api/v1/admin/comfy-workflows/${encodeURIComponent(workflowId)}/revisions/${revision}/preview`);
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
 from ai_creation_canvas.api._common import context_for, problem
+from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.comfy import WorkflowFormat, WorkflowValidationError, parse_workflow_json
 from ai_creation_canvas.comfy.library import ComfyWorkflowProjection, ComfyWorkflowTemplate
 from ai_creation_canvas.domain.models import PortalRole
@@ -27,6 +29,8 @@ _MULTIPART_OVERHEAD_MAX_BYTES = 64 * 1024
 _MULTIPART_HEADER_MAX_BYTES = 32 * 1024
 _REVISION_TEXT = re.compile(r"[1-9][0-9]{0,9}\Z")
 _CHECKSUM_PREFIX_LENGTH = 12
+_SAFE_SERVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_SERVICE_STATUSES = frozenset({"healthy", "unavailable", "misconfigured"})
 
 
 class LifecycleRevision(BaseModel):
@@ -115,6 +119,44 @@ def _require_admin(request: Request) -> str:
     if context.user.role is not PortalRole.ADMIN:
         raise problem(request, "API_NOT_FOUND", "The requested API resource was not found.", status=404)
     return context.user.user_id
+
+
+def _assignment_capability(request: Request) -> dict[str, object]:
+    """Expose only whether a verified directory can back workflow assignments.
+
+    Signed Portal identity proves the current caller, but this repository does
+    not yet have a Portal directory/assignment port for verifying a target
+    user.  Local mode can use its server-owned directory instead.
+    """
+    settings = request.app.state.settings
+    if settings.identity_mode == "local" and isinstance(getattr(request.app.state, "local_auth", None), LocalAuthService):
+        return {"available": True}
+    return {"available": False, "reason": "PORTAL_USER_DIRECTORY_UNAVAILABLE"}
+
+
+async def _safe_service_projection(request: Request, service: object) -> dict[str, object] | None:
+    service_id = getattr(service, "service_id", None)
+    if not isinstance(service_id, str) or _SAFE_SERVICE_ID.fullmatch(service_id) is None:
+        return None
+    status = "unavailable"
+    node_types: list[str] = []
+    health = getattr(service, "health", None)
+    if callable(health):
+        try:
+            result = await health(context_for(request))
+            candidate = getattr(result, "status", "unavailable")
+            candidate = getattr(candidate, "value", candidate)
+            if isinstance(candidate, str) and candidate in _SERVICE_STATUSES:
+                status = candidate
+            values = getattr(result, "node_types", ())
+            if status == "healthy" and isinstance(values, (frozenset, set, tuple, list)):
+                node_types = sorted({value for value in values if isinstance(value, str) and 0 < len(value) <= 128})
+        except Exception:
+            # Health is an on-demand diagnostic.  It must not expose adapter
+            # details or prevent administrators using the inert library.
+            status = "unavailable"
+            node_types = []
+    return {"service_id": service_id, "status": status, "node_types": node_types}
 
 
 async def _single_workflow_form(request: Request, *, keys: frozenset[str]) -> _WorkflowForm:
@@ -300,6 +342,24 @@ async def admin_list_workflows(request: Request) -> dict[str, object]:
     return {"workflows": [_template_projection(request, item, include_checksum_prefix=True) for item in request.app.state.comfy_workflow_library.admin_list()]}
 
 
+@router.get("/admin/comfy-workflows/capabilities")
+async def admin_workflow_capabilities(request: Request) -> dict[str, object]:
+    """Return the safe, administrator-only state needed to review a template.
+
+    This intentionally performs health checks only for this explicit admin
+    request.  Application startup and ordinary workflow listing remain free of
+    outbound ComfyUI probes.
+    """
+    _require_admin(request)
+    services = await asyncio.gather(
+        *(_safe_service_projection(request, service) for service in request.app.state.comfy_workflow_services)
+    )
+    return {
+        "assignments": _assignment_capability(request),
+        "services": [service for service in services if service is not None],
+    }
+
+
 @router.get("/admin/comfy-workflows/{workflow_id}")
 async def admin_get_workflow(workflow_id: str, request: Request) -> dict[str, object]:
     _require_admin(request)
@@ -388,6 +448,8 @@ async def restore_workflow(workflow_id: str, request: Request) -> dict[str, obje
 @router.put("/admin/users/{user_id}/comfy-workflows")
 async def replace_workflow_assignments(user_id: str, request: Request) -> dict[str, object]:
     actor_user_id = _require_admin(request)
+    if not bool(_assignment_capability(request)["available"]):
+        raise problem(request, "WORKFLOW_ASSIGNMENT_UNAVAILABLE", "Workflow assignment is unavailable for this identity mode.", status=409)
     if request.app.state.canvas_store.user_by_id(user_id) is None:
         raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404)
     try:

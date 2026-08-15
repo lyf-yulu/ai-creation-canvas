@@ -4,13 +4,18 @@ import json
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from types import SimpleNamespace
+import time
 
 from fastapi.testclient import TestClient
 import pytest
 from starlette.datastructures import Headers, UploadFile
 
 from ai_creation_canvas.api import comfy_workflows
+from ai_creation_canvas.app import create_app
+from ai_creation_canvas.comfy.service import ComfyServiceHealth, ComfyServiceStatus
+from ai_creation_canvas.config import Settings
 from tests.server.test_model_assignments import ORIGIN, local_clients
+from tests.server.test_identity import signed_headers
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "comfy" / "core-load-save-workflow.json"
@@ -64,6 +69,67 @@ def test_admin_imports_exports_and_assigns_without_exposing_raw_api_json(tmp_pat
     assert enabled.status_code == 200
     assert [item["workflow_id"] for item in user.get("/api/v1/comfy-workflows").json()["workflows"]] == [workflow_id]
     assert user.get(f"/api/v1/comfy-workflows/{workflow_id}/revisions/1/preview").status_code == 404
+
+
+def test_portal_admin_can_manage_library_without_a_local_user_directory(tmp_path) -> None:
+    app = create_app(Settings("test", 8992, tmp_path / "data", "test-secret"), static_dir=tmp_path / "dist")
+    admin = TestClient(app)
+    headers = signed_headers(user_id="portal-admin", role="admin", now=int(time.time()))
+
+    imported = admin.post(
+        "/api/v1/admin/comfy-workflows/import",
+        headers=headers,
+        files={"file": ("core.json", FIXTURE.read_bytes(), "application/json")},
+        data={"display_name": "Portal Core", "service_id": "comfy-local"},
+    )
+    assert imported.status_code == 201
+    workflow_id = str(imported.json()["workflow_id"])
+
+    capabilities = admin.get("/api/v1/admin/comfy-workflows/capabilities", headers=headers)
+    assignment = admin.put(
+        f"/api/v1/admin/users/claimed-by-browser/comfy-workflows",
+        headers=headers,
+        json={"workflow_ids": [workflow_id]},
+    )
+
+    assert capabilities.status_code == 200
+    assert capabilities.json()["assignments"] == {
+        "available": False,
+        "reason": "PORTAL_USER_DIRECTORY_UNAVAILABLE",
+    }
+    assert assignment.status_code == 409
+    assert assignment.json()["code"] == "WORKFLOW_ASSIGNMENT_UNAVAILABLE"
+    assert admin.get("/api/v1/admin/comfy-workflows", headers=headers).status_code == 200
+    assert admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}", headers=headers).status_code == 200
+    assert admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}/revisions/1/export?format=editor", headers=headers).status_code == 200
+
+
+def test_admin_capabilities_project_health_and_node_inventory_only_on_query(tmp_path) -> None:
+    app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
+    calls = 0
+
+    class HealthyService:
+        service_id = "comfy-local"
+
+        async def health(self, context):
+            nonlocal calls
+            del context
+            calls += 1
+            return ComfyServiceHealth(self.service_id, ComfyServiceStatus.HEALTHY, frozenset({"LoadImage", "SaveImage"}))
+
+    app.state.comfy_workflow_services = (HealthyService(),)
+    assert calls == 0
+
+    response = admin.get("/api/v1/admin/comfy-workflows/capabilities", headers=headers)
+
+    assert response.status_code == 200
+    assert calls == 1
+    assert response.json() == {
+        "assignments": {"available": True},
+        "services": [{"service_id": "comfy-local", "status": "healthy", "node_types": ["LoadImage", "SaveImage"]}],
+    }
+    assert "127.0.0.1" not in response.text
+    assert "authorization" not in response.text.lower()
 
 
 def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> None:

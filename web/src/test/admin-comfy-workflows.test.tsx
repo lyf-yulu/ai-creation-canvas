@@ -63,11 +63,50 @@ it("prevents duplicate imports and does not show server error details", async ()
     expect(screen.queryByText(/unsafe|token/i)).not.toBeInTheDocument();
 });
 
+it("keeps Portal-mode library management available when no verified user directory is configured", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const path = String(input);
+        if (path === "/api/v1/admin/comfy-workflows") return new Response(JSON.stringify({ workflows: [workflow] }), { status: 200, headers: { "content-type": "application/json" } });
+        if (path === "/api/v1/admin/comfy-workflows/capabilities") {
+            return new Response(JSON.stringify({
+                assignments: { available: false, reason: "PORTAL_USER_DIRECTORY_UNAVAILABLE" },
+                services: [{ service_id: "comfy-local", status: "unavailable", node_types: [] }],
+            }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (path === "/api/v1/admin/comfy-workflows/cw-1") {
+            return new Response(JSON.stringify({
+                ...workflow,
+                current_revision: {
+                    workflow_id: "cw-1", revision: 1, formats: ["editor"], checksum_prefix: "a1b2c3d4",
+                    preview: { has_editor_layout: true, nodes: [], edges: [] },
+                    dependencies: { node_types: [{ type: "LoadImage", is_core: true }] }, execution_available: false,
+                },
+            }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (path === "/api/v1/admin/users") throw new Error("Portal mode must not load the local user directory");
+        throw new Error(`unexpected ${path}`);
+    });
+
+    render(<AdminComfyWorkflowsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /Core workflow/ }));
+
+    expect(await screen.findByText(/派发不可用/)).toBeVisible();
+    expect(screen.getByText(/服务不可用/)).toBeVisible();
+    expect(fetchMock.mock.calls.map(([path]) => String(path))).not.toContain("/api/v1/admin/users");
+    expect(screen.queryByText(/127\.0\.0\.1|authorization|token/i)).not.toBeInTheDocument();
+});
+
 it("lists safe workflow projections, previews a selected workflow, and saves user assignments", async () => {
     let resolveAssignment!: (response: Response) => void;
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
         const path = String(input);
         if (path === "/api/v1/admin/comfy-workflows") return new Response(JSON.stringify({ workflows: [workflow] }), { status: 200, headers: { "content-type": "application/json" } });
+        if (path === "/api/v1/admin/comfy-workflows/capabilities") {
+            return new Response(JSON.stringify({
+                assignments: { available: true },
+                services: [{ service_id: "comfy-local", status: "healthy", node_types: ["LoadImage"] }],
+            }), { status: 200, headers: { "content-type": "application/json" } });
+        }
         if (path === "/api/v1/admin/users")
             return new Response(JSON.stringify({ users: [{ user_id: "user-1", username: "maker", display_name: "创作者", role: "user", enabled: true, must_change_password: false, model_ids: [], comfy_workflow_ids: ["cw-1"] }] }), {
                 status: 200,

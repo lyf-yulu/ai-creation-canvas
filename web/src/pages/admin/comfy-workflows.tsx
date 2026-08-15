@@ -1,16 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { saveAs } from "file-saver";
 
-import { changeAdminComfyWorkflowLifecycle, exportAdminComfyWorkflow, fetchAdminComfyWorkflow, fetchAdminComfyWorkflows, replaceAdminUserComfyWorkflows, type AdminComfyWorkflow, type WorkflowFormat, type WorkflowRevision } from "@/api/comfy-workflows";
+import {
+    changeAdminComfyWorkflowLifecycle,
+    exportAdminComfyWorkflow,
+    fetchAdminComfyWorkflow,
+    fetchAdminComfyWorkflowCapabilities,
+    fetchAdminComfyWorkflows,
+    replaceAdminUserComfyWorkflows,
+    type AdminComfyWorkflow,
+    type ComfyWorkflowCapabilities,
+    type WorkflowFormat,
+    type WorkflowRevision,
+} from "@/api/comfy-workflows";
 import { fetchAdminUsers, type AdminUser } from "@/api/admin";
 import { WorkflowImport } from "@/components/comfy/workflow-import";
 import { WorkflowPreview } from "@/components/comfy/workflow-preview";
 
 const lifecycleLabel = (workflow: AdminComfyWorkflow) => (workflow.lifecycle.archived ? "已归档" : workflow.lifecycle.enabled ? "已启用" : "已停用");
+const unavailableCapabilities: ComfyWorkflowCapabilities = {
+    assignments: { available: false, reason: "PORTAL_USER_DIRECTORY_UNAVAILABLE" },
+    services: [],
+};
+
+function compatibilityMessage(workflow: AdminComfyWorkflow, revision: WorkflowRevision, capabilities: ComfyWorkflowCapabilities) {
+    const service = capabilities.services.find((item) => item.service_id === workflow.service_id);
+    if (!service) return "服务未配置，无法验证节点兼容性。";
+    if (service.status === "unavailable") return "服务不可用，无法验证节点兼容性。";
+    if (service.status === "misconfigured") return "服务配置不可用，无法验证节点兼容性。";
+    const missing = revision.dependencies.node_types.filter((dependency) => !service.node_types.includes(dependency.type));
+    if (missing.length) return `缺少节点：${missing.map((dependency) => dependency.type).join("、")}。`;
+    return "服务健康，所需节点已验证；执行仍在后续切片中保持禁用。";
+}
 
 export default function AdminComfyWorkflowsPage() {
     const [workflows, setWorkflows] = useState<AdminComfyWorkflow[]>([]);
     const [users, setUsers] = useState<AdminUser[]>([]);
+    const [capabilities, setCapabilities] = useState<ComfyWorkflowCapabilities>(unavailableCapabilities);
     const [selectedId, setSelectedId] = useState("");
     const [revision, setRevision] = useState<WorkflowRevision | null>(null);
     const [assignments, setAssignments] = useState<Record<string, string[]>>({});
@@ -23,9 +49,14 @@ export default function AdminComfyWorkflowsPage() {
         const version = ++requestVersion.current;
         setStatus("loading");
         try {
-            const [nextWorkflows, nextUsers] = await Promise.all([fetchAdminComfyWorkflows(), fetchAdminUsers()]);
+            const [nextWorkflows, nextCapabilities] = await Promise.all([
+                fetchAdminComfyWorkflows(),
+                fetchAdminComfyWorkflowCapabilities().catch(() => unavailableCapabilities),
+            ]);
+            const nextUsers = nextCapabilities.assignments.available ? await fetchAdminUsers() : [];
             if (requestVersion.current !== version) return;
             setWorkflows(nextWorkflows);
+            setCapabilities(nextCapabilities);
             setUsers(nextUsers);
             setAssignments(Object.fromEntries(nextUsers.map((user) => [user.user_id, [...user.comfy_workflow_ids]])));
             setStatus("ready");
@@ -196,6 +227,9 @@ export default function AdminComfyWorkflowsPage() {
                                             <dd>{revision.execution_available ? "可用" : "当前切片未启用执行"}</dd>
                                         </div>
                                     </dl>
+                                    <p className="rounded border border-[#285038] bg-[#0b1710] px-3 py-2 text-sm text-[#b9d0c0]">
+                                        兼容性：{compatibilityMessage(selected, revision, capabilities)}
+                                    </p>
                                     <WorkflowPreview preview={revision.preview} />
                                     <section>
                                         <h3 className="font-semibold">依赖状态</h3>
@@ -219,32 +253,38 @@ export default function AdminComfyWorkflowsPage() {
                                     </section>
                                     <section className="border-t border-[#1e482b] pt-5">
                                         <h3 className="font-semibold">账号派发</h3>
-                                        <p className="mt-1 text-xs text-[#86a991]">只有已派发且启用的工作流会出现在普通用户的可用模板中。</p>
-                                        <div className="mt-3 space-y-2">
-                                            {users
-                                                .filter((user) => user.role !== "admin")
-                                                .map((user) => (
-                                                    <label key={user.user_id} className="flex items-center gap-2 text-sm">
-                                                        <input
-                                                            aria-label={`向${user.display_name}派发 ${selected.display_name}`}
-                                                            type="checkbox"
-                                                            checked={(assignments[user.user_id] || []).includes(selected.workflow_id)}
-                                                            onChange={() => toggleAssignment(user.user_id)}
-                                                            disabled={status === "saving"}
-                                                            className="accent-[#58ed87]"
-                                                        />
-                                                        {user.display_name} <span className="text-xs text-[#86a991]">{user.username}</span>
-                                                    </label>
-                                                ))}
-                                        </div>
-                                        <button
-                                            type="button"
-                                            disabled={!dirtyUsers.size || status === "saving"}
-                                            onClick={() => void saveAssignments()}
-                                            className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40"
-                                        >
-                                            {status === "saving" ? "正在保存派发…" : "保存派发"}
-                                        </button>
+                                        {capabilities.assignments.available ? (
+                                            <>
+                                                <p className="mt-1 text-xs text-[#86a991]">只有已派发且启用的工作流会出现在普通用户的可用模板中。</p>
+                                                <div className="mt-3 space-y-2">
+                                                    {users
+                                                        .filter((user) => user.role !== "admin")
+                                                        .map((user) => (
+                                                            <label key={user.user_id} className="flex items-center gap-2 text-sm">
+                                                                <input
+                                                                    aria-label={`向${user.display_name}派发 ${selected.display_name}`}
+                                                                    type="checkbox"
+                                                                    checked={(assignments[user.user_id] || []).includes(selected.workflow_id)}
+                                                                    onChange={() => toggleAssignment(user.user_id)}
+                                                                    disabled={status === "saving"}
+                                                                    className="accent-[#58ed87]"
+                                                                />
+                                                                {user.display_name} <span className="text-xs text-[#86a991]">{user.username}</span>
+                                                            </label>
+                                                        ))}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    disabled={!dirtyUsers.size || status === "saving"}
+                                                    onClick={() => void saveAssignments()}
+                                                    className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40"
+                                                >
+                                                    {status === "saving" ? "正在保存派发…" : "保存派发"}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <p className="mt-1 text-xs text-[#eadc91]">派发不可用：当前 Portal 身份只能验证请求用户，尚未配置受验证的用户目录。</p>
+                                        )}
                                     </section>
                                 </div>
                             )}
