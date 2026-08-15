@@ -131,6 +131,13 @@ def _is_within(child: Path, parent: Path) -> bool:
     return True
 
 
+def is_within_production_repository(path: Path | str) -> bool:
+    """Return whether a path is contained by the protected production repository."""
+    candidate = Path(path).expanduser().resolve(strict=False)
+    production_repo = _PRODUCTION_REPOSITORY.resolve(strict=False)
+    return _is_within(candidate, production_repo)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
@@ -174,10 +181,9 @@ class Settings:
         if not isinstance(self.port, int) or isinstance(self.port, bool) or not 1 <= self.port <= 65535:
             raise ValueError("port must be a valid TCP port")
         data_dir = Path(self.data_dir).expanduser().resolve(strict=False)
-        production_repo = _PRODUCTION_REPOSITORY.resolve(strict=False)
         if (self.environment == "test" or (self.identity_mode == "local" and self.environment != "production")) and self.port in _PRODUCTION_PORTS:
             raise ValueError("non-production environment cannot use a production port")
-        if self.environment != "production" and _is_within(data_dir, production_repo):
+        if self.environment != "production" and is_within_production_repository(data_dir):
             raise ValueError("non-production environment cannot use the production repository")
         if (
             not isinstance(self.signature_ttl_seconds, int)

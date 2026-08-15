@@ -15,7 +15,7 @@ import uvicorn
 
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.config import Settings, load_comfyui_service_declarations
+from ai_creation_canvas.config import Settings, is_within_production_repository, load_comfyui_service_declarations
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.auth.local import BootstrapResult
 
@@ -103,13 +103,22 @@ def _local_comfyui_config(data_dir: Path, configured_path: Path | None) -> tuple
     return candidate, root
 
 
+def _local_data_dir(data_dir: Path) -> Path:
+    """Resolve and reject protected paths before any optional local config is read."""
+    resolved = Path(data_dir).expanduser().resolve(strict=False)
+    if is_within_production_repository(resolved):
+        raise ValueError("non-production environment cannot use the production repository")
+    return resolved
+
+
 def create_local_app(*, port: int, data_dir: Path, static_dir: Path, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origin = f"http://127.0.0.1:{port}"
-    comfy_config_path, comfy_config_root = _local_comfyui_config(data_dir, comfyui_services_config)
+    local_data_dir = _local_data_dir(data_dir)
+    comfy_config_path, comfy_config_root = _local_comfyui_config(local_data_dir, comfyui_services_config)
     settings = Settings(
         environment="development",
         port=port,
-        data_dir=data_dir,
+        data_dir=local_data_dir,
         portal_internal_token="local-identity-unused-secret",
         identity_mode="local",
         allowed_origins=(origin,),

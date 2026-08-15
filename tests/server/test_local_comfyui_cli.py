@@ -102,6 +102,28 @@ def test_local_app_rejects_config_dotdot_escape_from_its_data_config_root(tmp_pa
         )
 
 
+def test_local_app_rejects_production_data_path_before_invoking_comfy_config_loader(monkeypatch) -> None:
+    invoked = False
+
+    def fail_if_loaded(*args, **kwargs):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("production-adjacent ComfyUI configuration must not be loaded")
+
+    monkeypatch.setattr(entrypoint, "load_comfyui_service_declarations", fail_if_loaded)
+    production_data_dir = Path("/Users/260413a/ai-generation-portable-apps/state/local-canvas")
+
+    with pytest.raises(ValueError, match="non-production environment cannot use the production repository"):
+        create_local_app(
+            port=8993,
+            data_dir=production_data_dir,
+            static_dir=Path("/tmp/local-canvas-dist"),
+            comfyui_services_config=production_data_dir / "config" / "comfyui-services.json",
+        )
+
+    assert invoked is False
+
+
 def test_local_app_accepts_ipv6_numeric_loopback_comfy_host_without_connecting(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     config = data_dir / "config" / "comfyui-services.json"
