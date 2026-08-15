@@ -3,7 +3,7 @@
 from inspect import Parameter, iscoroutinefunction, signature
 from typing import TypeVar
 
-from ai_creation_canvas.domain.ports import AssetPort, GenerationPort, UsagePort
+from ai_creation_canvas.domain.ports import AssetPort, ComfyWorkflowServicePort, GenerationPort, UsagePort
 from ai_creation_canvas.errors import AdapterNotFoundError, AdapterRegistrationError, ApiError
 
 
@@ -17,6 +17,7 @@ class AdapterRegistry:
         self._generation: dict[str, GenerationPort] = {}
         self._assets: dict[str, AssetPort] = {}
         self._usage: dict[str, UsagePort] = {}
+        self._comfy_workflow: dict[str, ComfyWorkflowServicePort] = {}
 
     def register_generation(self, adapter: GenerationPort) -> None:
         self._register(
@@ -42,6 +43,14 @@ class AdapterRegistry:
     def register_usage(self, adapter: UsagePort) -> None:
         self._register(self._usage, adapter, (("record", 2),), "usage")
 
+    def register_comfy_workflow(self, adapter: ComfyWorkflowServicePort) -> None:
+        self._register(
+            self._comfy_workflow,
+            adapter,
+            (("health", 1), ("list_node_types", 1), ("submit", 2), ("poll", 2), ("cancel", 2)),
+            "ComfyUI workflow",
+        )
+
     def generation(self, service_id: str) -> GenerationPort:
         return self._get(self._generation, service_id, "generation")
 
@@ -54,6 +63,12 @@ class AdapterRegistry:
 
     def usage(self, service_id: str) -> UsagePort:
         return self._get(self._usage, service_id, "usage")
+
+    def comfy_workflow(self, service_id: str) -> ComfyWorkflowServicePort:
+        return self._get(self._comfy_workflow, service_id, "ComfyUI workflow")
+
+    def comfy_workflow_adapters(self) -> tuple[ComfyWorkflowServicePort, ...]:
+        return tuple(self._comfy_workflow[service_id] for service_id in sorted(self._comfy_workflow))
 
     @staticmethod
     def _register(

@@ -4,6 +4,7 @@ import math
 import pytest
 from fastapi.encoders import jsonable_encoder
 
+from ai_creation_canvas.comfy.service import ComfyServiceHealth, ComfyServiceStatus, ComfyWorkflowRequest
 from ai_creation_canvas.domain.models import (
     AssetRef,
     AssetStatus,
@@ -505,3 +506,44 @@ def test_registry_accepts_optional_keyword_only_extension_arguments():
     registry.register_generation(adapter)
 
     assert registry.generation(adapter.service_id) is adapter
+
+
+@dataclass
+class FakeComfyWorkflowAdapter:
+    service_id: str
+
+    async def health(self, context: RequestContext) -> ComfyServiceHealth:
+        return ComfyServiceHealth(self.service_id, ComfyServiceStatus.HEALTHY, frozenset())
+
+    async def list_node_types(self, context: RequestContext) -> frozenset[str]:
+        return frozenset()
+
+    async def submit(self, context: RequestContext, request: ComfyWorkflowRequest) -> UpstreamJob:
+        raise NotImplementedError
+
+    async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
+        raise NotImplementedError
+
+    async def cancel(self, context: RequestContext, upstream_job_id: str) -> None:
+        return None
+
+
+def test_registry_keeps_comfy_workflow_adapters_outside_generic_generation_port() -> None:
+    registry = AdapterRegistry()
+    adapter = FakeComfyWorkflowAdapter("comfy-local")
+
+    registry.register_comfy_workflow(adapter)
+
+    assert registry.comfy_workflow("comfy-local") is adapter
+    assert registry.comfy_workflow_adapters() == (adapter,)
+    with pytest.raises(AdapterNotFoundError):
+        registry.generation("comfy-local")
+
+
+def test_registry_rejects_comfy_adapter_with_wrong_async_signature() -> None:
+    class WrongComfyAdapter(FakeComfyWorkflowAdapter):
+        async def cancel(self, context: RequestContext) -> None:  # type: ignore[override]
+            return None
+
+    with pytest.raises(AdapterRegistrationError, match="cancel"):
+        AdapterRegistry().register_comfy_workflow(WrongComfyAdapter("comfy-local"))

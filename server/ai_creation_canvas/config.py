@@ -10,6 +10,7 @@ import stat
 from urllib.parse import urlsplit
 
 from ai_creation_canvas.adapters.portal.catalog import ServiceDeclaration
+from ai_creation_canvas.comfy.service import ComfyServiceDeclaration
 from ai_creation_canvas.domain.models import ModelOperation
 
 
@@ -18,6 +19,52 @@ _PRODUCTION_REPOSITORY = Path("/Users/260413a/ai-generation-portable-apps")
 _REJECTED_TOKENS = frozenset({"default", "changeme", "change-me", "test"})
 _MAX_SERVICES_BYTES = 65536
 _DANGEROUS_FIELDS = frozenset({"base_url", "url", "script", "plugin", "code", "api_key", "token", "headers"})
+
+
+def load_comfyui_service_declarations(path: Path | str, expected_root: Path | str) -> tuple[ComfyServiceDeclaration, ...]:
+    """Load a bounded server-only ComfyUI declaration file without following links."""
+    root = Path(expected_root).resolve(strict=False)
+    candidate = Path(path)
+    try:
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > _MAX_SERVICES_BYTES:
+            raise ValueError
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("ComfyUI services configuration is invalid") from error
+    if not isinstance(payload, dict) or set(payload) != {"services"} or not isinstance(payload["services"], list):
+        raise ValueError("ComfyUI services configuration is invalid")
+    declarations: list[ComfyServiceDeclaration] = []
+    for item in payload["services"]:
+        try:
+            if not isinstance(item, dict) or set(item) != {"service_id", "base_url", "timeout_seconds", "auth_header_ref"}:
+                raise ValueError
+            service_id = item["service_id"]
+            base_url = item["base_url"]
+            timeout_seconds = item["timeout_seconds"]
+            auth_header_ref = item["auth_header_ref"]
+            if not isinstance(service_id, str) or not service_id.isascii() or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", service_id) is None:
+                raise ValueError
+            if not isinstance(base_url, str) or any(ord(char) <= 32 or ord(char) > 126 for char in base_url):
+                raise ValueError
+            parsed = urlsplit(base_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+                raise ValueError
+            port = parsed.port
+            if port in _PRODUCTION_PORTS:
+                raise ValueError
+            if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 60:
+                raise ValueError
+            if auth_header_ref is not None and (not isinstance(auth_header_ref, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", auth_header_ref)):
+                raise ValueError
+            declarations.append(ComfyServiceDeclaration(service_id, base_url.rstrip("/"), timeout_seconds, auth_header_ref))
+        except (TypeError, ValueError) as error:
+            raise ValueError("ComfyUI services configuration is invalid") from error
+    if len({declaration.service_id for declaration in declarations}) != len(declarations):
+        raise ValueError("ComfyUI services configuration is invalid")
+    return tuple(declarations)
 
 
 def load_service_declarations(path: Path | str, expected_root: Path | str) -> tuple[ServiceDeclaration, ...]:
@@ -118,6 +165,8 @@ class Settings:
     generation_global_concurrency: int = 8
     generation_provider_concurrency: int = 4
     generation_user_concurrency: int = 2
+    comfyui_services_config_path: Path | str | None = None
+    comfyui_services_config_root: Path | str | None = None
 
     def __post_init__(self) -> None:
         if self.environment not in {"test", "production", "development"}:
@@ -213,3 +262,20 @@ class Settings:
             object.__setattr__(self, "credential_pools_root", credential_pools_root)
         elif self.credential_pools_root is not None:
             raise ValueError("credential pools root requires a credential pools path")
+        if self.comfyui_services_config_path is not None:
+            if self.comfyui_services_config_root is None:
+                raise ValueError("ComfyUI services configuration requires a trusted root")
+            comfy_root = Path(self.comfyui_services_config_root).expanduser().resolve(strict=False)
+            comfy_path = Path(self.comfyui_services_config_path).expanduser()
+            try:
+                metadata = comfy_path.lstat()
+            except OSError:
+                metadata = None
+            if metadata is not None and (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)):
+                raise ValueError("ComfyUI services configuration must be a regular non-symlink file")
+            if not _is_within(comfy_path.resolve(strict=False), comfy_root):
+                raise ValueError("ComfyUI services configuration must resolve under trusted root")
+            object.__setattr__(self, "comfyui_services_config_path", comfy_path)
+            object.__setattr__(self, "comfyui_services_config_root", comfy_root)
+        elif self.comfyui_services_config_root is not None:
+            raise ValueError("ComfyUI services configuration root requires a configuration path")
