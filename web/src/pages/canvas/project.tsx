@@ -14,6 +14,7 @@ import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
 import { ModelCallNode } from "@/components/canvas/model-call-node";
+import { ComfyWorkflowNodeCard } from "@/features/nodes/comfy-workflow";
 import { NodePort } from "@/components/canvas/node-port";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
@@ -824,6 +825,7 @@ export default function CanvasProjectPage() {
                             const promptNode = nodeGraph?.role === "prompt";
                             const mediaCollectionNode = nodeGraph?.role === "media-collection";
                             const modelNode = nodeGraph?.role === "model";
+                            const comfyWorkflowNode = nodeGraph?.role === "comfy-workflow";
                             const modelOperation = modelNode ? (nodeGraph.operation as ModelOperation) : undefined;
                             const ports = getNodePorts(node);
                             const measuredNode = measuredNodeMap.get(node.id) ?? node;
@@ -862,6 +864,8 @@ export default function CanvasProjectPage() {
                                             onRetry={(token) => void generation.retry(token).catch(() => undefined)}
                                             onCancel={(jobId) => void generation.cancelQueued(jobId).catch((error) => setModelMessages((messages) => ({ ...messages, [node.id]: generationErrorMessage(error) })))}
                                         />
+                                    ) : comfyWorkflowNode ? (
+                                        <ComfyWorkflowNodeCard node={node} />
                                     ) : (
                                         <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} onDelete={readOnly ? undefined : () => deleteNodes(new Set([node.id]))} />
                                     )}

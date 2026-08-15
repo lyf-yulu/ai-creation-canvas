@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GRAPH_SCHEMA_VERSION } from "@/features/graph/contracts";
 import { connectGraphPorts, getNodePorts, resolveActiveConnections, type GraphPortRef } from "@/features/graph/connect";
+import { createComfyWorkflowNode } from "@/features/nodes/comfy-workflow";
 import { createNodeRegistry, nodeRegistry } from "@/features/nodes/registry";
 import CanvasProjectPage from "@/pages/canvas/project";
 import { useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
@@ -91,6 +92,23 @@ afterEach(() => {
 });
 
 describe("named-port graph rules", () => {
+    it("connects typed prompt data to one static ComfyUI workflow node", () => {
+        const prompt = promptNode("prompt");
+        const workflow = createComfyWorkflowNode({
+            workflowId: "wf-1",
+            revision: 2,
+            title: "Core",
+            inputs: [{ id: "prompt", accepts: "prompt" }],
+            executionEnabled: false,
+        });
+        workflow.id = "workflow";
+
+        expect(connectGraphPorts(port("prompt", "prompt", "source"), port("workflow", "prompt", "target"), [prompt, workflow], [], "prompt-workflow")).toMatchObject({
+            ok: true,
+            connection: { fromNodeId: "prompt", fromPortId: "prompt", toNodeId: "workflow", toPortId: "prompt" },
+        });
+    });
+
     it("exposes only stable ports declared by graph metadata", () => {
         const model = modelNode("model", ["prompt", "first_frame", "reference_audio"]);
 

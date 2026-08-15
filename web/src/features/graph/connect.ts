@@ -74,6 +74,10 @@ export function getNodePorts(node: CanvasNodeData, registry: Pick<NodeRegistry, 
             targets: inputPorts.map((descriptor) => targetPort(node.id, descriptor.id, descriptor.accepts, descriptor.label)),
         };
     }
+    if (graph?.role === "comfy-workflow") return {
+        sources: [sourcePort(node.id, graph.outputPortId, "result")],
+        targets: graph.inputPorts.map((descriptor) => targetPort(node.id, descriptor.id, descriptor.accepts, descriptor.label)),
+    };
     const definition = registry.getNode(String(node.type));
     if (!definition) return { sources: [], targets: [] };
     return {
