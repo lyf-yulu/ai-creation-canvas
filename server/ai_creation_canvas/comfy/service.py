@@ -124,6 +124,7 @@ class ComfyHttpWorkflowService:
         self._submissions: dict[_SubmissionKey, UpstreamJob] = {}
         self._unknown_submissions: set[_SubmissionKey] = set()
         self._in_flight: dict[_SubmissionKey, asyncio.Future[_SubmissionOutcome]] = {}
+        self._prompt_owners: dict[str, str | None] = {}
 
     async def health(self, context: RequestContext) -> ComfyServiceHealth:
         if self._misconfigured:
@@ -183,6 +184,12 @@ class ComfyHttpWorkflowService:
             raise
         else:
             job = UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
+            # An upstream identifier must be globally unique. If a broken
+            # upstream reuses one, no user may subsequently control it.
+            if prompt_id not in self._prompt_owners:
+                self._prompt_owners[prompt_id] = context.user.user_id
+            elif self._prompt_owners[prompt_id] != context.user.user_id:
+                self._prompt_owners[prompt_id] = None
             self._submissions[key] = job
             self._complete_submission(in_flight, None, job)
             return job
@@ -207,6 +214,7 @@ class ComfyHttpWorkflowService:
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         prompt_id = self._prompt_id(upstream_job_id)
+        self._require_prompt_owner(context, prompt_id)
         response = await self._request("GET", f"/history/{prompt_id}")
         payload = self._json_object(response)
         record = payload.get(prompt_id)
@@ -232,6 +240,7 @@ class ComfyHttpWorkflowService:
 
     async def cancel(self, context: RequestContext, upstream_job_id: str) -> None:
         prompt_id = self._prompt_id(upstream_job_id)
+        self._require_prompt_owner(context, prompt_id)
         await self._request("POST", "/queue", json={"delete": [prompt_id]})
 
     async def aclose(self) -> None:
@@ -276,6 +285,10 @@ class ComfyHttpWorkflowService:
         if not isinstance(value, str) or _UPSTREAM_ID.fullmatch(value) is None:
             raise ValueError("ComfyUI prompt identifier is invalid")
         return value
+
+    def _require_prompt_owner(self, context: RequestContext, prompt_id: str) -> None:
+        if self._prompt_owners.get(prompt_id) != context.user.user_id:
+            raise PortalUpstreamError("UPSTREAM_JOB_UNKNOWN", retryable=False)
 
 
 def _thaw_json(value: object) -> object:

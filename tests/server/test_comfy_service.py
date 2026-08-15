@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import json
+from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.comfy.service import (
@@ -167,6 +169,53 @@ async def test_same_idempotency_key_is_isolated_per_verified_user() -> None:
     assert submissions == 2
 
 
+async def test_concurrent_submissions_bind_prompt_polling_and_cancellation_to_the_submitter() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.url.path == "/prompt":
+            client_id = json.loads(request.content)["client_id"]
+            return httpx.Response(200, json={"prompt_id": f"prompt-{client_id}"}, request=request)
+        if request.url.path.startswith("/history/"):
+            prompt_id = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={prompt_id: {"status": {"status_str": "running"}}}, request=request)
+        if request.url.path == "/queue":
+            return httpx.Response(200, json={}, request=request)
+        raise AssertionError("unexpected upstream request")
+
+    adapter = ComfyHttpWorkflowService(
+        ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None),
+        transport=mock_transport(handler),
+    )
+    request_one = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-1")
+    request_two = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-2")
+    first, second = await asyncio.gather(
+        adapter.submit(context("user-1"), request_one),
+        adapter.submit(context("user-2"), request_two),
+    )
+
+    for owner, other, job in (("user-1", "user-2", first), ("user-2", "user-1", second)):
+        with pytest.raises(PortalUpstreamError) as poll_error:
+            await adapter.poll(context(other), job.upstream_job_id)
+        with pytest.raises(PortalUpstreamError) as cancel_error:
+            await adapter.cancel(context(other), job.upstream_job_id)
+        assert poll_error.value.retryable is False
+        assert cancel_error.value.retryable is False
+
+    with pytest.raises(PortalUpstreamError) as unknown_error:
+        await adapter.poll(context("user-1"), "unknown-prompt")
+
+    assert unknown_error.value.retryable is False
+    assert seen == [("POST", "/prompt"), ("POST", "/prompt")]
+    assert (await adapter.poll(context("user-1"), first.upstream_job_id)).status is JobStatus.RUNNING
+    await adapter.cancel(context("user-2"), second.upstream_job_id)
+    assert seen == [
+        ("POST", "/prompt"), ("POST", "/prompt"),
+        ("GET", f"/history/{first.upstream_job_id}"), ("POST", "/queue"),
+    ]
+
+
 async def test_different_user_submissions_do_not_wait_on_another_users_network_request() -> None:
     first_started = asyncio.Event()
     second_started = asyncio.Event()
@@ -321,3 +370,25 @@ def test_app_starts_when_configured_auth_reference_has_no_resolver(tmp_path) -> 
     )
 
     assert tuple(item.service_id for item in app.state.comfy_workflow_services) == ("comfy-local",)
+
+
+def test_app_shutdown_closes_registered_comfy_http_clients_without_upstream_requests(tmp_path: Path) -> None:
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    config_path = config_root / "comfyui-services.json"
+    config_path.write_text(
+        '{"services":[{"service_id":"comfy-local","base_url":"http://127.0.0.1:8188","timeout_seconds":3,"auth_header_ref":null}]}',
+        encoding="utf-8",
+    )
+    app = create_app(
+        Settings(
+            "test", 8992, tmp_path / "data", "test-secret",
+            comfyui_services_config_path=config_path, comfyui_services_config_root=config_root,
+        )
+    )
+    adapter = app.state.comfy_workflow_services[0]
+
+    assert adapter._client is not None and not adapter._client.is_closed
+    with TestClient(app):
+        pass
+    assert adapter._client.is_closed

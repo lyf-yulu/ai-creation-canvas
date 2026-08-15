@@ -204,6 +204,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--portal-internal-token", required=True)
     parser.add_argument("--portal-base-url", required=True)
     parser.add_argument("--services-config", type=Path, required=True)
+    parser.add_argument("--comfyui-services", type=Path, help="administrator-owned ComfyUI service declarations")
     parser.add_argument("--credential-pools", type=Path, help="administrator-owned grouped provider credential pools")
     parser.add_argument("--credential-pools-root", type=Path, help="trusted administrator-owned root for credential pools")
     parser.add_argument("--static-dir", type=Path, default=Path(__file__).parents[2] / "web" / "dist")
@@ -234,6 +235,8 @@ def main() -> None:
         portal_base_url=args.portal_base_url,
         services_config_path=args.services_config,
         services_config_root=args.services_config.parent,
+        comfyui_services_config_path=args.comfyui_services,
+        comfyui_services_config_root=args.comfyui_services.parent if args.comfyui_services is not None else None,
         credential_pools_path=args.credential_pools,
         credential_pools_root=args.credential_pools_root,
         portal_allow_loopback_http=args.allow_loopback_http,

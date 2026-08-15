@@ -171,6 +171,14 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             registry.register_comfy_workflow(adapter)
             services.append(adapter)
         app.state.comfy_workflow_services = tuple(services)
+
+    async def close_comfy_workflow_services() -> None:
+        await asyncio.gather(
+            *(service.aclose() for service in app.state.comfy_workflow_services),
+            return_exceptions=True,
+        )
+
+    app.router.on_shutdown.append(close_comfy_workflow_services)
     app.state.adapter_factory = adapter_factory
     app.state.settings = settings
     if prompt_skill_service is None:
