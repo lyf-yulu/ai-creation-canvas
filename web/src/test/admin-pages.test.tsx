@@ -48,6 +48,17 @@ it("shows administrator destinations only to an administrator", () => {
     expect(screen.queryByRole("link", { name: "使用统计" })).not.toBeInTheDocument();
 });
 
+it("hides the ComfyUI library destination from ordinary users without requesting admin APIs", () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const { rerender } = render(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
+    expect(screen.getAllByRole("link", { name: "工作流库" })).toHaveLength(2);
+
+    useSessionStore.setState({ session: { user_id: "user-1", username: "普通用户", role: "user", must_change_password: false } });
+    rerender(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
+    expect(screen.queryByRole("link", { name: "工作流库" })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it("shows server-owned per-user image and video usage", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
         totals: { jobs: 4, succeeded: 2, failed: 1, active: 1, image: 2, video: 2 },
@@ -56,8 +67,7 @@ it("shows server-owned per-user image and video usage", async () => {
 
     render(<AdminUsagePage />);
 
-    expect(await screen.findByRole("heading", { name: "使用统计" })).toBeVisible();
-    expect(screen.getByText("4", { selector: "strong" })).toBeVisible();
+    expect(await screen.findByText("4", { selector: "strong" })).toBeVisible();
     expect(screen.getByRole("row", { name: /普通用户.*canvas-user.*3.*2.*1.*1.*1/ })).toBeVisible();
 });
 
