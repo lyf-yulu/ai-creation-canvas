@@ -26,6 +26,7 @@ _WORKFLOW_JSON_MAX_BYTES = 4 * 1024 * 1024
 _MULTIPART_OVERHEAD_MAX_BYTES = 64 * 1024
 _MULTIPART_HEADER_MAX_BYTES = 32 * 1024
 _REVISION_TEXT = re.compile(r"[1-9][0-9]{0,9}\Z")
+_CHECKSUM_PREFIX_LENGTH = 12
 
 
 class LifecycleRevision(BaseModel):
@@ -190,21 +191,40 @@ def _assigned_template(request: Request, workflow_id: str) -> ComfyWorkflowProje
     raise problem(request, "WORKFLOW_NOT_FOUND", "The requested workflow was not found.", status=404)
 
 
-def _template_projection(request: Request, item: ComfyWorkflowTemplate | ComfyWorkflowProjection) -> dict[str, object]:
+def _template_projection(
+    request: Request, item: ComfyWorkflowTemplate | ComfyWorkflowProjection, *, include_checksum_prefix: bool = False
+) -> dict[str, object]:
     archived_at = item.archived_at if isinstance(item, ComfyWorkflowTemplate) else None
-    return {
+    revision = _latest_document_revision(request, item)
+    value = {
         "workflow_id": item.workflow_id,
         "display_name": item.display_name,
         "description": item.description,
         "service_id": item.service_id,
         "lifecycle": {"enabled": item.enabled, "archived": archived_at is not None},
-        "revision": _latest_document_revision(request, item),
+        "revision": revision,
         "lifecycle_revision": item.revision,
         "execution_available": False,
     }
+    if include_checksum_prefix:
+        record = request.app.state.canvas_store.comfy_workflow_revision(item.workflow_id, revision)
+        if record is None:
+            raise problem(request, "WORKFLOW_UNAVAILABLE", "The requested workflow is unavailable.", status=404)
+        value["checksum_prefix"] = _checksum_prefix(record)
+    return value
 
 
-def _revision_projection(request: Request, workflow_id: str, revision: int) -> dict[str, object]:
+def _checksum_prefix(record: dict[str, object]) -> str:
+    for name in ("editor_checksum", "api_checksum"):
+        value = record.get(name)
+        if isinstance(value, str) and len(value) >= _CHECKSUM_PREFIX_LENGTH:
+            return value[:_CHECKSUM_PREFIX_LENGTH]
+    raise ValueError("workflow checksum is unavailable")
+
+
+def _revision_projection(
+    request: Request, workflow_id: str, revision: int, *, include_checksum_prefix: bool = False
+) -> dict[str, object]:
     library = request.app.state.comfy_workflow_library
     record = request.app.state.canvas_store.comfy_workflow_revision(workflow_id, revision)
     if record is None:
@@ -216,7 +236,7 @@ def _revision_projection(request: Request, workflow_id: str, revision: int) -> d
         dependencies = json.loads(str(record["dependency_inventory_json"]))
     except (WorkflowValidationError, ValueError, TypeError, json.JSONDecodeError):
         raise problem(request, "WORKFLOW_UNAVAILABLE", "The requested workflow is unavailable.", status=404) from None
-    return {
+    value = {
         "workflow_id": workflow_id,
         "revision": revision,
         "formats": formats,
@@ -232,6 +252,9 @@ def _revision_projection(request: Request, workflow_id: str, revision: int) -> d
         "execution_available": False,
         "execution_unavailable_reason": "EXECUTION_NOT_IMPLEMENTED",
     }
+    if include_checksum_prefix:
+        value["checksum_prefix"] = _checksum_prefix(record)
+    return value
 
 
 def _latest_document_revision(request: Request, item: ComfyWorkflowTemplate | ComfyWorkflowProjection) -> int:
@@ -268,27 +291,32 @@ async def import_workflow(request: Request) -> dict[str, object]:
             )
         except (ValueError, WorkflowValidationError) as error:
             _workflow_error(request, error)
-        return _template_projection(request, item)
+        return _template_projection(request, item, include_checksum_prefix=True)
 
 
 @router.get("/admin/comfy-workflows")
 async def admin_list_workflows(request: Request) -> dict[str, object]:
     _require_admin(request)
-    return {"workflows": [_template_projection(request, item) for item in request.app.state.comfy_workflow_library.admin_list()]}
+    return {"workflows": [_template_projection(request, item, include_checksum_prefix=True) for item in request.app.state.comfy_workflow_library.admin_list()]}
 
 
 @router.get("/admin/comfy-workflows/{workflow_id}")
 async def admin_get_workflow(workflow_id: str, request: Request) -> dict[str, object]:
     _require_admin(request)
     item = _admin_template(request, workflow_id)
-    return {**_template_projection(request, item), "current_revision": _revision_projection(request, workflow_id, _latest_document_revision(request, item))}
+    return {
+        **_template_projection(request, item, include_checksum_prefix=True),
+        "current_revision": _revision_projection(
+            request, workflow_id, _latest_document_revision(request, item), include_checksum_prefix=True
+        ),
+    }
 
 
 @router.get("/admin/comfy-workflows/{workflow_id}/revisions/{revision}/preview")
 async def admin_preview_workflow(workflow_id: str, revision: int, request: Request) -> dict[str, object]:
     _require_admin(request)
     _admin_template(request, workflow_id)
-    return _revision_projection(request, workflow_id, revision)
+    return _revision_projection(request, workflow_id, revision, include_checksum_prefix=True)
 
 
 @router.get("/admin/comfy-workflows/{workflow_id}/revisions/{revision}/export")
@@ -313,7 +341,7 @@ async def add_workflow_revision(workflow_id: str, request: Request) -> dict[str,
             )
         except (ValueError, WorkflowValidationError) as error:
             _workflow_error(request, error)
-        return _template_projection(request, item)
+        return _template_projection(request, item, include_checksum_prefix=True)
 
 
 async def _transition(workflow_id: str, request: Request, *, enabled: bool | None = None, archived: bool | None = None) -> dict[str, object]:
@@ -334,7 +362,7 @@ async def _transition(workflow_id: str, request: Request, *, enabled: bool | Non
         )
     except (ValidationError, ValueError, WorkflowValidationError) as error:
         _workflow_error(request, error)
-    return _template_projection(request, item)
+    return _template_projection(request, item, include_checksum_prefix=True)
 
 
 @router.post("/admin/comfy-workflows/{workflow_id}/enable")

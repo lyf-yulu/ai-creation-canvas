@@ -119,8 +119,10 @@ def _require_admin(request: Request):
     return user
 
 
-def _safe_user(row: dict[str, object], model_ids: tuple[str, ...]) -> dict[str, object]:
-    return {
+def _safe_user(
+    row: dict[str, object], model_ids: tuple[str, ...], *, comfy_workflow_ids: tuple[str, ...] | None = None
+) -> dict[str, object]:
+    value = {
         "user_id": row["user_id"],
         "username": row["username_normalized"],
         "display_name": row["display_name"],
@@ -131,6 +133,9 @@ def _safe_user(row: dict[str, object], model_ids: tuple[str, ...]) -> dict[str, 
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+    if comfy_workflow_ids is not None:
+        value["comfy_workflow_ids"] = list(comfy_workflow_ids)
+    return value
 
 
 def _assigned_model_ids(store, user_id: str) -> tuple[str, ...]:
@@ -141,7 +146,16 @@ def _assigned_model_ids(store, user_id: str) -> tuple[str, ...]:
 async def list_users(request: Request) -> dict[str, object]:
     _require_admin(request)
     store = request.app.state.canvas_store
-    return {"users": [_safe_user(row, _assigned_model_ids(store, str(row["user_id"]))) for row in store.list_users()]}
+    return {
+        "users": [
+            _safe_user(
+                row,
+                _assigned_model_ids(store, str(row["user_id"])),
+                comfy_workflow_ids=store.assigned_comfy_workflow_ids(str(row["user_id"])),
+            )
+            for row in store.list_users()
+        ]
+    }
 
 
 @router.get("/usage")

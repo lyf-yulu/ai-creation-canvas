@@ -43,6 +43,7 @@ def test_assigned_user_can_only_read_safe_metadata_while_other_users_are_hidden(
     assert detail.json()["revision"] == 1
     assert detail.json()["lifecycle_revision"] == 2
     assert "widgets_values" not in detail.text
+    assert "checksum_prefix" not in detail.text
     assert user_b.get(f"/api/v1/comfy-workflows/{workflow_id}").status_code == 404
     assert user_a.post(
         f"/api/v1/admin/comfy-workflows/{workflow_id}/disable",

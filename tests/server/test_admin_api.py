@@ -21,6 +21,7 @@ def test_admin_user_list_contains_only_safe_management_fields(tmp_path) -> None:
         "enabled",
         "must_change_password",
         "model_ids",
+        "comfy_workflow_ids",
         "created_at",
         "updated_at",
     }

@@ -902,6 +902,16 @@ class CanvasStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def assigned_comfy_workflow_ids(self, user_id: str) -> tuple[str, ...]:
+        """Return all current administrator assignments, including disabled workflows."""
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT workflow_id FROM canvas_comfy_workflow_access "
+                "WHERE user_id=? AND revoked_at IS NULL ORDER BY workflow_id",
+                (user_id,),
+            ).fetchall()
+        return tuple(str(row["workflow_id"]) for row in rows)
+
     def comfy_workflow_revision(self, workflow_id: str, revision: int) -> dict[str, object] | None:
         with self._connection() as db:
             row = db.execute(

@@ -143,6 +143,33 @@ def test_admin_import_accepts_normal_workflow_fixture(tmp_path) -> None:
     assert [item.workflow_id for item in app.state.comfy_workflow_library.admin_list()] == [workflow_id]
 
 
+def test_admin_workflow_metadata_exposes_checksum_prefix_and_assignments_without_raw_data(tmp_path) -> None:
+    app, accounts, admin, user, headers, _user_headers = local_clients(tmp_path)
+    assert accounts.user is not None
+    workflow_id = _import(admin, headers)
+    assert admin.put(
+        f"/api/v1/admin/users/{accounts.user.user_id}/comfy-workflows",
+        headers=headers,
+        json={"workflow_ids": [workflow_id]},
+    ).status_code == 200
+
+    listed = admin.get("/api/v1/admin/comfy-workflows")
+    detail = admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}")
+    preview = admin.get(f"/api/v1/admin/comfy-workflows/{workflow_id}/revisions/1/preview")
+    users = admin.get("/api/v1/admin/users")
+
+    assert listed.status_code == detail.status_code == preview.status_code == users.status_code == 200
+    expected_prefix = "bd97659461bf"
+    assert listed.json()["workflows"][0]["checksum_prefix"] == expected_prefix
+    assert detail.json()["checksum_prefix"] == expected_prefix
+    assert preview.json()["checksum_prefix"] == expected_prefix
+    by_id = {item["user_id"]: item for item in users.json()["users"]}
+    assert by_id[accounts.user.user_id]["comfy_workflow_ids"] == [workflow_id]
+    assert "widgets_values" not in f"{listed.text}{detail.text}{preview.text}{users.text}"
+    assert user.get("/api/v1/admin/comfy-workflows").status_code == 404
+    assert user.get("/api/v1/admin/users").status_code == 404
+
+
 def test_workflow_projection_uses_document_revision_not_lifecycle_revision(tmp_path) -> None:
     app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
     _configure_service(app)
