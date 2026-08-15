@@ -69,6 +69,15 @@ _FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
     "endpoint_url",
     "service_endpoint",
     "callback_endpoint",
+    "base_endpoint",
+    "base_endpoint_url",
+    "base_url_endpoint",
+    "webhook_endpoint",
+    "webhook_endpoint_url",
+    "webhook_url_endpoint",
+    "server_endpoint",
+    "server_endpoint_url",
+    "server_url_endpoint",
 })
 
 

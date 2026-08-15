@@ -64,7 +64,10 @@ def test_allows_resource_url_metadata_key_variants_without_projecting_the_value(
 
 @pytest.mark.parametrize(
     "field",
-    ("base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url", "webhook_url", "endpoint"),
+    (
+        "base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url", "webhook_url", "endpoint",
+        "base endpoint", "webhook\tendpoint", "server.endpoint",
+    ),
 )
 def test_rejects_control_endpoint_key_variants(field: str) -> None:
     raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "https://bad.example"}}}).encode()
