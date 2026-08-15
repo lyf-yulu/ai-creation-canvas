@@ -109,7 +109,10 @@ def test_workflow_routes_enforce_rbac_csrf_and_strict_multipart(tmp_path) -> Non
     assert unavailable.json()["code"] == "WORKFLOW_SERVICE_UNAVAILABLE"
 
 
-@pytest.mark.parametrize("field", ("auth_header_ref", "callback_url", "ScRiPt", "service_url"))
+@pytest.mark.parametrize(
+    "field",
+    ("auth_header_ref", "callback_url", "ScRiPt", "service_url", "apiKey", "API-KEY", "password", "secret_ref"),
+)
 def test_admin_import_rejects_recursive_sensitive_workflow_fields_before_persistence(tmp_path, field: str) -> None:
     app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
     secret = "server-only-workflow-secret"
@@ -127,6 +130,14 @@ def test_admin_import_rejects_recursive_sensitive_workflow_fields_before_persist
     assert response.json()["code"] == "WORKFLOW_FIELD_REJECTED"
     assert secret not in response.text
     assert app.state.comfy_workflow_library.admin_list() == ()
+
+
+def test_admin_import_accepts_normal_workflow_fixture(tmp_path) -> None:
+    app, _accounts, admin, _user, headers, _user_headers = local_clients(tmp_path)
+
+    workflow_id = _import(admin, headers)
+
+    assert [item.workflow_id for item in app.state.comfy_workflow_library.admin_list()] == [workflow_id]
 
 
 def test_workflow_projection_uses_document_revision_not_lifecycle_revision(tmp_path) -> None:

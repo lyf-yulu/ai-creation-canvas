@@ -26,17 +26,29 @@ _MAX_LINKS = 2_000
 _MAX_DEPTH = 64
 _MAX_STRING_BYTES = 64 * 1024
 _MAX_API_NODE_ID_CHARS = 64
-_FORBIDDEN_FIELD_NAMES = frozenset({
+def _canonical_field_name(value: str) -> str:
+    """Normalize only deliberate case, underscore, and hyphen spelling variants."""
+    return value.casefold().replace("_", "").replace("-", "")
+
+
+_FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
+    "apikey",
     "api_key",
     "authorization",
     "base_url",
     "callback_url",
+    "credential",
+    "credentials",
     "headers",
+    "password",
+    "secret",
+    "secret_ref",
     "script",
     "plugin",
     "code",
     "token",
     "url",
+    "webhook",
     "auth_header_ref",
     "service_url",
     "endpoint_url",
@@ -136,7 +148,7 @@ def _assert_value_limits(value: object, *, depth: int) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             _assert_value_limits(key, depth=depth + 1)
-            if key.strip().casefold() in _FORBIDDEN_FIELD_NAMES:
+            if _canonical_field_name(key) in _FORBIDDEN_FIELD_NAMES:
                 raise WorkflowValidationError("WORKFLOW_FIELD_REJECTED")
             _assert_value_limits(item, depth=depth + 1)
         return
