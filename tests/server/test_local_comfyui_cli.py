@@ -9,6 +9,7 @@ import pytest
 
 import ai_creation_canvas.__main__ as entrypoint
 from ai_creation_canvas.__main__ import create_local_app
+from ai_creation_canvas.errors import AdapterNotFoundError
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "comfy" / "core-load-save-workflow.json"
@@ -73,6 +74,23 @@ def test_local_app_rejects_unsafe_comfy_service_path(tmp_path: Path) -> None:
         create_local_app(
             port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist", comfyui_services_config=symlink
         )
+
+
+def test_local_app_without_comfy_config_registers_no_comfy_service(tmp_path: Path) -> None:
+    app, _accounts = create_local_app(port=8993, data_dir=tmp_path / "data", static_dir=tmp_path / "dist")
+
+    assert app.state.comfy_workflow_services == ()
+    with pytest.raises(AdapterNotFoundError):
+        app.state.adapter_registry.comfy_workflow("comfy-local")
+
+
+def test_run_local_script_only_forwards_a_nonempty_comfy_service_environment_value() -> None:
+    script = (Path(__file__).parents[2] / "scripts" / "run-local.sh").read_text(encoding="utf-8")
+
+    assert 'if [ -n "${AICC_COMFYUI_SERVICES:-}" ]; then' in script
+    assert 'set -- --comfyui-services "$AICC_COMFYUI_SERVICES"' in script
+    assert "else\n    set --\nfi" in script
+    assert '--open \\\n    "$@"' in script
 
 
 def test_serve_local_passes_explicit_comfy_service_path_to_local_app(tmp_path: Path, monkeypatch) -> None:
