@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import json
 
@@ -15,15 +16,15 @@ from ai_creation_canvas.comfy.service import (
 )
 from ai_creation_canvas.domain.models import JobStatus, PortalUser, RequestContext
 from ai_creation_canvas.config import Settings
-from ai_creation_canvas.errors import PortalUpstreamError
+from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 
 
 API_WORKFLOW = {"1": {"class_type": "LoadImage", "inputs": {}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}
 pytestmark = pytest.mark.anyio
 
 
-def context() -> RequestContext:
-    return RequestContext(PortalUser("user-1", "Ada", "user"), "request-1", "trace-1")
+def context(user_id: str = "user-1", request_id: str = "request-1") -> RequestContext:
+    return RequestContext(PortalUser(user_id, "Ada", "user"), request_id, "trace-1")
 
 
 def mock_transport(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
@@ -114,6 +115,114 @@ async def test_adapter_does_not_replay_an_unknown_submission() -> None:
         assert raised.value.retryable is False
 
     assert submissions == 1
+
+
+async def test_cancelled_submit_becomes_unknown_and_is_never_replayed() -> None:
+    started = asyncio.Event()
+    submissions = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submissions
+        submissions += 1
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("cancelled request should not complete")
+
+    adapter = ComfyHttpWorkflowService(
+        ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None),
+        transport=mock_transport(handler),
+    )
+    request = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-1")
+    submission = asyncio.create_task(adapter.submit(context(), request))
+    await started.wait()
+
+    submission.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await submission
+    with pytest.raises(PortalUpstreamError, match="SUBMISSION_UNKNOWN"):
+        await asyncio.wait_for(adapter.submit(context(), request), timeout=0.1)
+
+    assert submissions == 1
+    assert adapter._in_flight == {}
+
+
+async def test_same_idempotency_key_is_isolated_per_verified_user() -> None:
+    submissions = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submissions
+        submissions += 1
+        return httpx.Response(200, json={"prompt_id": f"prompt-{submissions}"}, request=request)
+
+    adapter = ComfyHttpWorkflowService(
+        ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None),
+        transport=mock_transport(handler),
+    )
+    request = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-1")
+
+    first = await adapter.submit(context("user-1"), request)
+    second = await adapter.submit(context("user-2"), request)
+
+    assert (first.upstream_job_id, second.upstream_job_id) == ("prompt-1", "prompt-2")
+    assert submissions == 2
+
+
+async def test_different_user_submissions_do_not_wait_on_another_users_network_request() -> None:
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+    submissions = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submissions
+        submissions += 1
+        if submissions == 1:
+            first_started.set()
+            await release_first.wait()
+        else:
+            second_started.set()
+        return httpx.Response(200, json={"prompt_id": f"prompt-{submissions}"}, request=request)
+
+    adapter = ComfyHttpWorkflowService(
+        ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None),
+        transport=mock_transport(handler),
+    )
+    request = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-1")
+    first = asyncio.create_task(adapter.submit(context("user-1"), request))
+    await first_started.wait()
+    second = asyncio.create_task(adapter.submit(context("user-2"), request))
+    await asyncio.wait_for(second_started.wait(), timeout=0.1)
+
+    release_first.set()
+    await first
+    await second
+
+
+async def test_malformed_submission_wakes_same_key_waiters_and_releases_coordination() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"prompt_id": "not a safe identifier"}, request=request)
+
+    adapter = ComfyHttpWorkflowService(
+        ComfyServiceDeclaration("comfy-local", "http://127.0.0.1:8188", 3, None),
+        transport=mock_transport(handler),
+    )
+    request = ComfyWorkflowRequest("workflow-1", 1, API_WORKFLOW, (), "idem-1")
+    owner = asyncio.create_task(adapter.submit(context(), request))
+    await started.wait()
+    waiter = asyncio.create_task(adapter.submit(context(), request))
+
+    release.set()
+    with pytest.raises(InvalidUpstreamResult):
+        await owner
+    with pytest.raises(InvalidUpstreamResult):
+        await asyncio.wait_for(waiter, timeout=0.1)
+
+    assert adapter._in_flight == {}
 
 
 async def test_health_is_unavailable_when_the_trusted_service_cannot_be_contacted() -> None:

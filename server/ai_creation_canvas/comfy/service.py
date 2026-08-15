@@ -18,6 +18,8 @@ from ai_creation_canvas.errors import ApiError, InvalidUpstreamResult, PortalUps
 _SERVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 _UPSTREAM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 AuthHeaderResolver: TypeAlias = Callable[[str], Mapping[str, str] | None]
+_SubmissionKey: TypeAlias = tuple[str, str]
+_SubmissionOutcome: TypeAlias = tuple[UpstreamJob | None, Exception | None]
 
 
 class ComfyServiceStatus(StrEnum):
@@ -119,9 +121,9 @@ class ComfyHttpWorkflowService:
             base_url=declaration.base_url, timeout=httpx.Timeout(float(declaration.timeout_seconds)),
             headers=dict(headers or {}), transport=transport,
         )
-        self._submissions: dict[str, UpstreamJob] = {}
-        self._unknown_submissions: set[str] = set()
-        self._submission_lock = asyncio.Lock()
+        self._submissions: dict[_SubmissionKey, UpstreamJob] = {}
+        self._unknown_submissions: set[_SubmissionKey] = set()
+        self._in_flight: dict[_SubmissionKey, asyncio.Future[_SubmissionOutcome]] = {}
 
     async def health(self, context: RequestContext) -> ComfyServiceHealth:
         if self._misconfigured:
@@ -143,31 +145,65 @@ class ComfyHttpWorkflowService:
     async def submit(self, context: RequestContext, request: ComfyWorkflowRequest) -> UpstreamJob:
         if not isinstance(request, ComfyWorkflowRequest):
             raise ValueError("ComfyUI workflow request is invalid")
-        async with self._submission_lock:
-            submitted = self._submissions.get(request.idempotency_key)
-            if submitted is not None:
-                return submitted
-            if request.idempotency_key in self._unknown_submissions:
-                raise PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False)
-            try:
-                response = await self._request(
-                    "POST", "/prompt", json={"prompt": _thaw_json(request.api_workflow), "client_id": request.idempotency_key}
-                )
-                payload = self._json_object(response)
-                prompt_id = payload.get("prompt_id")
-                if not isinstance(prompt_id, str) or _UPSTREAM_ID.fullmatch(prompt_id) is None:
-                    raise InvalidUpstreamResult("ComfyUI prompt identifier is invalid")
-            except PortalUpstreamError as error:
-                if error.retryable:
-                    self._unknown_submissions.add(request.idempotency_key)
-                    raise PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False) from error
-                raise
-            except InvalidUpstreamResult:
-                self._unknown_submissions.add(request.idempotency_key)
-                raise
+        key = (context.user.user_id, request.idempotency_key)
+        submitted = self._submissions.get(key)
+        if submitted is not None:
+            return submitted
+        if key in self._unknown_submissions:
+            raise PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False)
+        in_flight = self._in_flight.get(key)
+        if in_flight is not None:
+            return await self._await_submission(in_flight)
+        in_flight = asyncio.get_running_loop().create_future()
+        self._in_flight[key] = in_flight
+        try:
+            response = await self._request(
+                "POST", "/prompt", json={"prompt": _thaw_json(request.api_workflow), "client_id": request.idempotency_key}
+            )
+            payload = self._json_object(response)
+            prompt_id = payload.get("prompt_id")
+            if not isinstance(prompt_id, str) or _UPSTREAM_ID.fullmatch(prompt_id) is None:
+                raise InvalidUpstreamResult("ComfyUI prompt identifier is invalid")
+        except asyncio.CancelledError:
+            self._unknown_submissions.add(key)
+            self._complete_submission(in_flight, PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False))
+            raise
+        except PortalUpstreamError as error:
+            if error.retryable:
+                self._unknown_submissions.add(key)
+                error = PortalUpstreamError("SUBMISSION_UNKNOWN", retryable=False)
+            self._complete_submission(in_flight, error)
+            raise error
+        except InvalidUpstreamResult as error:
+            self._unknown_submissions.add(key)
+            self._complete_submission(in_flight, error)
+            raise
+        except Exception as error:
+            self._complete_submission(in_flight, error)
+            raise
+        else:
             job = UpstreamJob(self.service_id, prompt_id, JobState(prompt_id, JobStatus.QUEUED))
-            self._submissions[request.idempotency_key] = job
+            self._submissions[key] = job
+            self._complete_submission(in_flight, None, job)
             return job
+        finally:
+            if self._in_flight.get(key) is in_flight:
+                self._in_flight.pop(key, None)
+
+    @staticmethod
+    async def _await_submission(in_flight: asyncio.Future[_SubmissionOutcome]) -> UpstreamJob:
+        job, error = await asyncio.shield(in_flight)
+        if error is not None:
+            raise error
+        assert job is not None
+        return job
+
+    @staticmethod
+    def _complete_submission(
+        in_flight: asyncio.Future[_SubmissionOutcome], error: Exception | None, job: UpstreamJob | None = None
+    ) -> None:
+        if not in_flight.done():
+            in_flight.set_result((job, error))
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:
         prompt_id = self._prompt_id(upstream_job_id)
