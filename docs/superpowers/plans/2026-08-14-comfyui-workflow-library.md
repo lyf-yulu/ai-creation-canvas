@@ -12,7 +12,7 @@
 
 - Follow [the approved design](/Users/260413a/ai-creation-canvas/docs/superpowers/specs/2026-08-14-comfyui-workflow-library-design.md) exactly; this slice does not dispatch a real ComfyUI generation task.
 - Preserve the fixed Infinite Canvas baseline `9bccd0ff1a7057a835708a731644ab05371fea3b`, AGPL-3.0 notices, and existing node registry boundaries.
-- Do not copy either user-supplied external workflow into Git. Validate them only through an explicit local acceptance command; commit only the newly authored core-node fixture.
+- Do not copy either user-supplied external workflow into Git. Automated tests read only repository-authored safe fixtures; validate user-supplied workflows only through the explicit Task 7 local acceptance command, and commit only the newly authored core-node fixture.
 - Use the test port `8992` and an isolated temporary data directory. Do not read, write, restart, or probe `/Users/260413a/ai-generation-portable-apps` or ports `8991`, `9090`, `8787`, `8797`, `8891`.
 - Browser code must not parse imported JSON, persist its content, see server credentials/base URLs, dynamically import workflow code, or connect directly to ComfyUI.
 - Normal users may only see assigned, enabled templates; only administrators may import, preview, export, change lifecycle, or assign workflows.
@@ -105,8 +105,11 @@ def test_editor_workflow_round_trips_by_canonical_checksum(core_workflow: bytes)
 def test_rejects_dangling_link_and_sensitive_key() -> None:
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_TOPOLOGY_INVALID"):
         parse_workflow_json(b'{"nodes":[{"id":1,"type":"LoadImage"}],"links":[[1,1,0,2,0,"IMAGE"]]}')
+    parsed = parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"resource_url":"https://metadata.example"}}}')
+    assert "https://metadata.example" not in repr(parsed.preview)
+
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
-        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"url":"https://bad.example"}}}')
+        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"callback_url":"https://bad.example"}}}')
 ```
 
 - [ ] **Step 2: Run the focused test to confirm red**
@@ -565,7 +568,7 @@ for path in map(Path, arguments.paths):
     print(f"{path.name}: format={','.join(sorted(parsed.formats))} checksum={parsed.checksum[:12]} nodes={parsed.node_count} links={parsed.link_count}")
 ```
 
-Document the command with all three inputs, including the two exact user paths, and state that successful local format verification does not prove custom node/model availability or run a ComfyUI task.
+Document the command with the repository-authored fixture plus the two exact user paths. State that the two user files are manual local acceptance inputs only: no automated test may read them, and they must not be copied or committed. Also state that successful local format verification does not prove custom node/model availability or run a ComfyUI task.
 
 - [ ] **Step 4: Run all release-gate checks**
 

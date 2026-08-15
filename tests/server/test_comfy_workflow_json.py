@@ -77,30 +77,6 @@ def test_rejects_control_endpoint_key_variants(field: str) -> None:
         parse_workflow_json(raw)
 
 
-def test_locally_supplied_minimax_workflow_round_trips_without_printing_contents() -> None:
-    path = Path("/Users/260413a/Downloads/▶▷MiniMaxH3-加速视频流整合.json")
-    if not path.is_file():
-        pytest.skip("locally supplied MiniMax workflow is unavailable")
-
-    parsed = parse_workflow_json(path.read_bytes())
-
-    assert parsed.formats == frozenset({WorkflowFormat.EDITOR})
-    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.EDITOR))) == parsed.checksum
-
-
-def test_locally_supplied_bernini_workflow_round_trips_without_printing_contents() -> None:
-    path = Path("/Users/260413a/Downloads/贝尔尼尼Bernini+Studio工作流.json")
-    if not path.is_file():
-        pytest.skip("locally supplied Bernini workflow is unavailable")
-    try:
-        parsed = parse_workflow_json(path.read_bytes())
-    except WorkflowValidationError:
-        pytest.fail("locally supplied Bernini workflow was rejected", pytrace=False)
-
-    assert parsed.formats == frozenset({WorkflowFormat.EDITOR})
-    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.EDITOR))) == parsed.checksum
-
-
 @pytest.mark.parametrize("field", ("api_key", "auth_token", "header", "script", "plugin", "code"))
 def test_rejects_sensitive_key_names_after_resource_url_relaxation(field: str) -> None:
     raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
