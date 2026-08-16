@@ -108,3 +108,66 @@ Cookie 认证的 Portal 图像、视频和人像验收必须单独证明：新�
 迁移验收必须从无 `completion_mode` 的历史未终态行开始，证明启动只按受信服务端能力分类可识别行，无法分类的行保持不可领取。备份/恢复验收仅覆盖单实例 SQLite：必须使用 SQLite 在线备份，或停止唯一实例后一致备份数据库与资产/结果；不验收多实例共享一个 SQLite 目录。
 
 本验收产生的媒体只存在于 pytest 临时目录。正式门禁前确认仓库工作树没有 `.local-real-media-data/`、结果文件、凭据或本地验证日志；这些内容已被忽略且不得提交。
+## ComfyUI 工作流库验收
+
+工作流 round-trip 只做本地解析与重新编码，不向 ComfyUI、模型服务或第三方网络发送请求，也不会证明自定义节点或模型在任何 ComfyUI 实例中可用。它不创建任务、不产生费用，并且不会将外部工作流复制进仓库。
+
+自动化测试只读取仓库内受版本控制的安全夹具。下面的两个 Downloads 文件只可作为 Task 7 的显式本地验收输入：它们不得被 pytest、前端测试或发布门禁自动读取，也不得复制或提交。资源 URL 元数据在导入/导出中作为惰性数据保留；该命令和产品均不会抓取、执行或渲染 URL。控制 URL（base/service/callback/webhook/server 与全部 endpoint 形式）以及认证、凭据、密钥和脚本字段仍会被递归拒绝。
+
+在已安装项目锁定依赖的工作树中执行：
+
+```bash
+.venv/bin/python scripts/verify-comfy-workflow-roundtrip.py \
+  tests/fixtures/comfy/core-load-save-workflow.json \
+  '/Users/260413a/Downloads/▶▷MiniMaxH3-加速视频流整合.json' \
+  '/Users/260413a/Downloads/贝尔尼尼Bernini+Studio工作流.json'
+```
+
+成功时每个输入只输出其 basename、检测到的格式、校验和前缀、节点数和连线数。命令绝不输出节点类型、widgets、提示词或原始 JSON；非零退出也只输出 basename 和稳定错误码。
+
+相应的自动化发布门禁为：
+
+```bash
+PYTHONPATH=.:server .venv/bin/pytest -q \
+  tests/server/test_comfy_workflow_json.py \
+  tests/server/test_comfy_workflow_store.py \
+  tests/server/test_comfy_service.py \
+  tests/server/test_comfy_workflow_api.py \
+  tests/integration/test_comfy_workflow_library.py \
+  tests/server/test_app_security.py \
+  tests/server/test_model_assignments.py
+npm test --prefix web -- --run \
+  src/test/admin-comfy-workflows.test.tsx \
+  src/test/comfy-workflow-preview.test.tsx \
+  src/test/comfy-workflow-node.test.tsx \
+  src/test/extension-registry.test.ts \
+  src/test/canvas-connections.test.tsx
+npm run lint --prefix web
+npm run build --prefix web
+```
+
+`npm run lint --prefix web` 是发布门禁；当前它执行前端 TypeScript typecheck，必须与测试和构建一起成功退出。
+
+手工冒烟只可使用 Canvas 测试端口 `127.0.0.1:8992` 和 Git 忽略的全新数据目录：
+
+```bash
+mkdir -p .local-data
+AICC_LOCAL_DATA="$(mktemp -d "$PWD/.local-data/task7-comfy.XXXXXX")" \
+  AICC_LOCAL_PORT=8992 \
+  bash scripts/run-local.sh
+```
+
+若要验证启用和普通用户可见性，管理员可创建一个仅位于上述临时目录内、普通文件且非符号链接的 ComfyUI 服务声明，然后使用：
+
+```bash
+AICC_LOCAL_DATA="/absolute/new-temporary-data-dir" \
+  AICC_COMFYUI_SERVICES="/absolute/new-temporary-data-dir/config/comfyui-services.json" \
+  AICC_LOCAL_PORT=8992 \
+  bash scripts/run-local.sh
+```
+
+声明必须是该新数据目录 `config/` 内的普通非符号链接文件，只能指定测试用服务 ID 与数值回环 URL（`127.0.0.1` 或 `::1`）；本验收不启动、连接或请求真实 ComfyUI。启动前须确认脚本仅传入临时数据目录、该受信声明、`web/dist`、回环地址和端口 `8992`，绝不传入生产目录、生产端口或生产配置。
+
+管理员应原样导入、预览并导出三个输入，启用仓库自写模板并派发给测试用户 A；测试用户 A 必须可列出并读取该模板，测试用户 B 的列表必须为空且读取该模板必须为 404。测试结束后确认 `8992` 已停止且生产端口/进程未发生变化。
+
+本切片的最近一次隔离记录如下：三份输入均完成 editor 格式 round-trip；核心样例为 2 个节点/1 条连线，两个外部输入分别为 145/152 和 24/28。Python 门禁为 143 项通过（含本地 Comfy 服务声明启动保护与双用户目录隔离回归），前端定向门禁为 5 个文件、70 项通过，`lint` typecheck 与生产构建均成功（保留既有 chunk 警告）。隔离实例仅使用 8992、全新忽略数据目录内的 `config/` 声明以及无监听的数值回环服务 URL；三份工作流完成原样导入、预览和 editor 导出，核心样例完成启用与用户 A 派发，用户 A 可列出/读取，用户 B 列表为空且详情为 404。测试服务停止后，8992 未监听；9090、8787、8797、8891 保持监听，未被本次验证操作。

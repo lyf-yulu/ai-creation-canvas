@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 from pathlib import Path
+import stat
 import sys
 import threading
 from typing import Callable
@@ -15,7 +16,7 @@ import uvicorn
 
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.auth.local import LocalAuthService
-from ai_creation_canvas.config import Settings
+from ai_creation_canvas.config import Settings, is_within_production_repository, load_comfyui_service_declarations
 from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.auth.local import BootstrapResult
 
@@ -26,6 +27,7 @@ _RFC1918_NETWORKS = (
     ipaddress.IPv4Network("172.16.0.0/12"),
     ipaddress.IPv4Network("192.168.0.0/16"),
 )
+_LOCAL_COMFYUI_HOSTS = frozenset({"127.0.0.1", "::1"})
 
 
 def _upload_mib(value: str) -> int:
@@ -133,12 +135,44 @@ def reset_local_password(data_dir: Path, username: str, *, output: Callable[[str
     return password
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
+def _local_comfyui_config(data_dir: Path, configured_path: Path | None) -> tuple[Path | None, Path | None]:
+    """Validate a local-only ComfyUI declaration without broadening production policy."""
+    if configured_path is None:
+        return None, None
+    root = Path(data_dir).expanduser().resolve(strict=False) / "config"
+    candidate = Path(configured_path).expanduser()
+    try:
+        metadata = candidate.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        declarations = load_comfyui_service_declarations(candidate, root)
+    except (OSError, ValueError) as error:
+        if isinstance(error, ValueError) and str(error) == "ComfyUI services configuration is invalid":
+            raise
+        raise ValueError("local ComfyUI services configuration must be a regular non-symlink file within the local data config root") from None
+    if any(urlsplit(declaration.base_url).hostname not in _LOCAL_COMFYUI_HOSTS for declaration in declarations):
+        raise ValueError("local ComfyUI services must use a numeric loopback host")
+    return candidate, root
+
+
+def _local_data_dir(data_dir: Path) -> Path:
+    """Resolve and reject protected paths before any optional local config is read."""
+    resolved = Path(data_dir).expanduser().resolve(strict=False)
+    if is_within_production_repository(resolved):
+        raise ValueError("non-production environment cannot use the production repository")
+    return resolved
+
+
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origins = public_origins or (f"http://127.0.0.1:{port}",)
+    local_data_dir = _local_data_dir(data_dir)
+    comfy_config_path, comfy_config_root = _local_comfyui_config(local_data_dir, comfyui_services_config)
     settings = Settings(
         environment="development",
         port=port,
-        data_dir=data_dir,
+        data_dir=local_data_dir,
         portal_internal_token="local-identity-unused-secret",
         identity_mode="local",
         allowed_origins=origins,
@@ -147,6 +181,8 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_orig
         enable_ark_adapter=ark_models_config is not None,
         ark_models_config_path=ark_models_config,
         ark_models_config_root=ark_models_config.parent if ark_models_config is not None else None,
+        comfyui_services_config_path=comfy_config_path,
+        comfyui_services_config_root=comfy_config_root,
         prompt_skill_model_id=prompt_skill_model,
         redis_url=redis_url,
         max_image_upload_bytes=max_image_upload_bytes,
@@ -202,6 +238,7 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--bootstrap-if-empty", action="store_true")
     parser.add_argument("--open", action="store_true", dest="open_browser")
     parser.add_argument("--ark-models", type=Path, help="administrator-owned Ark model declarations; requires ARK_API_KEY")
+    parser.add_argument("--comfyui-services", type=Path, help="administrator-owned ComfyUI service declarations")
     parser.add_argument("--prompt-skill-model", help="administrator-owned Ark text endpoint used by built-in prompt skills")
     parser.add_argument("--redis-url", help="optional Redis coordination URL; governed production models require Redis")
     _add_upload_limit_arguments(parser)
@@ -213,7 +250,7 @@ def _run_serve_local(argv: list[str]) -> None:
         parser.error("LAN public origin ports must match --port")
     if not bind_address.is_loopback and args.open_browser:
         parser.error("--open is only supported for loopback hosts")
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, comfyui_services_config=args.comfyui_services, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"
@@ -233,6 +270,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--portal-internal-token", required=True)
     parser.add_argument("--portal-base-url", required=True)
     parser.add_argument("--services-config", type=Path, required=True)
+    parser.add_argument("--comfyui-services", type=Path, help="administrator-owned ComfyUI service declarations")
     parser.add_argument("--credential-pools", type=Path, help="administrator-owned grouped provider credential pools")
     parser.add_argument("--credential-pools-root", type=Path, help="trusted administrator-owned root for credential pools")
     parser.add_argument("--static-dir", type=Path, default=Path(__file__).parents[2] / "web" / "dist")
@@ -272,6 +310,8 @@ def main() -> None:
         portal_base_url=args.portal_base_url,
         services_config_path=args.services_config,
         services_config_root=args.services_config.parent,
+        comfyui_services_config_path=args.comfyui_services,
+        comfyui_services_config_root=args.comfyui_services.parent if args.comfyui_services is not None else None,
         credential_pools_path=args.credential_pools,
         credential_pools_root=args.credential_pools_root,
         portal_allow_loopback_http=args.allow_loopback_http,

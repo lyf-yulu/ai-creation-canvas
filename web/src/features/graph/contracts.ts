@@ -2,7 +2,11 @@ export const GRAPH_SCHEMA_VERSION = 1 as const;
 
 export type GraphParameterValue = string | number | boolean | null;
 export type GraphMediaType = "image" | "video" | "audio";
-export type GraphNodeRole = "prompt" | "media-collection" | "model" | "result";
+export type GraphNodeRole = "prompt" | "media-collection" | "model" | "comfy-workflow" | "result";
+
+export function isGraphNodeRole(value: unknown): value is GraphNodeRole {
+    return value === "prompt" || value === "media-collection" || value === "model" || value === "comfy-workflow" || value === "result";
+}
 export type GraphPortValueType = "prompt" | GraphMediaType | "result" | "any";
 
 export type GraphInputPortDescriptor = {
@@ -71,6 +75,17 @@ export type GraphModelMetadata = {
     parameters: Record<string, GraphParameterValue>;
 };
 
+export type GraphComfyWorkflowMetadata = {
+    schemaVersion: typeof GRAPH_SCHEMA_VERSION;
+    role: "comfy-workflow";
+    workflowId: string;
+    workflowRevision: number;
+    inputPorts: GraphInputPortDescriptor[];
+    outputPortId: string;
+    /** Always false until the separately verified ComfyUI execution slice. */
+    executionEnabled: false;
+};
+
 export type GraphResultMetadata = {
     schemaVersion: typeof GRAPH_SCHEMA_VERSION;
     role: "result";
@@ -118,7 +133,7 @@ export function isGraphPortValueType(value: unknown): value is GraphPortValueTyp
     return value === "prompt" || value === "image" || value === "video" || value === "audio" || value === "result" || value === "any";
 }
 
-export type CanvasGraphNodeMetadata = GraphPromptMetadata | GraphMediaCollectionMetadata | GraphModelMetadata | GraphResultMetadata;
+export type CanvasGraphNodeMetadata = GraphPromptMetadata | GraphMediaCollectionMetadata | GraphModelMetadata | GraphComfyWorkflowMetadata | GraphResultMetadata;
 
 export type GraphSubmissionInput = Readonly<{
     portId: string;

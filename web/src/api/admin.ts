@@ -7,6 +7,7 @@ export type AdminUser = PortalSession & {
     enabled: boolean;
     must_change_password: boolean;
     model_ids: string[];
+    comfy_workflow_ids: string[];
     created_at: number;
     updated_at: number;
 };

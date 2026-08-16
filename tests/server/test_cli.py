@@ -117,3 +117,33 @@ def test_production_cli_defaults_to_loopback_and_forwards_an_explicit_bind_host(
 
     assert received["host"] == "127.0.0.2"
     assert received["proxy_headers"] is False
+
+
+def test_staged_cli_wires_comfyui_services_under_its_explicit_trusted_root(tmp_path: Path, monkeypatch) -> None:
+    received: dict[str, object] = {}
+    comfy_path = tmp_path / "config" / "comfyui-services.json"
+
+    def fake_create_app(settings, *, static_dir):
+        received["settings"] = settings
+        received["static_dir"] = static_dir
+        return SimpleNamespace()
+
+    monkeypatch.setattr(sys, "argv", [
+        "ai_creation_canvas",
+        "--environment", "production",
+        "--port", "8991",
+        "--data-dir", str(tmp_path / "data"),
+        "--portal-internal-token", "deployment-secret",
+        "--portal-base-url", "https://portal.example",
+        "--services-config", str(tmp_path / "services.json"),
+        "--trusted-host", "127.0.0.1",
+        "--comfyui-services", str(comfy_path),
+    ])
+    monkeypatch.setattr(entrypoint, "create_app", fake_create_app)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    entrypoint.main()
+
+    settings = received["settings"]
+    assert settings.comfyui_services_config_path == comfy_path
+    assert settings.comfyui_services_config_root == comfy_path.parent.resolve()

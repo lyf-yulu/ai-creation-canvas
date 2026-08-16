@@ -36,6 +36,9 @@ _MODEL_ROUTING_MIGRATION_MARKER = "model_routing_legacy_migration_v1"
 _MAX_USAGE_PRICE_FEN = 1_000_000_000
 _MAX_VIDEO_SECONDS = 86_400
 _MAX_IMAGE_COUNT = 100
+_COMFY_SERVICE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_COMFY_PROMPT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_COMFY_OWNER_ID = re.compile(r"[^\x00-\x1f]{1,128}\Z")
 
 
 def _legacy_route_id(model_id: str) -> str:
@@ -375,6 +378,18 @@ class CanvasStore:
                 granted_by TEXT NOT NULL, granted_at TEXT NOT NULL, revoked_at TEXT,
                 PRIMARY KEY(user_id, workflow_id)
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_comfy_prompt_owners (
+                service_id TEXT NOT NULL, prompt_id TEXT NOT NULL, user_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, ambiguous INTEGER NOT NULL DEFAULT 0 CHECK(ambiguous IN (0,1)),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(service_id, prompt_id)
+            )""")
+        prompt_owner_columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_comfy_prompt_owners)")}
+        if "ambiguous" not in prompt_owner_columns:
+            db.execute(
+                "ALTER TABLE canvas_comfy_prompt_owners "
+                "ADD COLUMN ambiguous INTEGER NOT NULL DEFAULT 0 CHECK(ambiguous IN (0,1))"
+            )
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_projects (
                 project_id TEXT NOT NULL, user_id TEXT NOT NULL,
                 title TEXT NOT NULL, document_json TEXT NOT NULL,
@@ -657,6 +672,66 @@ class CanvasStore:
             (actor_user_id, action, target_type, target_id, _now()),
         )
 
+    @staticmethod
+    def _validate_comfy_prompt_key(service_id: str, prompt_id: str) -> None:
+        if (
+            not isinstance(service_id, str)
+            or _COMFY_SERVICE_ID.fullmatch(service_id) is None
+            or not isinstance(prompt_id, str)
+            or _COMFY_PROMPT_ID.fullmatch(prompt_id) is None
+        ):
+            raise ValueError("ComfyUI prompt ownership is invalid")
+
+    @staticmethod
+    def _validate_comfy_prompt_owner_values(
+        service_id: str, prompt_id: str, user_id: str, idempotency_key: str
+    ) -> None:
+        CanvasStore._validate_comfy_prompt_key(service_id, prompt_id)
+        if (
+            not isinstance(user_id, str)
+            or _COMFY_OWNER_ID.fullmatch(user_id) is None
+            or not isinstance(idempotency_key, str)
+            or _COMFY_OWNER_ID.fullmatch(idempotency_key) is None
+        ):
+            raise ValueError("ComfyUI prompt ownership is invalid")
+
+    def record_comfy_prompt_owner(
+        self, *, service_id: str, prompt_id: str, user_id: str, idempotency_key: str
+    ) -> bool:
+        """Atomically retain the first verified owner for one ComfyUI prompt."""
+        self._validate_comfy_prompt_owner_values(service_id, prompt_id, user_id, idempotency_key)
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "INSERT OR IGNORE INTO canvas_comfy_prompt_owners("
+                "service_id,prompt_id,user_id,idempotency_key,ambiguous,created_at"
+                ") VALUES (?,?,?,?,0,?)",
+                (service_id, prompt_id, user_id, idempotency_key, _now()),
+            )
+            row = db.execute(
+                "SELECT user_id,idempotency_key,ambiguous FROM canvas_comfy_prompt_owners "
+                "WHERE service_id=? AND prompt_id=?",
+                (service_id, prompt_id),
+            ).fetchone()
+            if row is None or int(row["ambiguous"]) == 1:
+                return False
+            if str(row["user_id"]) == user_id and str(row["idempotency_key"]) == idempotency_key:
+                return True
+            db.execute(
+                "UPDATE canvas_comfy_prompt_owners SET ambiguous=1 WHERE service_id=? AND prompt_id=?",
+                (service_id, prompt_id),
+            )
+        return False
+
+    def comfy_prompt_owner(self, service_id: str, prompt_id: str) -> str | None:
+        """Return a previously recorded owner without exposing it through HTTP APIs."""
+        self._validate_comfy_prompt_key(service_id, prompt_id)
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT user_id,ambiguous FROM canvas_comfy_prompt_owners WHERE service_id=? AND prompt_id=?",
+                (service_id, prompt_id),
+            ).fetchone()
+        return str(row["user_id"]) if row is not None and int(row["ambiguous"]) == 0 else None
+
     def create_comfy_workflow(
         self,
         *,
@@ -922,6 +997,16 @@ class CanvasStore:
                 (user_id,),
             ).fetchall()
         return tuple(dict(row) for row in rows)
+
+    def assigned_comfy_workflow_ids(self, user_id: str) -> tuple[str, ...]:
+        """Return all current administrator assignments, including disabled workflows."""
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT workflow_id FROM canvas_comfy_workflow_access "
+                "WHERE user_id=? AND revoked_at IS NULL ORDER BY workflow_id",
+                (user_id,),
+            ).fetchall()
+        return tuple(str(row["workflow_id"]) for row in rows)
 
     def comfy_workflow_revision(self, workflow_id: str, revision: int) -> dict[str, object] | None:
         with self._connection() as db:

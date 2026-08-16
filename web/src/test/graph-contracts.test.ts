@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     GRAPH_SCHEMA_VERSION,
     createGraphSubmissionSnapshot,
+    type GraphNodeRole,
     type GraphMediaCollectionMetadata,
     type GraphModelMetadata,
     type GraphPromptMetadata,
@@ -41,6 +42,11 @@ function project(nodes: CanvasNodeData[], connections: CanvasProjectInput["conne
 }
 
 describe("graph contracts", () => {
+    it("recognizes ComfyUI workflow as a graph role", () => {
+        const role: GraphNodeRole = "comfy-workflow";
+        expect(role).toBe("comfy-workflow");
+    });
+
     it("represents the four graph roles with bounded media, ports, and model parameters", () => {
         const prompt: GraphPromptMetadata = { schemaVersion: GRAPH_SCHEMA_VERSION, role: "prompt", text: "镜头向前", outputPortId: "prompt" };
         const collection: GraphMediaCollectionMetadata = {

@@ -34,10 +34,13 @@ from ai_creation_canvas.api.admin import router as admin_router
 from ai_creation_canvas.api.usage import router as usage_router
 from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
+from ai_creation_canvas.api.comfy_workflows import router as comfy_workflows_router
 from ai_creation_canvas.api._common import problem
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.catalog import AssignedModelCatalog, GovernedModelCatalog, LogicalModelCatalog, ManagedRoutingRuntime, ProviderSubmissionBudget
-from ai_creation_canvas.config import Settings, load_service_declarations
+from ai_creation_canvas.config import Settings, load_comfyui_service_declarations, load_service_declarations
+from ai_creation_canvas.comfy.library import ComfyWorkflowLibrary
+from ai_creation_canvas.comfy.service import AuthHeaderResolver, ComfyHttpWorkflowService
 from ai_creation_canvas.domain.registry import AdapterRegistry
 from ai_creation_canvas.errors import ApiError, DomainError
 from ai_creation_canvas.domain.models import PortalRole
@@ -117,7 +120,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None, comfy_auth_header_resolver: AuthHeaderResolver | None = None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if settings.trusted_hosts:
@@ -161,6 +164,28 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         adapter_factory = factory
     app.state.adapter_registry = registry
     app.state.canvas_store = store
+    app.state.comfy_workflow_library = ComfyWorkflowLibrary(store)
+    app.state.comfy_workflow_services = ()
+    if settings.comfyui_services_config_path is not None:
+        declarations = load_comfyui_service_declarations(
+            settings.comfyui_services_config_path, settings.comfyui_services_config_root
+        )
+        services = []
+        for declaration in declarations:
+            adapter = ComfyHttpWorkflowService(
+                declaration, prompt_owner_store=store, auth_header_resolver=comfy_auth_header_resolver
+            )
+            registry.register_comfy_workflow(adapter)
+            services.append(adapter)
+        app.state.comfy_workflow_services = tuple(services)
+
+    async def close_comfy_workflow_services() -> None:
+        await asyncio.gather(
+            *(service.aclose() for service in app.state.comfy_workflow_services),
+            return_exceptions=True,
+        )
+
+    app.router.on_shutdown.append(close_comfy_workflow_services)
     app.state.adapter_factory = adapter_factory
     app.state.settings = settings
     if prompt_skill_service is None:
@@ -342,6 +367,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.include_router(session_router)
     app.include_router(models_router)
     app.include_router(prompt_skills_router)
+    app.include_router(comfy_workflows_router)
     app.include_router(assets_router)
     app.include_router(jobs_router)
     app.include_router(results_router)

@@ -21,7 +21,6 @@ fi
 
 npm ci --prefix "$aicc_repo_root/web"
 npm run build --prefix "$aicc_repo_root/web"
-
 set -- \
     "$aicc_python" -m ai_creation_canvas serve-local \
     --host "$AICC_LOCAL_HOST" \
@@ -32,6 +31,10 @@ set -- \
 
 if [ -n "${AICC_LOCAL_ORIGIN:-}" ]; then
     set -- "$@" --public-origin "$AICC_LOCAL_ORIGIN"
+fi
+
+if [ -n "${AICC_COMFYUI_SERVICES:-}" ]; then
+    set -- "$@" --comfyui-services "$AICC_COMFYUI_SERVICES"
 fi
 
 case "$AICC_LOCAL_HOST" in

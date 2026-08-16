@@ -47,7 +47,61 @@ def test_rejects_dangling_link_and_sensitive_key() -> None:
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_TOPOLOGY_INVALID"):
         parse_workflow_json(b'{"nodes":[{"id":1,"type":"LoadImage"}],"links":[[1,1,0,2,0,"IMAGE"]]}')
     with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
-        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"uRl":"https://bad.example"}}}')
+        parse_workflow_json(b'{"1":{"class_type":"LoadImage","inputs":{"base_URL":"https://bad.example"}}}')
+
+
+@pytest.mark.parametrize("field", ("url", "URL", "_url_", "u-r_l", "cosurl", "cos_url", "CoS-UrL"))
+def test_allows_resource_url_metadata_key_variants_without_projecting_the_value(field: str) -> None:
+    url = "https://workflow.example/metadata"
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: url}}}).encode()
+
+    parsed = parse_workflow_json(raw)
+
+    assert parsed.formats == frozenset({WorkflowFormat.API})
+    assert url not in repr(parsed.preview)
+    assert canonical_checksum(json.loads(export_workflow(parsed, WorkflowFormat.API))) == parsed.checksum
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "base_url", "base-url", "callback_url", "callback-url", "service_url", "endpoint_url", "webhook_url", "endpoint",
+        "base endpoint", "webhook\tendpoint", "server.endpoint",
+        "service endpoint url", "service-url-endpoint", "callback endpoint url", "callback_url_endpoint", "resource_endpoint",
+    ),
+)
+def test_rejects_control_endpoint_key_variants(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "https://bad.example"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
+@pytest.mark.parametrize("field", ("api_key", "auth_token", "header", "script", "plugin", "code"))
+def test_rejects_sensitive_key_names_after_resource_url_relaxation(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("api key", "auth\ttoken", "credential.ref", "service u r l", "endpoint\nu-r_l", "s.c.r.i.p.t"),
+)
+def test_rejects_separator_obfuscated_control_and_sensitive_key_names(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
+
+
+@pytest.mark.parametrize("field", (" api_key ", "\tSeCrEt\n", "\tcredential\n"))
+def test_rejects_whitespace_wrapped_sensitive_keys(field: str) -> None:
+    raw = json.dumps({"1": {"class_type": "LoadImage", "inputs": {field: "server-only-secret"}}}).encode()
+
+    with pytest.raises(WorkflowValidationError, match="WORKFLOW_FIELD_REJECTED"):
+        parse_workflow_json(raw)
 
 
 @pytest.mark.parametrize(

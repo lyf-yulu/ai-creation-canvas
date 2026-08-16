@@ -26,21 +26,70 @@ _MAX_LINKS = 2_000
 _MAX_DEPTH = 64
 _MAX_STRING_BYTES = 64 * 1024
 _MAX_API_NODE_ID_CHARS = 64
-_FORBIDDEN_FIELD_NAMES = frozenset({
-    "api_key",
+
+
+def _canonical_field_name(value: str) -> str:
+    """Normalize case and remove every non-alphanumeric separator for deny checks."""
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+_FORBIDDEN_FIELD_NAMES = frozenset(_canonical_field_name(value) for value in {
     "apikey",
+    "auth",
+    "auth_header",
+    "auth_token",
     "authorization",
-    "base_url",
+    "access_token",
+    "refresh_token",
     "credential",
     "credentials",
+    "credential_ref",
+    "header",
     "headers",
+    "key",
     "password",
+    "private_key",
+    "public_key",
     "secret",
     "secret_ref",
+    "script",
+    "scripts",
+    "plugin",
+    "plugins",
+    "code",
     "token",
-    "url",
     "webhook",
+    "auth_header_ref",
+    "endpoint",
+    "base_url",
+    "callback_url",
+    "service_url",
+    "server_url",
+    "webhook_url",
+    "endpoint_url",
+    "service_endpoint",
+    "callback_endpoint",
+    "base_endpoint",
+    "base_endpoint_url",
+    "base_url_endpoint",
+    "webhook_endpoint",
+    "webhook_endpoint_url",
+    "webhook_url_endpoint",
+    "server_endpoint",
+    "server_endpoint_url",
+    "server_url_endpoint",
 })
+_CONTROL_URL_MARKERS = frozenset({"base", "callback", "service", "server", "webhook"})
+
+
+def _is_forbidden_field_name(value: str) -> bool:
+    """Reject sensitive names plus endpoint and control-URL combinations."""
+    name = _canonical_field_name(value)
+    return (
+        name in _FORBIDDEN_FIELD_NAMES
+        or "endpoint" in name
+        or ("url" in name and any(marker in name for marker in _CONTROL_URL_MARKERS))
+    )
 
 
 def canonical_checksum(value: object) -> str:
@@ -135,7 +184,7 @@ def _assert_value_limits(value: object, *, depth: int) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             _assert_value_limits(key, depth=depth + 1)
-            if key.strip().casefold() in _FORBIDDEN_FIELD_NAMES:
+            if _is_forbidden_field_name(key):
                 raise WorkflowValidationError("WORKFLOW_FIELD_REJECTED")
             _assert_value_limits(item, depth=depth + 1)
         return

@@ -14,6 +14,7 @@ import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
 import { ModelCallNode } from "@/components/canvas/model-call-node";
+import { ComfyWorkflowNodeCard, createUnassignedComfyWorkflowNode } from "@/features/nodes/comfy-workflow";
 import { NodePort } from "@/components/canvas/node-port";
 import { PromptNodeCard } from "@/components/canvas/prompt-node-card";
 import { CanvasNavigationControls } from "@/components/canvas/canvas-navigation-controls";
@@ -630,6 +631,15 @@ export default function CanvasProjectPage() {
         [id, readOnly, updateProject],
     );
 
+    const addComfyWorkflowNode = useCallback((position?: Position) => {
+        if (readOnly) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        const node = createUnassignedComfyWorkflowNode(position ?? { x: 96 + current.nodes.length * 24, y: 112 + current.nodes.length * 24 });
+        updateProject(id, { nodes: [...current.nodes, node] });
+        setSelectedNodeIds(new Set([node.id]));
+    }, [id, readOnly, updateProject]);
+
     const openCanvasContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
         if (readOnly) return;
         const target = event.target instanceof Element ? event.target : null;
@@ -649,12 +659,13 @@ export default function CanvasProjectPage() {
         let created = true;
         if (kind === "prompt") addPromptNode(position);
         else if (kind === "image" || kind === "video" || kind === "audio") addMediaCollectionNode(kind, position);
+        else if (kind === "comfy-workflow") addComfyWorkflowNode(position);
         else if (kind === "image-model" && imageCreateOperation) addModelNode(imageCreateOperation, position);
         else if (kind === "video-model" && videoCreateOperation) addModelNode(videoCreateOperation, position);
         else created = false;
         setContextMenu(null);
         setCanvasCommandMessage(created ? "节点已创建在右键位置。" : "没有已授权的对应模型。");
-    }, [addMediaCollectionNode, addModelNode, addPromptNode, contextMenu, imageCreateOperation, videoCreateOperation]);
+    }, [addComfyWorkflowNode, addMediaCollectionNode, addModelNode, addPromptNode, contextMenu, imageCreateOperation, videoCreateOperation]);
 
     const openNodeContextMenu = useCallback(
         (nodeId: string, position: { x: number; y: number }, trigger: HTMLDivElement) => {
@@ -824,6 +835,7 @@ export default function CanvasProjectPage() {
                             const promptNode = nodeGraph?.role === "prompt";
                             const mediaCollectionNode = nodeGraph?.role === "media-collection";
                             const modelNode = nodeGraph?.role === "model";
+                            const comfyWorkflowNode = nodeGraph?.role === "comfy-workflow";
                             const modelOperation = modelNode ? (nodeGraph.operation as ModelOperation) : undefined;
                             const ports = getNodePorts(node);
                             const measuredNode = measuredNodeMap.get(node.id) ?? node;
@@ -862,6 +874,8 @@ export default function CanvasProjectPage() {
                                             onRetry={(token) => void generation.retry(token).catch(() => undefined)}
                                             onCancel={(jobId) => void generation.cancelQueued(jobId).catch((error) => setModelMessages((messages) => ({ ...messages, [node.id]: generationErrorMessage(error) })))}
                                         />
+                                    ) : comfyWorkflowNode ? (
+                                        <ComfyWorkflowNodeCard node={node} />
                                     ) : (
                                         <GenerationNodeCard node={node} onRetry={readOnly ? undefined : (token) => void generation.retry(token).catch(() => undefined)} onDelete={readOnly ? undefined : () => deleteNodes(new Set([node.id]))} />
                                     )}
