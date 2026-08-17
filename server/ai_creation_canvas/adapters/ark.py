@@ -31,6 +31,7 @@ from ai_creation_canvas.parameter_schema import validate_parameter_schema, valid
 
 
 _ARK_URL = "https://ark.cn-beijing.volces.com"
+_LIBRARY_REF = re.compile(r"asset://asset-[A-Za-z0-9_-]{1,100}\Z")
 _RESULT_ID = re.compile(r"ark_result_[0-9a-f]{64}\Z")
 _CHIYUN_RESULT_ID = re.compile(r"chiyun_result_[0-9a-f]{64}\Z")
 _CONTENT_TASK_ID = re.compile(r"cgt-[A-Za-z0-9_-]{1,120}\Z")
@@ -234,7 +235,15 @@ class ArkGenerationAdapter:
             if values and (port is None or len(values) > port.max_items):
                 raise ValueError("Ark video image inputs are invalid")
             for asset_id in values:
-                content.append({"type": "image_url", "image_url": {"url": self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024, video_image=True)}, "role": role})
+                if isinstance(asset_id, str) and asset_id.startswith("asset://"):
+                    # Private asset-library references are the official way to use
+                    # library portraits; render the URI verbatim, never as local bytes.
+                    if _LIBRARY_REF.fullmatch(asset_id) is None:
+                        raise ValueError("Ark video input requires an unsupported asset flow")
+                    url = asset_id
+                else:
+                    url = self._asset_data_url(asset_id, _IMAGE_MIME, 20 * 1024 * 1024, video_image=True)
+                content.append({"type": "image_url", "image_url": {"url": url}, "role": role})
         audio_values = tuple(request.inputs.get("reference_audio", ()))
         audio_port = declared.get("reference_audio")
         if audio_values and (audio_port is None or len(audio_values) > audio_port.max_items or len(content) == 1):

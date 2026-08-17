@@ -558,3 +558,63 @@ def test_seedream_edit_preserves_ordered_reference_images_in_official_payload(tm
             "data:image/png;base64,c2Vjb25k", "data:image/jpeg;base64,Zmlyc3Q=",
         ], "size": "2K", "response_format": "url",
     }]
+
+
+def test_seedance_renders_library_asset_reference_verbatim_without_asset_loader(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "cgt-library"})
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "seedance", "ark-video", "Seedance", ("video.generate",),
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 30, asset_kind="library")), {},
+        )
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path, models=(declaration,),
+            transport=httpx.MockTransport(handler),
+            asset_loader=lambda asset_id: ((png(640, 640), "image/png") if asset_id == "local" else (_ for _ in ()).throw(AssertionError("library references must not load local bytes"))),
+        )
+        await adapter.submit(
+            context(),
+            JobRequest("video.generate", "seedance", "animate", "library", inputs={"reference_images": ("asset://asset-abc123", "local")}),
+        )
+
+    asyncio.run(scenario())
+    assert payloads == [{"model": "seedance", "content": [
+        {"type": "text", "text": "animate"},
+        {"type": "image_url", "image_url": {"url": "asset://asset-abc123"}, "role": "reference_image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "reference_image"},
+    ]}]
+
+
+def test_seedance_rejects_malformed_library_references_before_post(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    requests: list[httpx.Request] = []
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "seedance", "ark-video", "Seedance", ("video.generate",),
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 30, asset_kind="library")), {},
+        )
+        adapter = ArkGenerationAdapter(
+            api_key="test-only-secret", data_dir=tmp_path, models=(declaration,),
+            transport=httpx.MockTransport(lambda request: requests.append(request) or httpx.Response(200, json={"id": "cgt-bad"})),
+            asset_loader=lambda _asset_id: (_ for _ in ()).throw(AssertionError("malformed library references must not load local bytes")),
+        )
+        with pytest.raises(ValueError, match="unsupported asset flow"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "animate", "bad", inputs={"reference_images": ("asset://https://evil.example/x",)}))
+        with pytest.raises(ValueError, match="unsupported asset flow"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "animate", "bad", inputs={"reference_images": ("asset://a/b",)}))
+
+    asyncio.run(scenario())
+    assert requests == []

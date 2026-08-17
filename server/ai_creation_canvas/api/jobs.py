@@ -13,7 +13,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_creation_canvas.api._common import context_for, problem
-from ai_creation_canvas.domain.models import JobRequest, JobStatus, ModelSpec
+from ai_creation_canvas.adapters.ark_assets import _ARK_ASSET_ID
+from ai_creation_canvas.domain.models import AssetKind, JobRequest, JobStatus, ModelSpec
 from ai_creation_canvas.errors import DomainError, InvalidUpstreamResult, PortalUpstreamError
 from ai_creation_canvas.coordination import CoordinationUnavailable, ExecutionCapacityExceeded
 from ai_creation_canvas.parameter_schema import validate_parameter_values
@@ -454,6 +455,19 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             if asset["kind"] != model.requires_asset_kind.value or asset.get("service_id") != model.service_id or not isinstance(asset.get("upstream_asset_id"), str):
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
             upstream_asset_ids.append(asset["upstream_asset_id"])
+        elif asset["kind"] == "library":
+            port = declared_ports[port_id] if port_id != "legacy" else None
+            if (
+                port is None
+                or port.asset_kind != AssetKind.LIBRARY
+                or asset.get("service_id") != model.service_id
+                or not isinstance(asset.get("upstream_asset_id"), str)
+                or _ARK_ASSET_ID.fullmatch(asset["upstream_asset_id"]) is None
+            ):
+                raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+            # The binding layer is the only place that injects the asset:// prefix,
+            # and only for provider-validated upstream identifiers.
+            upstream_asset_ids.append(f"asset://{asset['upstream_asset_id']}")
         elif asset["kind"] != "reference":
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
         else:
