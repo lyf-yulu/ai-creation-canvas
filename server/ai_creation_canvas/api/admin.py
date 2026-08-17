@@ -842,7 +842,9 @@ async def delete_model_route(model_id: str, route_id: str, request: Request, rev
 @router.get("/credential-pools")
 async def list_credential_pools(request: Request) -> dict[str, object]:
     _require_admin(request)
-    runtime = _route_runtime(request)
+    runtime = getattr(request.app.state, "managed_routing_runtime", None)
+    if runtime is None:
+        return {"pools": []}
     pools = runtime.pools()
     summaries: list[dict[str, object]] = []
     for pool_id in sorted(pools):

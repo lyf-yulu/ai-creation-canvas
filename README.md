@@ -403,5 +403,6 @@ bash scripts/security-scan.sh
 
 - [docs/installation.md](docs/installation.md) — 源码安装、发布包构建、生产启动、后台导入、备份回滚
 - [docs/operations.md](docs/operations.md) — 运行语义、并发与配额、任务完成模式与恢复边界、排障
+- [docs/troubleshooting-lan-nginx.md](docs/troubleshooting-lan-nginx.md) — 局域网/反向代理下 400 与改密 403 的根因、解法与实测验证
 - [docs/verification.md](docs/verification.md) — 自动化验证矩阵与验收记录
 - [UPSTREAM.md](UPSTREAM.md)、[LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — 上游来源与许可证

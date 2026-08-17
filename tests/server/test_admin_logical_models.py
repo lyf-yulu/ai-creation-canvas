@@ -108,6 +108,31 @@ def clients(tmp_path):
     return app, accounts, admin, user, login(admin, accounts.admin_username, accounts.admin_password), login(user, accounts.user_username, accounts.user_password), pools
 
 
+def test_pool_listing_without_managed_routing_is_empty(tmp_path) -> None:
+    store = CanvasStore(tmp_path / "data")
+    registry = AdapterRegistry()
+    registry.register_generation(AssignmentAdapter())
+    app = create_app(
+        Settings("test", 45996, tmp_path / "data", "unused", identity_mode="local", allowed_origins=(ORIGIN,)),
+        static_dir=tmp_path / "dist",
+        canvas_store=store,
+        registry=registry,
+        model_catalog=ModelCatalog(registry),
+    )
+    accounts = app.state.local_auth.bootstrap_accounts(())
+    admin = TestClient(app, base_url=ORIGIN)
+    first = admin.post("/api/v1/auth/login", json={"username": accounts.admin_username, "password": accounts.admin_password}).json()
+    changed = admin.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": first["csrf_token"]},
+        json={"current_password": accounts.admin_password, "new_password": "new-admin-correct-horse"},
+    ).json()
+    headers = {"Origin": ORIGIN, "X-CSRF-Token": changed["csrf_token"]}
+    response = admin.get("/api/v1/admin/credential-pools", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"pools": []}
+
+
 def test_admin_logical_model_round_trip_for_image_and_video(tmp_path) -> None:
     app, accounts, admin, user, admin_headers, user_headers, pools = clients(tmp_path)
     del app, accounts, user, user_headers, pools
