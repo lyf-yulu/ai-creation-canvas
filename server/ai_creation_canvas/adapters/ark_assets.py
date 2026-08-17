@@ -179,11 +179,14 @@ class ArkAssetLibraryAdapter:
         transport: httpx.AsyncBaseTransport | None = None,
         now: Callable[[], datetime] | None = None,
         upload_semaphore: asyncio.Semaphore | None = None,
+        config_getter: Callable[[], AssetLibraryConfig] | None = None,
         get_asset_attempts: int = 30,
         get_asset_interval: float = 1.0,
     ) -> None:
         if not isinstance(config, AssetLibraryConfig):
             raise TypeError("asset library config is required")
+        if config_getter is not None and not callable(config_getter):
+            raise ValueError("asset library config getter must be callable")
         if not callable(group_id_getter) or not callable(group_id_setter):
             raise ValueError("asset library group hooks are required")
         if type(get_asset_attempts) is not int or get_asset_attempts < 0:
@@ -193,6 +196,7 @@ class ArkAssetLibraryAdapter:
         if now is not None and not callable(now):
             raise ValueError("now must be callable")
         self._config = config
+        self._config_getter = config_getter or (lambda: self._config)
         self._group_id_getter = group_id_getter
         self._group_id_setter = group_id_setter
         self._transport = transport
@@ -200,6 +204,9 @@ class ArkAssetLibraryAdapter:
         self._upload_semaphore = upload_semaphore
         self._get_asset_attempts = get_asset_attempts
         self._get_asset_interval = get_asset_interval
+
+    def _library_config(self) -> AssetLibraryConfig:
+        return self._config_getter()
 
     async def upload(self, context: RequestContext, asset: AssetRef) -> AssetRef:
         raise ValueError("library upload requires file bytes")
@@ -236,8 +243,8 @@ class ArkAssetLibraryAdapter:
                     raise InvalidUpstreamResult("library upload source changed")
                 object_key = f"refmedia/{uuid.uuid4().hex}{_EXTENSIONS[asset.mime_type]}"
                 signed = tos_sign_put(
-                    self._config.tos_access_key, self._config.tos_secret_key,
-                    self._config.tos_bucket, self._config.tos_region, object_key, asset.mime_type, body,
+                    self._library_config().tos_access_key, self._library_config().tos_secret_key,
+                    self._library_config().tos_bucket, self._library_config().tos_region, object_key, asset.mime_type, body,
                     now=self._now(),
                 )
                 try:
@@ -249,12 +256,12 @@ class ArkAssetLibraryAdapter:
                     retryable = response.status_code in {408, 429} or response.status_code >= 500
                     raise PortalUpstreamError("UPSTREAM_UNAVAILABLE" if retryable else "REQUEST_REJECTED", retryable=retryable, status_code=response.status_code)
                 public_url = tos_presigned_get_url(
-                    self._config.tos_access_key, self._config.tos_secret_key,
-                    self._config.tos_bucket, self._config.tos_region, object_key, now=self._now(),
+                    self._library_config().tos_access_key, self._library_config().tos_secret_key,
+                    self._library_config().tos_bucket, self._library_config().tos_region, object_key, now=self._now(),
                 )
                 upstream_id = await self._create_asset(context, group_id, public_url, source.name)
                 status = await self._poll_status(context, upstream_id)
-                return AssetRef(asset.asset_id, AssetKind.LIBRARY, status, asset.mime_type)
+                return AssetRef(upstream_id, AssetKind.LIBRARY, status, asset.mime_type)
         finally:
             try:
                 os.close(fd)
@@ -263,7 +270,7 @@ class ArkAssetLibraryAdapter:
 
     async def get(self, context: RequestContext, asset_id: str) -> AssetRef:
         identifier = self._opaque(asset_id)
-        response = await self._openapi_request(context, "GetAsset", {"Id": identifier, "ProjectName": self._config.project_name})
+        response = await self._openapi_request(context, "GetAsset", {"Id": identifier, "ProjectName": self._library_config().project_name})
         data = self._json_object(response, "asset status")
         result = data.get("Result")
         if not isinstance(result, Mapping) or not isinstance(result.get("Id"), str) or result.get("Id") != identifier:
@@ -281,7 +288,7 @@ class ArkAssetLibraryAdapter:
             return existing
         response = await self._openapi_request(
             context, "CreateAssetGroup",
-            {"Name": _DEFAULT_GROUP_NAME, "ProjectName": self._config.project_name, "GroupType": "AIGC"},
+            {"Name": _DEFAULT_GROUP_NAME, "ProjectName": self._library_config().project_name, "GroupType": "AIGC"},
         )
         data = self._json_object(response, "asset group")
         result = data.get("Result")
@@ -296,7 +303,7 @@ class ArkAssetLibraryAdapter:
     async def list_groups(self, context: RequestContext) -> tuple[dict[str, object], ...]:
         response = await self._openapi_request(
             context, "ListAssetGroups",
-            {"Filter": {"GroupType": "AIGC"}, "PageNumber": 1, "PageSize": 50, "ProjectName": self._config.project_name},
+            {"Filter": {"GroupType": "AIGC"}, "PageNumber": 1, "PageSize": 50, "ProjectName": self._library_config().project_name},
         )
         data = self._json_object(response, "asset groups")
         result = data.get("Result")
@@ -318,7 +325,7 @@ class ArkAssetLibraryAdapter:
         name = "".join(char for char in name if ord(char) >= 32 and ord(char) != 127)[:64] or "portrait"
         response = await self._openapi_request(
             context, "CreateAsset",
-            {"GroupId": group_id, "URL": public_url, "AssetType": "Image", "ProjectName": self._config.project_name, "Name": name},
+            {"GroupId": group_id, "URL": public_url, "AssetType": "Image", "ProjectName": self._library_config().project_name, "Name": name},
         )
         data = self._json_object(response, "asset")
         result = data.get("Result")
@@ -331,7 +338,7 @@ class ArkAssetLibraryAdapter:
 
     async def _poll_status(self, context: RequestContext, asset_id: str) -> AssetStatus:
         for attempt in range(self._get_asset_attempts):
-            response = await self._openapi_request(context, "GetAsset", {"Id": asset_id, "ProjectName": self._config.project_name})
+            response = await self._openapi_request(context, "GetAsset", {"Id": asset_id, "ProjectName": self._library_config().project_name})
             data = self._json_object(response, "asset status")
             result = data.get("Result")
             if not isinstance(result, Mapping) or result.get("Id") != asset_id:
@@ -349,7 +356,7 @@ class ArkAssetLibraryAdapter:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         query = f"Action={action}&Version={_VERSION}"
         authorization, headers = openapi_v4_sign(
-            self._config.ark_access_key, self._config.ark_secret_key,
+            self._library_config().ark_access_key, self._library_config().ark_secret_key,
             "POST", _HOST, "/", query, body, now=self._now(),
         )
         headers["Authorization"] = authorization

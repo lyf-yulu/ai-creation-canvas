@@ -115,7 +115,7 @@ def test_upload_put_tos_then_create_asset_then_poll_get_asset(tmp_path: Path) ->
             context(), AssetRef("local-1", "library", "processing", "image/png"), source, len(body_bytes),
         )
 
-        assert upstream.asset_id == "local-1" and upstream.kind is AssetKind.LIBRARY
+        assert upstream.asset_id == "asset-abc" and upstream.kind is AssetKind.LIBRARY
         assert upstream.status is AssetStatus.ACTIVE and upstream.mime_type == "image/png"
         assert [request.url.host for request in seen] == [
             "canvas-uploads.tos-cn-beijing.volces.com",

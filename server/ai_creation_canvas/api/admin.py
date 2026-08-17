@@ -14,10 +14,13 @@ from python_multipart.exceptions import MultipartParseError
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.api.usage import all_usage_projection
+from ai_creation_canvas.asset_library_config import AssetLibraryConfigLoader
+from ai_creation_canvas.asset_library_import import import_asset_library_config
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.credential_pool_import import import_credential_pool_json
 from ai_creation_canvas.credential_pools import CredentialPoolLoader
 from ai_creation_canvas.domain.models import PortalRole
+from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 from ai_creation_canvas.domain.models import ModelInputPort, ModelOperation
 from ai_creation_canvas.model_registry import GovernedModelDefinition, ModelModality, OperationContract, ProviderDefinition
 from ai_creation_canvas.model_routing import (
@@ -878,3 +881,79 @@ async def import_credential_pools(request: Request) -> dict[str, object]:
         if form is not None:
             await form.close()
     return await list_credential_pools(request)
+
+
+@router.get("/asset-library")
+async def asset_library_summary(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    loader = getattr(request.app.state, "asset_library_loader", None)
+    if not isinstance(loader, AssetLibraryConfigLoader):
+        return {"enabled": False, "import_configured": False}
+    summary = loader.reload().safe_summary()
+    return {
+        "enabled": True,
+        "import_configured": True,
+        **summary,
+        "default_group_id": request.app.state.canvas_store.ark_library_group_id(),
+    }
+
+
+@router.post("/asset-library/import")
+async def import_asset_library(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    loader = getattr(request.app.state, "asset_library_loader", None)
+    target = getattr(request.app.state.settings, "asset_library_config_path", None)
+    root = getattr(request.app.state.settings, "asset_library_config_root", None)
+    if not isinstance(loader, AssetLibraryConfigLoader) or target is None or root is None:
+        raise problem(
+            request,
+            "ASSET_LIBRARY_IMPORT_UNAVAILABLE",
+            "Asset library import is not configured.",
+            status=409,
+        )
+    stated = request.headers.get("content-length", "")
+    if stated and (not stated.isdecimal() or len(stated) > 20 or int(stated) > _CREDENTIAL_JSON_MAX_BYTES + _CREDENTIAL_MULTIPART_OVERHEAD):
+        raise problem(request, "ASSET_LIBRARY_INVALID", "The asset library file is invalid.", status=400)
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
+        raise problem(request, "ASSET_LIBRARY_INVALID", "The asset library file is invalid.", status=400)
+    form = None
+    try:
+        form = await _CredentialJsonParser(request).parse()
+        upload = form.get("file")
+        if (
+            not isinstance(upload, UploadFile)
+            or not isinstance(upload.filename, str)
+            or not upload.filename.lower().endswith(".json")
+            or upload.content_type != "application/json"
+        ):
+            raise ValueError("invalid asset library upload")
+        raw = await upload.read(_CREDENTIAL_JSON_MAX_BYTES + 1)
+        if len(raw) > _CREDENTIAL_JSON_MAX_BYTES:
+            raise ValueError("invalid asset library upload")
+        import_asset_library_config(loader, target, root, raw)
+    except (MultiPartException, MultipartParseError, OSError, ValueError):
+        raise problem(request, "ASSET_LIBRARY_INVALID", "The asset library file is invalid.", status=400) from None
+    finally:
+        if form is not None:
+            await form.close()
+    return await asset_library_summary(request)
+
+
+@router.get("/asset-library/groups")
+async def asset_library_groups(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    service = getattr(request.app.state, "ark_asset_library_service", None)
+    if service is None:
+        raise problem(
+            request,
+            "ASSET_LIBRARY_UNAVAILABLE",
+            "The asset library service is not configured.",
+            status=409,
+        )
+    try:
+        groups = await service.list_groups(context_for(request))
+    except PortalUpstreamError as error:
+        raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+    except InvalidUpstreamResult:
+        raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
+    return {"groups": groups}

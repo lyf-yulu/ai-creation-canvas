@@ -250,7 +250,7 @@ async def _upload_asset(request: Request) -> dict[str, object]:
     if not isinstance(file, UploadFile) or not isinstance(kind, str) or not isinstance(media_type, str):
         await form.close()
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
-    if kind not in {"reference", "portrait"} or media_type not in {"image", "video", "audio"} or (kind == "portrait" and media_type != "image"):
+    if kind not in {"reference", "portrait", "library"} or media_type not in {"image", "video", "audio"} or (kind in {"portrait", "library"} and media_type != "image"):
         await form.close()
         raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400)
     mime = parser.file_mime_type or ""
@@ -313,6 +313,35 @@ async def _upload_asset(request: Request) -> dict[str, object]:
                 item = store.finalize_portrait_asset(asset_id, service_id="portal-portrait", upstream_asset_id=upstream.asset_id, status=upstream.status.value)
             except Exception:
                 store.record_portrait_finalize_recovery(asset_id, upstream_asset_id=upstream.asset_id, status=upstream.status.value)
+                raise problem(request, "ASSET_FINALIZE_PENDING", "The asset is awaiting recovery.", status=503, retryable=True) from None
+        elif kind == "library":
+            service = getattr(request.app.state, "ark_asset_library_service", None)
+            if service is None:
+                raise problem(request, "LIBRARY_ASSETS_UNAVAILABLE", "The asset library service is unavailable.", status=503)
+            item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, status="processing", user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
+            preserve_target = True
+            try:
+                adapter = request.app.state.adapter_registry.asset("ark-video")
+                upload = getattr(adapter, "upload_with_file", None)
+                if not callable(upload):
+                    raise ValueError
+                upstream = await upload(context, AssetRef(asset_id, "library", "processing", mime), target, size)
+            except AdapterNotFoundError:
+                preserve_target = not store.delete_reserved_library_asset(asset_id, context.user.user_id)
+                raise problem(request, "ASSET_INVALID", "The selected asset is invalid.", status=400) from None
+            except PortalUpstreamError as error:
+                preserve_target = not store.delete_reserved_library_asset(asset_id, context.user.user_id)
+                raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+            except InvalidUpstreamResult:
+                preserve_target = not store.delete_reserved_library_asset(asset_id, context.user.user_id)
+                raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
+            except Exception:
+                preserve_target = not store.delete_reserved_library_asset(asset_id, context.user.user_id)
+                raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+            try:
+                item = store.finalize_library_asset(asset_id, service_id="ark-video", upstream_asset_id=upstream.asset_id, status=upstream.status.value)
+            except Exception:
+                store.record_library_finalize_recovery(asset_id, upstream_asset_id=upstream.asset_id, status=upstream.status.value)
                 raise problem(request, "ASSET_FINALIZE_PENDING", "The asset is awaiting recovery.", status=503, retryable=True) from None
         else:
             item = store.create_asset(asset_id=asset_id, user_id=context.user.user_id, kind=kind, media_type=media_type, mime_type=mime, relative_path=relative, size_bytes=size, user_quota_bytes=request.app.state.settings.user_asset_quota_bytes, total_quota_bytes=request.app.state.settings.total_asset_quota_bytes)
@@ -457,7 +486,28 @@ async def get_asset(asset_id: str, request: Request) -> dict[str, object]:
             raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
         except Exception:
             raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
+    if item["kind"] == "library" and item["status"] == "processing":
+        try:
+            adapter = request.app.state.adapter_registry.asset(str(item["service_id"]))
+            get = getattr(adapter, "get", None)
+            if not callable(get) or not isinstance(item.get("upstream_asset_id"), str):
+                raise ValueError
+            upstream = await get(context_for(request), item["upstream_asset_id"])
+            item = request.app.state.canvas_store.update_asset_status(asset_id, upstream.status.value)
+        except PortalUpstreamError as error:
+            raise problem(request, "UPSTREAM_UNAVAILABLE" if error.retryable else "REQUEST_REJECTED", "The asset service is unavailable." if error.retryable else "The request was rejected.", status=502 if error.retryable else 422, retryable=error.retryable) from None
+        except InvalidUpstreamResult:
+            raise problem(request, "UPSTREAM_INVALID", "The asset service returned an invalid response.", status=502) from None
+        except Exception:
+            raise problem(request, "UPSTREAM_UNAVAILABLE", "The asset service is unavailable.", status=502, retryable=True) from None
     return _asset(item)
+
+
+@router.get("/library-assets")
+async def list_library_assets(request: Request) -> dict[str, object]:
+    context = context_for(request)
+    items = request.app.state.canvas_store.list_library_assets_for_owner(context.user.user_id)
+    return {"assets": [_asset(item) for item in items]}
 
 
 def _safe_asset_fd(item: dict[str, object], request: Request) -> tuple[int, int]:

@@ -50,6 +50,8 @@ from ai_creation_canvas.storage.sqlite import CanvasStore
 from ai_creation_canvas.prompt_skills import PromptSkillService, load_prompt_skills
 from ai_creation_canvas.coordination import LocalExecutionCoordinator, RedisExecutionCoordinator
 from ai_creation_canvas.credential_pools import CredentialPoolLoader
+from ai_creation_canvas.adapters.ark_assets import ArkAssetLibraryAdapter
+from ai_creation_canvas.asset_library_config import AssetLibraryConfigLoader
 from ai_creation_canvas.routing import RouteSelector
 
 
@@ -120,7 +122,7 @@ def _safe_static_file(static_dir: Path, path: str) -> Path | None:
     return candidate if state is StaticPathState.LEGIT_FILE else None
 
 
-def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None, comfy_auth_header_resolver: AuthHeaderResolver | None = None) -> FastAPI:
+def create_app(settings: Settings, *, static_dir: Path | str | None = None, model_catalog: ModelCatalog | None = None, registry: AdapterRegistry | None = None, canvas_store: CanvasStore | None = None, portal_transport=None, prompt_skill_service: PromptSkillService | None = None, adapter_factory: AdapterFactory | None = None, execution_coordinator=None, managed_routing_runtime: ManagedRoutingRuntime | None = None, provider_submission_budget: ProviderSubmissionBudget | None = None, comfy_auth_header_resolver: AuthHeaderResolver | None = None, asset_library_service: ArkAssetLibraryAdapter | None = None, asset_library_transport=None) -> FastAPI:
     """Create a service with signed API access and a deliberately narrow SPA fallback."""
     app = FastAPI()
     if settings.trusted_hosts:
@@ -217,6 +219,8 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             )
     app.state.execution_coordinator = execution_coordinator
     app.state.credential_pool_loader = None
+    app.state.ark_asset_library_service = None
+    app.state.asset_library_loader = None
     if managed_routing_runtime is None and settings.credential_pools_path is not None:
         import os
         if settings.environment == "production" and len(os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "").encode("utf-8")) < 32:
@@ -272,6 +276,23 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.router.on_startup.append(start_job_worker)
     app.router.on_shutdown.append(app.state.job_worker.stop)
     app.state.upload_semaphore = asyncio.Semaphore(settings.upload_concurrency)
+    if asset_library_service is not None:
+        registry.register_asset(asset_library_service)
+        app.state.ark_asset_library_service = asset_library_service
+    elif settings.asset_library_config_path is not None:
+        loader = AssetLibraryConfigLoader(Path(settings.asset_library_config_path), production=settings.environment == "production")
+        loader.load()
+        asset_library_adapter = ArkAssetLibraryAdapter(
+            config=loader.load(),
+            group_id_getter=store.ark_library_group_id,
+            group_id_setter=store.set_ark_library_group_id,
+            transport=asset_library_transport,
+            upload_semaphore=app.state.upload_semaphore,
+            config_getter=lambda: loader.reload(),
+        )
+        registry.register_asset(asset_library_adapter)
+        app.state.ark_asset_library_service = asset_library_adapter
+        app.state.asset_library_loader = loader
     app.state.local_auth = LocalAuthService(app.state.canvas_store, session_ttl_seconds=settings.session_ttl_seconds) if settings.identity_mode == "local" else None
     build_dir = Path(static_dir) if static_dir is not None else Path(__file__).parents[2] / "web" / "dist"
     build_dir = build_dir.resolve(strict=False)
