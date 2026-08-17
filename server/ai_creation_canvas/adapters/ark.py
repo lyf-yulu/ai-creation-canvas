@@ -564,9 +564,12 @@ def load_ark_model_declarations(path: Path | str, root: Path | str) -> tuple[Ark
                 raise ValueError
             ports = []
             for port in raw_ports:
-                if not isinstance(port, Mapping) or set(port) != {"port_id", "media_type", "min_items", "max_items"}:
+                if not isinstance(port, Mapping) or set(port) - {"port_id", "media_type", "min_items", "max_items", "asset_kind"} or not {"port_id", "media_type", "min_items", "max_items"}.issubset(port):
                     raise ValueError
-                ports.append(ModelInputPort(port["port_id"], port["media_type"], port["min_items"], port["max_items"]))
+                asset_kind = port.get("asset_kind")
+                if asset_kind is not None and asset_kind != "library":
+                    raise ValueError
+                ports.append(ModelInputPort(port["port_id"], port["media_type"], port["min_items"], port["max_items"], asset_kind=asset_kind))
             if any(not isinstance(key, str) or not isinstance(value, str) for key, value in raw_mappings.items()):
                 raise ValueError
             declarations.append(ArkModelDeclaration(model_id, service_id, display_name, tuple(operations), parameter_schema, tuple(ports), raw_mappings))

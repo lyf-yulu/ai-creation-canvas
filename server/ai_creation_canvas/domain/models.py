@@ -94,6 +94,7 @@ class ModelOperation(StrEnum):
 class AssetKind(StrEnum):
     REFERENCE = "reference"
     PORTRAIT = "portrait"
+    LIBRARY = "library"
 
 
 class AssetMediaType(StrEnum):
@@ -126,6 +127,7 @@ class ModelInputPort:
     media_type: str
     min_items: int = 0
     max_items: int = 1
+    asset_kind: AssetKind | str | None = None
 
     def __post_init__(self) -> None:
         _stable_id(self.port_id, "port_id")
@@ -135,6 +137,11 @@ class ModelInputPort:
             raise ValueError("port item limits must be integers")
         if self.min_items < 0 or self.max_items < 1 or self.min_items > self.max_items or self.max_items > 64:
             raise ValueError("port item limits are invalid")
+        if self.asset_kind is not None:
+            try:
+                object.__setattr__(self, "asset_kind", AssetKind(self.asset_kind))
+            except ValueError as error:
+                raise ValueError("asset_kind must be a supported AssetKind") from error
 
 
 @dataclass(frozen=True, slots=True)
