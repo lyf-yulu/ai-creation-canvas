@@ -29,7 +29,13 @@ set -- \
     --static-dir "$aicc_repo_root/web/dist" \
     --bootstrap-if-empty
 
-if [ -n "${AICC_LOCAL_ORIGIN:-}" ]; then
+if [ -n "${AICC_LOCAL_ORIGINS:-}" ]; then
+    # Space-separated list of public origins, e.g. "http://127.0.0.1:8992 http://192.168.1.20:8992"
+    # so that localhost and LAN/nginx frontends can be used at the same time.
+    for aicc_origin in $AICC_LOCAL_ORIGINS; do
+        set -- "$@" --public-origin "$aicc_origin"
+    done
+elif [ -n "${AICC_LOCAL_ORIGIN:-}" ]; then
     set -- "$@" --public-origin "$AICC_LOCAL_ORIGIN"
 fi
 

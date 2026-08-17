@@ -132,6 +132,7 @@ def _safe_user(
         "role": row["role"],
         "enabled": bool(row["enabled"]),
         "must_change_password": bool(row["must_change_password"]),
+        "approval_status": row["approval_status"],
         "model_ids": list(model_ids),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -215,6 +216,44 @@ async def update_user(user_id: str, body: UserPatch, request: Request) -> dict[s
     except KeyError:
         raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404) from None
     return _safe_user(row, _assigned_model_ids(store, user_id))
+
+
+@router.get("/registrations")
+async def list_registrations(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    rows = request.app.state.canvas_store.list_pending_registrations()
+    return {
+        "registrations": [
+            {
+                "user_id": row["user_id"],
+                "username": row["username_normalized"],
+                "display_name": row["display_name"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/registrations/{user_id}/approve")
+async def approve_registration(user_id: str, request: Request) -> dict[str, object]:
+    admin = _require_admin(request)
+    store = request.app.state.canvas_store
+    try:
+        row = store.approve_registration(user_id, actor_user_id=admin.user_id)
+    except KeyError:
+        raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404) from None
+    return _safe_user(row, _assigned_model_ids(store, user_id))
+
+
+@router.post("/registrations/{user_id}/reject", status_code=204)
+async def reject_registration(user_id: str, request: Request) -> Response:
+    admin = _require_admin(request)
+    try:
+        request.app.state.canvas_store.reject_registration(user_id, actor_user_id=admin.user_id)
+    except KeyError:
+        raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404) from None
+    return Response(status_code=204)
 
 
 @router.get("/models")

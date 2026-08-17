@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
+from ai_creation_canvas.api.auth import _register_rate_limiter
 from tests.server.test_model_assignments import local_clients
+
+
+@pytest.fixture(autouse=True)
+def reset_register_rate_limiter():
+    _register_rate_limiter.reset()
+    yield
+    _register_rate_limiter.reset()
 
 
 def test_admin_user_list_contains_only_safe_management_fields(tmp_path) -> None:
@@ -20,6 +30,7 @@ def test_admin_user_list_contains_only_safe_management_fields(tmp_path) -> None:
         "role",
         "enabled",
         "must_change_password",
+        "approval_status",
         "model_ids",
         "comfy_workflow_ids",
         "created_at",
@@ -78,6 +89,87 @@ def test_admin_usage_aggregates_jobs_by_server_owned_user_id(tmp_path) -> None:
     assert by_id[accounts.admin.user_id]["jobs"] == 1
     assert user.get("/api/v1/admin/usage", headers=user_headers).status_code == 404
     assert "idempotency" not in response.text.lower()
+
+
+def test_admin_lists_approves_and_rejects_registrations(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, accounts, user_headers
+
+    register = admin.post(
+        "/api/v1/auth/register",
+        json={"username": "keeper", "display_name": "保留者", "password": "correct-horse-battery"},
+    )
+    assert register.status_code == 201
+
+    pending = admin.get("/api/v1/admin/registrations", headers=admin_headers)
+    assert pending.status_code == 200
+    registrations = pending.json()["registrations"]
+    assert len(registrations) == 1
+    assert set(registrations[0]) == {"user_id", "username", "display_name", "created_at"}
+    assert registrations[0]["username"] == "keeper"
+    assert "password" not in pending.text.lower()
+
+    approved = admin.post(
+        f"/api/v1/admin/registrations/{registrations[0]['user_id']}/approve",
+        headers=admin_headers,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["enabled"] is True
+    assert approved.json()["approval_status"] == "approved"
+
+    users = admin.get("/api/v1/admin/users", headers=admin_headers).json()["users"]
+    keeper = next(item for item in users if item["username"] == "keeper")
+    assert keeper["approval_status"] == "approved"
+    assert keeper["enabled"] is True
+    assert keeper["model_ids"] == []
+
+    admin.post(
+        "/api/v1/auth/register",
+        json={"username": "dropped", "display_name": "被拒绝者", "password": "correct-horse-battery"},
+    )
+    dropped = next(
+        item for item in admin.get("/api/v1/admin/registrations", headers=admin_headers).json()["registrations"]
+        if item["username"] == "dropped"
+    )
+    rejected = admin.post(
+        f"/api/v1/admin/registrations/{dropped['user_id']}/reject",
+        headers=admin_headers,
+    )
+    assert rejected.status_code == 204
+
+    assert admin.get("/api/v1/admin/registrations", headers=admin_headers).json()["registrations"] == []
+    remaining = admin.get("/api/v1/admin/users", headers=admin_headers).json()["users"]
+    assert all(item["username"] != "dropped" for item in remaining)
+    dropped_login = admin.post(
+        "/api/v1/auth/login",
+        json={"username": "dropped", "password": "correct-horse-battery"},
+    )
+    assert dropped_login.status_code == 401
+
+    # The approved user can sign in; use a separate client so the admin session stays intact.
+    assert user.post(
+        "/api/v1/auth/login",
+        json={"username": "keeper", "password": "correct-horse-battery"},
+    ).status_code == 200
+
+
+def test_admin_registration_endpoints_are_admin_only(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, accounts, admin_headers
+
+    admin.post(
+        "/api/v1/auth/register",
+        json={"username": "newcomer", "display_name": "新同事", "password": "correct-horse-battery"},
+    )
+    assert user.get("/api/v1/admin/registrations", headers=user_headers).status_code == 404
+    assert user.post(
+        "/api/v1/admin/registrations/any-user-id/approve",
+        headers=user_headers,
+    ).status_code == 404
+    assert user.post(
+        "/api/v1/admin/registrations/any-user-id/reject",
+        headers=user_headers,
+    ).status_code == 404
 
 
 def test_admin_usage_rates_and_cost_projection_are_protected(tmp_path) -> None:

@@ -49,6 +49,14 @@ PYTHONPATH=server .venv/bin/python -m ai_creation_canvas reset-local-password \
   --data-dir .local-data --username canvas-user
 ```
 
+也可以直接创建一个长期账号（无需改密、可指定角色；省略 `--password` 时会在终端无回显地询问）：
+
+```bash
+PYTHONPATH=server .venv/bin/python -m ai_creation_canvas create-local-user \
+  --data-dir .local-data --username 新账号 --display-name "显示名" \
+  --password 自定义密码 --role user
+```
+
 日常使用流程：管理员登录后在管理界面把模型派发给普通用户；普通用户登录后只能在画布中选择被派发的模型。
 
 ## 接入各种 Key 与功能
@@ -234,6 +242,42 @@ PYTHONPATH=server .venv/bin/python -m ai_creation_canvas serve-local \
 - `--public-origin` 与用途 A 一样只接受 `http` + 私有 IPv4 / `.local` 主机名，只应在可信局域网内使用，并注意保护方舟 Key 与账单。
 - 局域网内长期多用户正式使用，建议按“生产部署概要”走 Portal + HTTPS 反向代理的路径，而不是长期挂 LAN 测试入口。
 
+### 用途 C：本机反向代理（nginx 等，localhost 与局域网并存）
+
+在同一台机器上挂 nginx 转发到 `127.0.0.1:8992` 时，浏览器看到的是 nginx 的地址，而服务默认只信任 `http://127.0.0.1:8992`：页面能打开，但改密等写操作会因 Host/Origin 不符被拒（400/403）。两个必要条件：
+
+1. 启动时把**浏览器实际看到的完整地址**声明为 public origin（协议、IP、端口必须与浏览器地址栏一致）：
+
+```bash
+# localhost 直连与局域网/nginx 地址同时可用
+AICC_LOCAL_ORIGINS="http://127.0.0.1:8992 http://192.168.1.20:8992" \
+  bash scripts/run-local.sh
+```
+
+2. nginx 必须把客户端的 Host 原样转发，否则转发的是 `127.0.0.1:8992`，仍会被拒（400）：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8992;
+    proxy_set_header Host $host;
+}
+```
+
+- 每个 origin 只接受 `http` + 私有 IPv4 / `.local` 主机名；域名、公网 IP、`https://` 均不被接受。需要 HTTPS 或公网域名时，请走第 7 节“Portal 生产接入”（TLS 由反向代理终结，身份由 Portal 签名提供）。
+- 反向代理不是必需的：不需要 localhost 与 LAN 并存时，直接用“用途 A”的 `run-lan-local.sh`（监听 `0.0.0.0`）即可，局域网设备无需 nginx 也能访问。
+
+### 用户注册与审核（仅本地/LAN 模式）
+
+本地/LAN 模式开放自助注册，账号需管理员审核通过后才能登录：
+
+1. 用户在登录页点“没有账号？注册”，提交用户名、显示名称和自定义密码（密码至少 12 个字符）。
+2. 注册成功后账号进入**待审核**状态，此时登录会得到与错误密码相同的通用提示，不会泄露账号是否存在。
+3. 管理员登录后在「账号管理 → 待审核注册」看到申请列表，可**通过**或**拒绝**：通过后账号立即可登录；拒绝会删除该注册（含密码哈希），操作记入管理员审计。
+4. **审核通过只开通登录，不派发任何模型**——管理员仍需在「模型派发」中为该用户分配模型。
+5. 注册端点有进程内按 IP 限流（每 IP 每小时 10 次，超出返回 429）；该限制是单进程尽力而为的，不适用于多实例部署。
+
+说明：bootstrap 的 `canvas-admin` / `canvas-user` 不受影响；生产 Portal 模式下注册接口与审核接口均返回 404（账号由 Portal 管理）。
+
 ## 生产部署概要
 
 1. 构建可迁移发布包（目标目录必须不存在且不在源码仓库内）：
@@ -350,7 +394,9 @@ bash scripts/security-scan.sh
 | 任务显示 `submission_unknown` | 不要换 Key 重提；用原任务查询，避免重复计费 |
 | 页面资源 404 | 确认 `--static-dir` 指向发布包内 `web/dist` |
 | 忘记本地测试密码 | 停止服务后运行 `reset-local-password`（见“快速开始”） |
+| 注册后无法登录 | 账号处于“待审核”状态，需管理员在「账号管理 → 待审核注册」中通过后方可登录 |
 | 局域网设备打不开 | 确认 Origin IP 是私有地址且与浏览器地址一致、脚本监听 `0.0.0.0`、系统防火墙放行 |
+| 经 nginx 后登录页 400、改密 403 | 启动时用 `AICC_LOCAL_ORIGINS` 声明浏览器实际地址，且 nginx 配置 `proxy_set_header Host $host;`（见“用途 C”） |
 | 人像上传返回 503 | 未导入资产库配置 JSON，或配置尚未生效（导入后无需重启） |
 
 ## 文档索引

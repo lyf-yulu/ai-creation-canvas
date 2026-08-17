@@ -225,3 +225,18 @@ def test_domain_error_response_uses_current_safe_request_id_not_exception_value(
     assert response.status_code == 400
     assert response.json()["request_id"] == "safe-id"
     assert "secret" not in response.text
+
+
+def test_register_and_registrations_are_not_found_in_portal_mode(tmp_path):
+    client = make_client(tmp_path)
+    register = client.post(
+        "/api/v1/auth/register",
+        headers=signed_headers(),
+        json={"username": "newcomer", "display_name": "新同事", "password": "correct-horse-battery"},
+    )
+    assert register.status_code == 404
+    assert register.json()["code"] == "API_NOT_FOUND"
+
+    registrations = client.get("/api/v1/admin/registrations", headers=signed_headers())
+    assert registrations.status_code == 404
+    assert registrations.json()["code"] == "API_NOT_FOUND"

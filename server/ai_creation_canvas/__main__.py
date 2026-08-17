@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import ipaddress
 from pathlib import Path
+import sqlite3
 import stat
 import sys
 import threading
@@ -15,10 +17,10 @@ import webbrowser
 import uvicorn
 
 from ai_creation_canvas.app import create_app
-from ai_creation_canvas.auth.local import LocalAuthService
+from ai_creation_canvas.auth.local import BootstrapResult, LocalAuthService
 from ai_creation_canvas.config import Settings, is_within_production_repository, load_comfyui_service_declarations
+from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.storage.sqlite import CanvasStore
-from ai_creation_canvas.auth.local import BootstrapResult
 
 
 _MIB = 1024 * 1024
@@ -217,6 +219,33 @@ def _run_reset_local_password(argv: list[str]) -> None:
     reset_local_password(args.data_dir, args.username)
 
 
+def create_local_user(data_dir: Path, username: str, display_name: str, password: str, role: str, *, output: Callable[[str], None] = print) -> str:
+    service = LocalAuthService(CanvasStore(data_dir), session_ttl_seconds=12 * 60 * 60)
+    service.create_user(username, display_name, password, PortalRole(role), must_change_password=False)
+    normalized = username.strip().casefold()
+    output(f"Local account created: {normalized} (role {role}).")
+    return normalized
+
+
+def _run_create_local_user(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Create one standalone local account.")
+    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument("--username", required=True)
+    parser.add_argument("--display-name", required=True)
+    parser.add_argument("--password", help="12-128 characters; when omitted, prompts without echo on the terminal")
+    parser.add_argument("--role", choices=("admin", "user"), default="user")
+    args = parser.parse_args(argv)
+    password = args.password
+    if password is None:
+        password = getpass.getpass("Password: ")
+    try:
+        create_local_user(args.data_dir, args.username, args.display_name, password, args.role)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    except sqlite3.IntegrityError:
+        raise SystemExit(f"username already exists: {args.username.strip().casefold()}") from None
+
+
 def _print_bootstrap(result: BootstrapResult | None) -> None:
     if result is None:
         return
@@ -290,6 +319,9 @@ def main() -> None:
         return
     if len(sys.argv) > 1 and sys.argv[1] == "reset-local-password":
         _run_reset_local_password(sys.argv[2:])
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "create-local-user":
+        _run_create_local_user(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] == "serve-local":
         _run_serve_local(sys.argv[2:])

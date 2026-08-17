@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from ai_creation_canvas.auth.local import LocalAuthService
@@ -112,3 +114,82 @@ def test_unknown_user_still_executes_a_well_formed_password_hash(monkeypatch, tm
     assert int(rounds) == PasswordHasher.ITERATIONS
     assert len(bytes.fromhex(salt)) == 16
     assert len(bytes.fromhex(digest)) == 32
+
+
+def test_register_user_creates_pending_account_that_cannot_login(tmp_path) -> None:
+    store = CanvasStore(tmp_path)
+    auth = LocalAuthService(store, session_ttl_seconds=60)
+    user = auth.register_user("newcomer", "新同事", "correct-horse-battery")
+
+    assert user.role is PortalRole.USER
+    row = store.user_by_username("newcomer")
+    assert row is not None
+    assert row["enabled"] == 0
+    assert row["approval_status"] == "pending"
+    assert row["must_change_password"] == 0
+
+    try:
+        auth.login("newcomer", "correct-horse-battery")
+    except ValueError as error:
+        assert str(error) == "invalid username or password"
+    else:
+        raise AssertionError("pending user logged in")
+
+
+def test_register_user_duplicate_username_raises_integrity_error(tmp_path) -> None:
+    auth = LocalAuthService(CanvasStore(tmp_path), session_ttl_seconds=60)
+    auth.register_user("newcomer", "新同事", "correct-horse-battery")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        auth.register_user(" NEWCOMER ", "另一个名字", "correct-horse-battery")
+
+
+def test_register_user_validates_fields_and_password_policy(tmp_path) -> None:
+    auth = LocalAuthService(CanvasStore(tmp_path), session_ttl_seconds=60)
+
+    for username, display_name, password in (
+        ("", "名字", "correct-horse-battery"),
+        ("x" * 81, "名字", "correct-horse-battery"),
+        ("valid-user", "", "correct-horse-battery"),
+        ("valid-user", "x" * 121, "correct-horse-battery"),
+        ("valid-user", "名字", "short"),
+    ):
+        with pytest.raises(ValueError):
+            auth.register_user(username, display_name, password)
+
+
+def test_store_approve_and_reject_registration_are_guarded_and_audited(tmp_path) -> None:
+    store = CanvasStore(tmp_path)
+    auth = LocalAuthService(store, session_ttl_seconds=60)
+    approved_user = auth.register_user("keeper", "保留者", "correct-horse-battery")
+    rejected_user = auth.register_user("dropped", "被拒绝者", "correct-horse-battery")
+
+    row = store.approve_registration(approved_user.user_id, actor_user_id="actor-admin")
+    assert row["enabled"] == 1
+    assert row["approval_status"] == "approved"
+    issued = auth.login("keeper", "correct-horse-battery")
+    assert issued.user.user_id == approved_user.user_id
+
+    store.reject_registration(rejected_user.user_id, actor_user_id="actor-admin")
+    assert store.user_by_id(rejected_user.user_id) is None
+    try:
+        auth.login("dropped", "correct-horse-battery")
+    except ValueError as error:
+        assert str(error) == "invalid username or password"
+    else:
+        raise AssertionError("rejected user logged in")
+
+    events = store.admin_audit_events()
+    assert {event["action"] for event in events} == {"approve_registration", "reject_registration"}
+    assert {event["target_id"] for event in events} == {approved_user.user_id, rejected_user.user_id}
+    assert all(event["actor_user_id"] == "actor-admin" for event in events)
+
+    with pytest.raises(KeyError):
+        store.approve_registration("unknown-user-id", actor_user_id="actor-admin")
+    with pytest.raises(KeyError):
+        store.reject_registration("unknown-user-id", actor_user_id="actor-admin")
+    # Approved users are no longer pending: guarded endpoints refuse to touch them.
+    with pytest.raises(KeyError):
+        store.approve_registration(approved_user.user_id, actor_user_id="actor-admin")
+    with pytest.raises(KeyError):
+        store.reject_registration(approved_user.user_id, actor_user_id="actor-admin")

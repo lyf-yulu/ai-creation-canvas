@@ -303,15 +303,17 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         try:
             if _is_api_v1_path(request.url.path):
                 login_path = request.url.path == "/api/v1/auth/login" and request.method == "POST"
+                register_path = request.url.path == "/api/v1/auth/register" and request.method == "POST"
+                public_path = login_path or register_path
                 if settings.identity_mode == "local":
                     token = request.cookies.get(settings.session_cookie_name, "")
                     request.state.local_session_token = token
                     user = app.state.local_auth.resolve(token) if token else None
                     if user is not None:
                         request.state.portal_user = user
-                    elif not login_path:
+                    elif not public_path:
                         raise AuthRequired(request.state.request_id)
-                    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not login_path:
+                    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not public_path:
                         origin = request.headers.get("origin", "")
                         csrf = request.headers.get("x-csrf-token", "")
                         if origin not in settings.allowed_origins or not token or not app.state.local_auth.verify_csrf(token, csrf):

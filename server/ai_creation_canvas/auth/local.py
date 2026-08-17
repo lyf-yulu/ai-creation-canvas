@@ -84,6 +84,22 @@ class LocalAuthService:
         )
         return self._user(row)
 
+    def register_user(self, username: str, display_name: str, password: str) -> PortalUser:
+        normalized = username.strip().casefold()
+        if not normalized or len(normalized) > 80 or not display_name.strip() or len(display_name) > 120:
+            raise ValueError("user details are invalid")
+        row = self._store.create_user(
+            user_id=secrets.token_urlsafe(18),
+            username_normalized=normalized,
+            display_name=display_name.strip(),
+            password_hash=PasswordHasher.hash(password),
+            role=PortalRole.USER.value,
+            must_change_password=False,
+            enabled=0,
+            approval_status="pending",
+        )
+        return self._user(row)
+
     def login(self, username: str, password: str) -> IssuedSession:
         normalized = username.strip().casefold() if isinstance(username, str) else ""
         row = self._store.user_by_username(normalized)

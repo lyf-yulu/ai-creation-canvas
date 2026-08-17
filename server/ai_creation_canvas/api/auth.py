@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+import time
+from typing import Callable
+
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +27,39 @@ class ChangePasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     current_password: str = Field(min_length=12, max_length=128)
     new_password: str = Field(min_length=12, max_length=128)
+
+
+class RegisterBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    username: str = Field(min_length=1, max_length=80)
+    display_name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class _RegisterRateLimiter:
+    """Best-effort per-process, per-IP registration throttle for standalone local mode."""
+
+    def __init__(self, *, limit: int = 10, window_seconds: float = 3600, clock: Callable[[], float] = time.monotonic) -> None:
+        self._limit = limit
+        self._window = window_seconds
+        self._clock = clock
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, client_ip: str) -> bool:
+        now = self._clock()
+        recent = [hit for hit in self._hits.get(client_ip, ()) if now - hit < self._window]
+        if len(recent) >= self._limit:
+            self._hits[client_ip] = recent
+            return False
+        recent.append(now)
+        self._hits[client_ip] = recent
+        return True
+
+    def reset(self) -> None:
+        self._hits.clear()
+
+
+_register_rate_limiter = _RegisterRateLimiter()
 
 
 def _auth(request: Request) -> LocalAuthService:
@@ -63,6 +100,21 @@ async def login(body: LoginBody, request: Request) -> Response:
     response = JSONResponse({"user": _user_payload(issued), "csrf_token": issued.csrf_token})
     _set_cookie(request, response, issued)
     return response
+
+
+@router.post("/register", status_code=201)
+async def register(body: RegisterBody, request: Request) -> dict[str, object]:
+    auth = _auth(request)
+    client_ip = request.client.host if request.client is not None else "unknown"
+    if not _register_rate_limiter.allow(client_ip):
+        raise problem(request, "RATE_LIMITED", "注册过于频繁，请稍后再试。", status=429, retryable=True)
+    try:
+        auth.register_user(body.username, body.display_name, body.password)
+    except sqlite3.IntegrityError:
+        raise problem(request, "USERNAME_TAKEN", "用户名已被占用。", status=409) from None
+    except ValueError:
+        raise problem(request, "REQUEST_REJECTED", "The request was rejected.") from None
+    return {"registered": True}
 
 
 @router.post("/logout", status_code=204)

@@ -6,10 +6,18 @@ export type AdminUser = PortalSession & {
     display_name: string;
     enabled: boolean;
     must_change_password: boolean;
+    approval_status: "pending" | "approved";
     model_ids: string[];
     comfy_workflow_ids: string[];
     created_at: number;
     updated_at: number;
+};
+
+export type AdminRegistration = {
+    user_id: string;
+    username: string;
+    display_name: string;
+    created_at: string;
 };
 
 export type AdminOperationContract = {
@@ -101,6 +109,10 @@ export const setAdminUserEnabled = (userId: string, enabled: boolean) => apiFetc
     headers: jsonHeaders,
     body: JSON.stringify({ enabled }),
 });
+
+export const fetchAdminRegistrations = async () => (await apiFetch<{ registrations: AdminRegistration[] }>("/api/v1/admin/registrations")).registrations;
+export const approveAdminRegistration = (userId: string) => apiFetch<AdminUser>(`/api/v1/admin/registrations/${encodeURIComponent(userId)}/approve`, { method: "POST", headers: jsonHeaders });
+export const rejectAdminRegistration = (userId: string) => apiFetch<void>(`/api/v1/admin/registrations/${encodeURIComponent(userId)}/reject`, { method: "POST", headers: jsonHeaders });
 
 export const replaceAdminUserModels = (userId: string, modelIds: string[]) => apiFetch<{ user_id: string; model_ids: string[] }>(`/api/v1/admin/users/${encodeURIComponent(userId)}/models`, {
     method: "PUT",

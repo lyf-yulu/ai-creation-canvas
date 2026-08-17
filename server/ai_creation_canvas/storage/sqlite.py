@@ -352,8 +352,16 @@ class CanvasStore:
                 role TEXT NOT NULL CHECK(role IN ('admin','user')),
                 enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
                 must_change_password INTEGER NOT NULL CHECK(must_change_password IN (0,1)),
+                approval_status TEXT NOT NULL DEFAULT 'approved' CHECK(approval_status IN ('pending','approved')),
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL
             )""")
+        user_columns = {row[1] for row in db.execute("PRAGMA table_info(canvas_users)")}
+        if "approval_status" not in user_columns:
+            db.execute(
+                "ALTER TABLE canvas_users "
+                "ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved' "
+                "CHECK(approval_status IN ('pending','approved'))"
+            )
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_sessions (
                 token_hash TEXT PRIMARY KEY, csrf_token TEXT NOT NULL,
                 user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
@@ -734,12 +742,14 @@ class CanvasStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
-    def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool) -> dict[str, object]:
+    def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool, enabled: int = 1, approval_status: str = "approved") -> dict[str, object]:
+        if enabled not in (0, 1) or approval_status not in ("pending", "approved"):
+            raise ValueError("user approval state is invalid")
         now = _now()
         with self._connection(immediate=True) as db:
             db.execute(
-                "INSERT INTO canvas_users (user_id,username_normalized,display_name,password_hash,role,enabled,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,1,?,?,?)",
-                (user_id, username_normalized, display_name, password_hash, role, int(must_change_password), now, now),
+                "INSERT INTO canvas_users (user_id,username_normalized,display_name,password_hash,role,enabled,must_change_password,approval_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (user_id, username_normalized, display_name, password_hash, role, enabled, int(must_change_password), approval_status, now, now),
             )
             row = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
         assert row is not None
@@ -1992,8 +2002,14 @@ class CanvasStore:
         with self._connection(immediate=True) as db:
             if db.execute("SELECT 1 FROM canvas_users LIMIT 1").fetchone() is not None:
                 return False
-            db.execute("INSERT INTO canvas_users VALUES (?,?,?,?,?,1,1,?,?)", (admin_id, "canvas-admin", "管理员", admin_password_hash, "admin", now, now))
-            db.execute("INSERT INTO canvas_users VALUES (?,?,?,?,?,1,1,?,?)", (user_id, "canvas-user", "普通用户", user_password_hash, "user", now, now))
+            db.execute(
+                "INSERT INTO canvas_users (user_id,username_normalized,display_name,password_hash,role,enabled,must_change_password,approval_status,created_at,updated_at) VALUES (?,?,?,?,?,1,1,'approved',?,?)",
+                (admin_id, "canvas-admin", "管理员", admin_password_hash, "admin", now, now),
+            )
+            db.execute(
+                "INSERT INTO canvas_users (user_id,username_normalized,display_name,password_hash,role,enabled,must_change_password,approval_status,created_at,updated_at) VALUES (?,?,?,?,?,1,1,'approved',?,?)",
+                (user_id, "canvas-user", "普通用户", user_password_hash, "user", now, now),
+            )
             db.executemany(
                 "INSERT INTO canvas_user_models (user_id,model_id,created_at) VALUES (?,?,?)",
                 ((user_id, model_id, now) for model_id in sorted(set(initial_user_model_ids))),
@@ -2019,6 +2035,35 @@ class CanvasStore:
         if row is None:
             raise KeyError(user_id)
         return dict(row)
+
+    def list_pending_registrations(self) -> tuple[dict[str, object], ...]:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT user_id,username_normalized,display_name,created_at FROM canvas_users WHERE approval_status='pending' ORDER BY created_at,user_id"
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
+    def approve_registration(self, user_id: str, *, actor_user_id: str) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT user_id FROM canvas_users WHERE user_id=? AND approval_status='pending'", (user_id,)).fetchone()
+            if row is None:
+                raise KeyError(user_id)
+            db.execute(
+                "UPDATE canvas_users SET enabled=1,approval_status='approved',updated_at=? WHERE user_id=?",
+                (_now(), user_id),
+            )
+            self._audit(db, actor_user_id=actor_user_id, action="approve_registration", target_type="user", target_id=user_id)
+            approved = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        assert approved is not None
+        return dict(approved)
+
+    def reject_registration(self, user_id: str, *, actor_user_id: str) -> None:
+        with self._connection(immediate=True) as db:
+            row = db.execute("SELECT user_id FROM canvas_users WHERE user_id=? AND approval_status='pending'", (user_id,)).fetchone()
+            if row is None:
+                raise KeyError(user_id)
+            db.execute("DELETE FROM canvas_users WHERE user_id=?", (user_id,))
+            self._audit(db, actor_user_id=actor_user_id, action="reject_registration", target_type="user", target_id=user_id)
 
     def update_user_password(self, user_id: str, password_hash: str) -> dict[str, object]:
         with self._connection(immediate=True) as db:
@@ -2090,7 +2135,7 @@ class CanvasStore:
     def list_users(self) -> tuple[dict[str, object], ...]:
         with self._connection() as db:
             rows = db.execute(
-                "SELECT user_id,username_normalized,display_name,role,enabled,must_change_password,created_at,updated_at FROM canvas_users ORDER BY role,username_normalized"
+                "SELECT user_id,username_normalized,display_name,role,enabled,must_change_password,approval_status,created_at,updated_at FROM canvas_users ORDER BY role,username_normalized"
             ).fetchall()
         return tuple(dict(row) for row in rows)
 

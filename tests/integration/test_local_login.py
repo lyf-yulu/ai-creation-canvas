@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 from fastapi.testclient import TestClient
 
+from ai_creation_canvas.api.auth import _register_rate_limiter
 from ai_creation_canvas.app import create_app
 from ai_creation_canvas.auth.local import BootstrapResult
 from ai_creation_canvas.config import Settings
@@ -57,6 +58,13 @@ def make_lan_client(local_app: LocalApp, origin: str) -> TestClient:
 
 def mutation_headers(csrf_token: str, *, origin: str = LOCAL_ORIGIN) -> dict[str, str]:
     return {"X-CSRF-Token": csrf_token, "Origin": origin}
+
+
+@pytest.fixture(autouse=True)
+def reset_register_rate_limiter():
+    _register_rate_limiter.reset()
+    yield
+    _register_rate_limiter.reset()
 
 
 def test_login_cookie_session_csrf_and_logout(local_app: LocalApp) -> None:
@@ -151,3 +159,61 @@ def test_local_mode_ignores_signed_identity_headers(local_app: LocalApp) -> None
         },
     )
     assert response.status_code == 401
+
+
+def test_register_returns_201_without_session_or_csrf_and_pending_user_cannot_login(local_app: LocalApp) -> None:
+    register = local_app.client.post(
+        "/api/v1/auth/register",
+        json={"username": "newcomer", "display_name": "新同事", "password": "correct-horse-battery"},
+    )
+
+    assert register.status_code == 201
+    assert register.json() == {"registered": True}
+
+    pending = local_app.login("newcomer", "correct-horse-battery")
+    wrong = local_app.login("newcomer", "wrong-password-000")
+    assert pending.status_code == wrong.status_code == 401
+    public_fields = ("code", "message", "retryable", "phase")
+    assert tuple(pending.json()[field] for field in public_fields) == tuple(
+        wrong.json()[field] for field in public_fields
+    )
+
+
+def test_register_duplicate_username_returns_409(local_app: LocalApp) -> None:
+    local_app.client.post(
+        "/api/v1/auth/register",
+        json={"username": "newcomer", "display_name": "新同事", "password": "correct-horse-battery"},
+    )
+
+    for username in ("newcomer", " NEWCOMER ", local_app.accounts.user_username):
+        duplicate = local_app.client.post(
+            "/api/v1/auth/register",
+            json={"username": username, "display_name": "另一个名字", "password": "correct-horse-battery"},
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["code"] == "USERNAME_TAKEN"
+
+
+def test_register_rejects_invalid_payloads(local_app: LocalApp) -> None:
+    for payload in (
+        {"username": "newcomer", "display_name": "名字", "password": "short"},
+        {"username": "newcomer", "display_name": "", "password": "correct-horse-battery"},
+        {"username": "", "display_name": "名字", "password": "correct-horse-battery"},
+        {"username": "newcomer", "display_name": "名字", "password": "correct-horse-battery", "role": "admin"},
+    ):
+        rejected = local_app.client.post("/api/v1/auth/register", json=payload)
+        assert rejected.status_code == 400
+        assert rejected.json()["code"] == "REQUEST_REJECTED"
+
+
+def test_register_is_rate_limited_per_ip(local_app: LocalApp) -> None:
+    for index in range(10):
+        payload = {"username": f"newcomer-{index}", "display_name": "新同事", "password": "correct-horse-battery"}
+        assert local_app.client.post("/api/v1/auth/register", json=payload).status_code == 201
+    limited = local_app.client.post(
+        "/api/v1/auth/register",
+        json={"username": "newcomer-late", "display_name": "新同事", "password": "correct-horse-battery"},
+    )
+    assert limited.status_code == 429
+    assert limited.json()["code"] == "RATE_LIMITED"
+    assert limited.json()["retryable"] is True

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useSessionStore } from "@/stores/portal/use-session-store";
 
@@ -50,6 +50,7 @@ export default function LoginPage() {
                     {message ? <p role="alert" className="text-sm text-[#ffbd73]">{message}</p> : null}
                     <button type="submit" disabled={loading || (!changing && (!username || !password)) || (changing && (!password || newPassword.length < 12))} className="w-full rounded-lg bg-[#54e982] px-4 py-2.5 font-semibold text-[#041108] disabled:opacity-45">{loading ? "处理中…" : changing ? "保存新密码" : "登录"}</button>
                 </form>
+                {!changing ? <p className="mt-5 text-center text-sm text-[#8da995]">没有账号？<Link to="/register" className="text-[#55e986] hover:underline">注册</Link></p> : null}
             </section>
         </main>
     );

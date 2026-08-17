@@ -6,6 +6,7 @@ import ActivityAssetsPage from "@/pages/assets/activity";
 import CanvasPage from "@/pages/canvas";
 import CanvasProjectPage from "@/pages/canvas/project";
 import LoginPage from "@/pages/auth/login";
+import RegisterPage from "@/pages/auth/register";
 import NotFound from "@/pages/not-found";
 import TasksPage from "@/pages/tasks";
 import AdminModelsPage from "@/pages/admin/models";
@@ -17,6 +18,7 @@ import UsagePage from "@/pages/usage";
 
 export const router = createBrowserRouter([
     { path: "/login", element: <LoginPage /> },
+    { path: "/register", element: <RegisterPage /> },
     {
         element: <AuthGate><ProductShell><Outlet /></ProductShell></AuthGate>,
         children: [

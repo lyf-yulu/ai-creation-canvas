@@ -10,8 +10,8 @@ import { useSessionStore } from "@/stores/portal/use-session-store";
 
 
 const users = [
-    { user_id: "admin-1", username: "canvas-admin", display_name: "管理员", role: "admin", enabled: true, must_change_password: false, model_ids: ["image-pro"], created_at: 1, updated_at: 1 },
-    { user_id: "user-1", username: "canvas-user", display_name: "普通用户", role: "user", enabled: true, must_change_password: false, model_ids: ["image-pro"], created_at: 1, updated_at: 1 },
+    { user_id: "admin-1", username: "canvas-admin", display_name: "管理员", role: "admin", enabled: true, must_change_password: false, approval_status: "approved", model_ids: ["image-pro"], comfy_workflow_ids: [], created_at: 1, updated_at: 1 },
+    { user_id: "user-1", username: "canvas-user", display_name: "普通用户", role: "user", enabled: true, must_change_password: false, approval_status: "approved", model_ids: ["image-pro"], comfy_workflow_ids: [], created_at: 1, updated_at: 1 },
 ];
 const models = [
     { model_id: "image-pro", service_id: "image", display_name: "图像 Pro", operations: ["image.generate"], input_media: ["text"], parameter_schema: {} },
@@ -75,6 +75,7 @@ it("shows server-owned per-user image and video usage", async () => {
 it("lets an administrator disable an account without exposing sensitive fields", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
         .mockResolvedValueOnce(new Response(JSON.stringify({ users }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ registrations: [] }), { status: 200, headers: { "content-type": "application/json" } }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ ...users[1], enabled: false }), { status: 200, headers: { "content-type": "application/json" } }));
 
     render(<AdminUsersPage />);
@@ -87,6 +88,51 @@ it("lets an administrator disable an account without exposing sensitive fields",
         expect.objectContaining({ method: "PATCH", body: JSON.stringify({ enabled: false }) }),
     ));
     expect(await screen.findByText("已停用")).toBeVisible();
+});
+
+it("approves and rejects pending registrations from the review section", async () => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    const approvedUsers = [...users];
+    let pending = [
+        { user_id: "pending-1", username: "newcomer", display_name: "新同事", created_at: "2026-08-17T00:00:00Z" },
+        { user_id: "pending-2", username: "dropped", display_name: "被拒绝者", created_at: "2026-08-17T00:01:00Z" },
+    ];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input), method = init?.method || "GET";
+        if (url === "/api/v1/admin/users" && method === "GET") return json({ users: approvedUsers });
+        if (url === "/api/v1/admin/registrations" && method === "GET") return json({ registrations: pending });
+        if (url === "/api/v1/admin/registrations/pending-1/approve" && method === "POST") {
+            const approved = { user_id: "pending-1", username: "newcomer", display_name: "新同事", role: "user", enabled: true, must_change_password: false, approval_status: "approved", model_ids: [], comfy_workflow_ids: [], created_at: 1, updated_at: 1 };
+            approvedUsers.push(approved);
+            pending = pending.filter((item) => item.user_id !== "pending-1");
+            return json(approved);
+        }
+        if (url === "/api/v1/admin/registrations/pending-2/reject" && method === "POST") {
+            pending = pending.filter((item) => item.user_id !== "pending-2");
+            return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected ${method} ${url}`);
+    });
+
+    render(<AdminUsersPage />);
+    expect(await screen.findByRole("button", { name: "通过 newcomer" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "拒绝 dropped" })).toBeVisible();
+    expect(screen.queryByText(/password|secret|token/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "通过 newcomer" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/registrations/pending-1/approve",
+        expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "通过 newcomer" })).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("已启用")).toHaveLength(3));
+
+    fireEvent.click(screen.getByRole("button", { name: "拒绝 dropped" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/registrations/pending-2/reject",
+        expect.objectContaining({ method: "POST" }),
+    ));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "拒绝 dropped" })).not.toBeInTheDocument());
 });
 
 it("saves the selected model assignments in one request", async () => {
