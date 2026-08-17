@@ -41,6 +41,44 @@ def test_production_cli_wires_credential_pool_path_under_an_explicit_trusted_roo
     assert settings.trusted_hosts == ("127.0.0.1",)
 
 
+def test_serve_local_cli_wires_asset_library_config_under_an_explicit_trusted_root(tmp_path: Path, monkeypatch) -> None:
+    received: dict[str, object] = {}
+    library_path = tmp_path / "config" / "asset-library.json"
+
+    def fake_create_local_app(**kwargs):
+        received.update(kwargs)
+        return SimpleNamespace(), None
+
+    monkeypatch.setattr(sys, "argv", [
+        "ai_creation_canvas",
+        "serve-local",
+        "--data-dir", str(tmp_path / "data"),
+        "--static-dir", str(tmp_path / "dist"),
+        "--asset-library-config", str(library_path),
+        "--asset-library-config-root", str(library_path.parent),
+    ])
+    monkeypatch.setattr(entrypoint, "create_local_app", fake_create_local_app)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    entrypoint.main()
+
+    assert received["asset_library_config"] == library_path
+    assert received["asset_library_config_root"] == library_path.parent
+
+
+def test_serve_local_cli_rejects_asset_library_config_without_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", [
+        "ai_creation_canvas",
+        "serve-local",
+        "--data-dir", str(tmp_path / "data"),
+        "--static-dir", str(tmp_path / "dist"),
+        "--asset-library-config", str(tmp_path / "asset-library.json"),
+    ])
+
+    with pytest.raises(ValueError, match="asset library config path requires a trusted root"):
+        entrypoint.main()
+
+
 def test_production_cli_requires_an_explicit_trusted_host_before_creating_the_app(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", [
         "ai_creation_canvas",
