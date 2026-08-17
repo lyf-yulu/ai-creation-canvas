@@ -297,6 +297,7 @@ function isGraphMediaItem(value: unknown) {
         && typeof item.displayName === "string"
         && typeof item.mimeType === "string"
         && isFiniteNonNegative(item.bytes)
+        && (item.kind === undefined || item.kind === "library")
         && (item.width === undefined || isFiniteNonNegative(item.width))
         && (item.height === undefined || isFiniteNonNegative(item.height))
         && (item.durationMs === undefined || isFiniteNonNegative(item.durationMs));

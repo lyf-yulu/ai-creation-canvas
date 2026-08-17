@@ -133,3 +133,22 @@ describe("compileGraphJob", () => {
         expect(result.inputs.reference_images).toEqual(["job-result.source.1"]);
     });
 });
+
+describe("compileGraphJob with library assets", () => {
+    it("passes library-kind media item asset ids through unchanged", () => {
+        const libraryNode: CanvasNodeData = {
+            ...nodes[1],
+            metadata: {
+                graph: {
+                    schemaVersion: GRAPH_SCHEMA_VERSION,
+                    role: "media-collection",
+                    mediaType: "image",
+                    outputPortId: "media",
+                    items: [{ id: "lib", assetId: "lib-1", displayName: "lib.png", mimeType: "image/png", bytes: 3, kind: "library" }],
+                },
+            },
+        };
+        const result = compileGraphJob([nodes[0], libraryNode, nodes[2]], [connections[0], connections[1]], "model", model);
+        expect(result.inputs.reference_images).toEqual(["lib-1"]);
+    });
+});

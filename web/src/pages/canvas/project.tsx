@@ -13,6 +13,7 @@ import { RenameNodeDialog } from "@/components/canvas/rename-node-dialog";
 import { GenerationNodeCard } from "@/components/canvas/generation-node-card";
 import { InfiniteCanvas } from "@/components/canvas/infinite-canvas";
 import { MediaCollectionNode, type MediaItemsUpdater } from "@/components/canvas/media-collection-node";
+import { AssetLibraryPanel } from "@/components/canvas/asset-library-panel";
 import { ModelCallNode } from "@/components/canvas/model-call-node";
 import { ComfyWorkflowNodeCard, createUnassignedComfyWorkflowNode } from "@/features/nodes/comfy-workflow";
 import { NodePort } from "@/components/canvas/node-port";
@@ -48,6 +49,7 @@ export default function CanvasProjectPage() {
     const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
     const [canvasCommandMessage, setCanvasCommandMessage] = useState<string | null>(null);
     const [renamingNodeId, setRenamingNodeId] = useState<string | null>(null);
+    const [libraryPanelOpen, setLibraryPanelOpen] = useState(false);
     const [connectionPointerWorld, setConnectionPointerWorld] = useState<Position>({ x: 0, y: 0 });
     const [measuredNodeSizes, setMeasuredNodeSizes] = useState<Map<string, { width: number; height: number }>>(() => new Map());
     const pendingPortRef = useRef<GraphPortRef | null>(null);
@@ -694,6 +696,13 @@ export default function CanvasProjectPage() {
         if (restoreFocus) contextTriggerRef.current?.focus();
     }, []);
 
+    const libraryTargets = useMemo(() => {
+        if (!project) return [];
+        return project.nodes
+            .filter((node) => node.metadata?.graph?.role === "media-collection" && node.metadata.graph.mediaType === "image")
+            .map((node) => ({ nodeId: node.id, label: node.title || node.id }));
+    }, [project]);
+
     if (!project) {
         if (loadError)
             return (
@@ -896,6 +905,23 @@ export default function CanvasProjectPage() {
                         })}
                     </InfiniteCanvas>
                     <CanvasNavigationControls viewport={viewport} onViewportChange={changeViewport} />
+                    <button
+                        type="button"
+                        onClick={() => setLibraryPanelOpen((open) => !open)}
+                        aria-label="打开人像资产库"
+                        className="absolute right-6 bottom-20 z-30 rounded-lg border border-[#254b33] bg-[#0d1b12] px-3 py-2 text-xs text-[#bcebc9] hover:border-[#4fbd70]"
+                    >
+                        人像资产库
+                    </button>
+                    {libraryPanelOpen ? (
+                        <AssetLibraryPanel
+                            targets={libraryTargets}
+                            onClose={() => setLibraryPanelOpen(false)}
+                            addToCollection={(nodeId, items) => {
+                                if (!readOnly) updateMediaCollection(nodeId, (current) => [...current, ...items]);
+                            }}
+                        />
+                    ) : null}
                     {connectionMessage ? (
                         <p
                             data-testid="connection-status"

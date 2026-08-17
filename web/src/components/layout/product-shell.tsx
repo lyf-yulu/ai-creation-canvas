@@ -17,6 +17,7 @@ const adminNavigation = [
     { label: "账号管理", to: "/admin/users", icon: Users },
     { label: "模型派发", to: "/admin/models", icon: SlidersHorizontal },
     { label: "工作流库", to: "/admin/comfy-workflows", icon: Boxes },
+    { label: "人像资产库", to: "/admin/asset-library", icon: Images },
     { label: "使用统计", to: "/admin/usage", icon: BarChart3 },
 ] as const;
 

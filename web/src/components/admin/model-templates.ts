@@ -126,7 +126,7 @@ export const ADMIN_MODEL_TEMPLATES: readonly AdminTemplate[] = [
             operation: "video.generate",
             input_ports: [
                 prompt,
-                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 30 },
+                { port_id: "reference_images", media_type: "image", min_items: 0, max_items: 30, asset_kind: "library" },
                 { port_id: "first_frame", media_type: "image", min_items: 0, max_items: 1 },
                 { port_id: "last_frame", media_type: "image", min_items: 0, max_items: 1 },
                 { port_id: "reference_audio", media_type: "audio", min_items: 0, max_items: 10 },

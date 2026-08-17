@@ -14,7 +14,7 @@ export type AdminUser = PortalSession & {
 
 export type AdminOperationContract = {
     operation: "image.generate" | "image.edit" | "video.generate";
-    input_ports: Array<{ port_id: string; media_type: "text" | "image" | "video" | "audio"; min_items: number; max_items: number }>;
+    input_ports: Array<{ port_id: string; media_type: "text" | "image" | "video" | "audio"; min_items: number; max_items: number; asset_kind?: "library" }>;
     output_media_type: "image" | "video";
     parameter_schema: Record<string, unknown>;
     parameter_mappings: Record<string, string>;
@@ -68,6 +68,26 @@ export const importAdminCredentialPools = (file: File) => {
     body.set("file", file, file.name);
     return apiFetch<{ pools: AdminCredentialPool[] }>("/api/v1/admin/credential-pools/import", { method: "POST", body });
 };
+
+export type AdminAssetLibrary = {
+    enabled: boolean;
+    import_configured: boolean;
+    has_ark_access: boolean;
+    has_tos_access: boolean;
+    tos_bucket?: string;
+    tos_region?: string;
+    project_name?: string;
+    revision_digest?: string;
+    default_group_id?: string;
+};
+export type AdminAssetLibraryGroup = { group_id: string; name: string };
+export const fetchAdminAssetLibrary = () => apiFetch<AdminAssetLibrary>("/api/v1/admin/asset-library");
+export const importAdminAssetLibrary = (file: File) => {
+    const body = new FormData();
+    body.set("file", file, file.name);
+    return apiFetch<AdminAssetLibrary>("/api/v1/admin/asset-library/import", { method: "POST", body });
+};
+export const fetchAdminAssetLibraryGroups = async () => (await apiFetch<{ groups: AdminAssetLibraryGroup[] }>("/api/v1/admin/asset-library/groups")).groups;
 
 type LifecycleKind = "enable" | "disable" | "archive" | "restore" | "purge-runtime";
 const lifecycle = <T>(path: string, revision: number) => apiFetch<T>(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ revision }) });

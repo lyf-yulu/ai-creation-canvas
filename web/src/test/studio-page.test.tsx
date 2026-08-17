@@ -45,7 +45,8 @@ it("assembles the released image and video generation studio around the infinite
     expect(screen.getByText("提示词节点")).toBeVisible();
     expect(screen.getByRole("button", { name: "图片生成" })).toBeVisible();
     expect(screen.getByRole("button", { name: "视频生成" })).toBeVisible();
-    expect(screen.queryByText(/Dreamina|人像|ComfyUI|Skill/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Dreamina|ComfyUI|Skill/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开人像资产库" })).toBeVisible();
     fireEvent.click(await screen.findByRole("button", { name: "图片生成" }));
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue("demo-image-v1"));
     expect(screen.getByRole("button", { name: "运行模型" })).toBeVisible();

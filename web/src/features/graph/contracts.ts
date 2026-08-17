@@ -45,6 +45,7 @@ export type GraphMediaItem = Readonly<{
     displayName: string;
     mimeType: string;
     bytes: number;
+    kind?: "library";
     width?: number;
     height?: number;
     durationMs?: number;
