@@ -164,6 +164,8 @@ class Settings:
     services_config_root: Path | str | None = None
     credential_pools_path: Path | str | None = None
     credential_pools_root: Path | str | None = None
+    asset_library_config_path: Path | str | None = None
+    asset_library_config_root: Path | str | None = None
     portal_allow_loopback_http: bool = False
     portal_ca_file: Path | str | None = None
     portal_max_concurrency: int = 8
@@ -315,6 +317,23 @@ class Settings:
             object.__setattr__(self, "credential_pools_root", credential_pools_root)
         elif self.credential_pools_root is not None:
             raise ValueError("credential pools root requires a credential pools path")
+        if self.asset_library_config_path is not None:
+            if self.asset_library_config_root is None:
+                raise ValueError("asset library config path requires a trusted root")
+            asset_library_root = Path(self.asset_library_config_root).expanduser().resolve(strict=False)
+            asset_library_path = Path(self.asset_library_config_path).expanduser()
+            try:
+                path_metadata = asset_library_path.lstat()
+            except OSError:
+                path_metadata = None
+            if path_metadata is not None and (stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode)):
+                raise ValueError("asset library config path must be a regular non-symlink file")
+            if not _is_within(asset_library_path.resolve(strict=False), asset_library_root):
+                raise ValueError("asset library config path must resolve under trusted root")
+            object.__setattr__(self, "asset_library_config_path", asset_library_path)
+            object.__setattr__(self, "asset_library_config_root", asset_library_root)
+        elif self.asset_library_config_root is not None:
+            raise ValueError("asset library config root requires a config path")
         if self.comfyui_services_config_path is not None:
             if self.comfyui_services_config_root is None:
                 raise ValueError("ComfyUI services configuration requires a trusted root")
