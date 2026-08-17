@@ -32,6 +32,9 @@ _CHECKPOINT_ATTEMPTS = 4
 _TOMBSTONE_NAME = re.compile(r"\.[0-9a-f]{40}\.delete\Z")
 _TOMBSTONE_JOURNAL_NAME = re.compile(r"\.([0-9a-f]{40})\.delete\.journal\Z")
 _PORTRAIT_RECOVERY_NAME = re.compile(r"\.portrait-recovery-([A-Za-z0-9_-]{1,128})\.pending\Z")
+_LIBRARY_RECOVERY_NAME = re.compile(r"\.ark-library-recovery-([A-Za-z0-9_-]{1,128})\.pending\Z")
+_ARK_ASSET_ID = re.compile(r"asset-[A-Za-z0-9_-]{1,100}\Z")
+_ARK_GROUP_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _MODEL_ROUTING_MIGRATION_MARKER = "model_routing_legacy_migration_v1"
 _MAX_USAGE_PRICE_FEN = 1_000_000_000
 _MAX_VIDEO_SECONDS = 86_400
@@ -144,6 +147,8 @@ class CanvasStore:
         self._recover_asset_deletions()
         self._recover_portrait_finalizations()
         self._fail_stale_portrait_reservations()
+        self._recover_library_finalizations()
+        self._fail_stale_library_reservations()
 
     def _fsync_assets_dir(self) -> None:
         descriptor = os.open(self.assets_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -220,6 +225,29 @@ class CanvasStore:
     def _fail_stale_portrait_reservations(self) -> None:
         with self._connection(immediate=True) as db:
             db.execute("UPDATE canvas_assets SET status='failed',updated_at=? WHERE kind='portrait' AND upstream_asset_id IS NULL AND status='processing'", (_now(),))
+
+    def _recover_library_finalizations(self) -> None:
+        for candidate in self.assets_dir.iterdir():
+            matched = _LIBRARY_RECOVERY_NAME.fullmatch(candidate.name)
+            if matched is None:
+                continue
+            try:
+                info = candidate.lstat()
+                if not stat.S_ISREG(info.st_mode) or candidate.is_symlink() or info.st_size > 512:
+                    continue
+                service_id, upstream_asset_id, status = candidate.read_text(encoding="ascii").splitlines()
+                if service_id != "ark-video" or not _ARK_ASSET_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+                    continue
+                with self._connection(immediate=True) as db:
+                    cursor = db.execute("UPDATE canvas_assets SET service_id=?,upstream_asset_id=?,status=?,updated_at=? WHERE asset_id=? AND kind='library' AND upstream_asset_id IS NULL", (service_id, upstream_asset_id, status, _now(), matched.group(1)))
+                if cursor.rowcount == 1:
+                    candidate.unlink()
+            except (OSError, UnicodeError, ValueError):
+                continue
+
+    def _fail_stale_library_reservations(self) -> None:
+        with self._connection(immediate=True) as db:
+            db.execute("UPDATE canvas_assets SET status='failed',updated_at=? WHERE kind='library' AND upstream_asset_id IS NULL AND status='processing'", (_now(),))
 
     def _prepare_root(self) -> None:
         # Do this before resolve(): resolve would hide a lexical symlink component.
@@ -652,6 +680,59 @@ class CanvasStore:
         finally:
             temporary.unlink(missing_ok=True)
         return destination
+
+    def finalize_library_asset(self, asset_id: str, *, service_id: str, upstream_asset_id: str, status: str) -> dict[str, object]:
+        if service_id != "ark-video" or not _ARK_ASSET_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+            raise ValueError("library finalization is invalid")
+        with self._connection(immediate=True) as db:
+            cursor = db.execute("UPDATE canvas_assets SET service_id=?,upstream_asset_id=?,status=?,updated_at=? WHERE asset_id=? AND kind='library' AND upstream_asset_id IS NULL", (service_id, upstream_asset_id, status, _now(), asset_id))
+            if cursor.rowcount != 1:
+                raise KeyError(asset_id)
+            row = db.execute("SELECT * FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def delete_reserved_library_asset(self, asset_id: str, user_id: str) -> bool:
+        with self._connection(immediate=True) as db:
+            cursor = db.execute("DELETE FROM canvas_assets WHERE asset_id=? AND user_id=? AND kind='library' AND upstream_asset_id IS NULL", (asset_id, user_id))
+        return cursor.rowcount == 1
+
+    def record_library_finalize_recovery(self, asset_id: str, *, upstream_asset_id: str, status: str) -> Path:
+        if not _RESULT_ID.fullmatch(asset_id) or not _ARK_ASSET_ID.fullmatch(upstream_asset_id) or status not in {"processing", "active", "failed"}:
+            raise ValueError("library recovery is invalid")
+        destination = self.assets_dir / f".ark-library-recovery-{asset_id}.pending"
+        temporary = self.assets_dir / f".{secrets.token_hex(20)}.recovery"
+        try:
+            with temporary.open("x", encoding="ascii") as output:
+                output.write(f"ark-video\n{upstream_asset_id}\n{status}\n")
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    def ark_library_group_id(self) -> str | None:
+        with self._connection() as db:
+            row = db.execute("SELECT value FROM canvas_meta WHERE key='ark_library_default_group_id'").fetchone()
+        if row is None:
+            return None
+        value = str(row["value"])
+        return value if _ARK_GROUP_ID.fullmatch(value) else None
+
+    def set_ark_library_group_id(self, group_id: str) -> None:
+        if not isinstance(group_id, str) or _ARK_GROUP_ID.fullmatch(group_id) is None:
+            raise ValueError("library group id is invalid")
+        with self._connection(immediate=True) as db:
+            db.execute("INSERT INTO canvas_meta(key,value) VALUES ('ark_library_default_group_id',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (group_id,))
+
+    def list_library_assets_for_owner(self, user_id: str, limit: int = 100) -> tuple[dict[str, object], ...]:
+        safe_limit = min(max(limit, 1), 100)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT asset_id,kind,media_type,mime_type,status,size_bytes,created_at,updated_at FROM canvas_assets WHERE user_id=? AND kind='library' ORDER BY created_at DESC,asset_id DESC LIMIT ?",
+                (user_id, safe_limit),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
 
     def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool) -> dict[str, object]:
         now = _now()
