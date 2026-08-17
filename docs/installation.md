@@ -53,6 +53,14 @@ python3.12 -m venv .venv
 ```bash
 sudo install -d -m 0700 -o aicc -g aicc /srv/aicc/data /srv/aicc/config
 sudo install -m 0600 -o aicc -g aicc server/config/credential-pools.example.json /srv/aicc/config/credential-pools.json
+
+人像资产库需要另外一组公司级凭据（方舟 OpenAPI AK/SK 与 TOS AK/SK）：
+
+```bash
+sudo install -m 0600 -o aicc -g aicc server/config/asset-library.example.json /srv/aicc/config/asset-library.json
+```
+
+把占位值替换为真实凭据。文件只允许这些字段：`version`、`ark_access_key`、`ark_secret_key`、`tos_access_key`、`tos_secret_key`、`tos_bucket`、`tos_region`、`project_name`。方舟控制台发放的 SK 若为 base64 编码，导入时会自动解码；bucket 只允许小写字母、数字、点和连字符。此文件不得提交到 Git。未配置时，画布中的人像资产库上传返回 503，不会回退到第三方图床。
 ```
 
 首次启动前，用文本编辑器或部署系统把占位 Key 替换为真实值。不得把 `/srv/aicc/config/credential-pools.json` 提交到 Git。
@@ -76,6 +84,8 @@ PYTHONPATH=server .venv/bin/python -m ai_creation_canvas \
   --services-config server/config/services.example.json \
   --credential-pools /srv/aicc/config/credential-pools.json \
   --credential-pools-root /srv/aicc/config \
+  --asset-library-config /srv/aicc/config/asset-library.json \
+  --asset-library-config-root /srv/aicc/config \
   --redis-url "redis://127.0.0.1:6379/0" \
   --static-dir web/dist
 ```
@@ -97,7 +107,7 @@ HTTPS 反向代理负责 TLS 与 HSTS、请求体大小限制、超时、速率�
 3. 勾选替换确认，再点击“导入并替换凭据池”。
 4. 页面只显示池 ID、Provider、分组、Key 数量和并发摘要，不会显示 Key。
 
-浏览器不会解析文件正文或保存 Key，只把管理员主动选择的文件原样发送到同源服务。服务端先完整验证，再以 `0600` 权限原子替换 `/srv/aicc/config/credential-pools.json`。失败时旧文件和上一份有效内存快照继续使用。新任务使用新池；已提交任务保留原不可变快照，不会因换 Key 自动重放。
+浏览器不会解析文件正文或保存 Key，只把管理员主动选择的文件原样发送到同源服务。 人像资产库配置的导入遵循同一流程（管理页「人像资产库」→ 导入 JSON），页面只显示 has_* 布尔、存储桶、区域与默认分组，绝不回显密钥。服务端先完整验证，再以 `0600` 权限原子替换 `/srv/aicc/config/credential-pools.json`。失败时旧文件和上一份有效内存快照继续使用。新任务使用新池；已提交任务保留原不可变快照，不会因换 Key 自动重放。
 
 ## 7. 模型与凭据池对应关系
 
@@ -125,7 +135,7 @@ curl -I https://portal.example.com/ai-canvas/login
 
 ## 9. 备份、升级和回滚
 
-备份 `/srv/aicc/data` 和 `/srv/aicc/config/credential-pools.json`，不要备份会话、构建缓存或测试结果。升级时构建新发布目录、校验 `manifest.sha256`、停止旧进程，再让新版本复用原数据和配置目录。回滚只切回上一发布包和匹配配置；不要手工回滚或删除 SQLite 文件。
+备份 `/srv/aicc/data`、`/srv/aicc/config/credential-pools.json` 和 `/srv/aicc/config/asset-library.json`，不要备份会话、构建缓存或测试结果。升级时构建新发布目录、校验 `manifest.sha256`、停止旧进程，再让新版本复用原数据和配置目录。回滚只切回上一发布包和匹配配置；不要手工回滚或删除 SQLite 文件。
 
 更多并发、配额、任务恢复和故障语义见 [operations.md](operations.md)，发布验证见 [verification.md](verification.md)。
 

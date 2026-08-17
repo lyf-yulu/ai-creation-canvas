@@ -56,6 +56,8 @@ bash scripts/run-real-media-local.sh
 
 首次创建的本地管理员可在管理界面把已声明的模型派发给普通用户；普通用户只能选择被派发的模型。示例目录包含 4 个 Seedream 和 4 个 Seedance 官方模型，界面参数、输入上限和组图能力均由各模型声明生成；管理员可通过受控、无密钥的模型声明文件增量调整模型能力。
 
+人像资产库把上传的人像交给火山方舟私域虚拟人像素材资产库（AIGC 分组）：服务端用管理员导入的方舟 OpenAPI AK/SK 与 TOS 凭据完成签名上传与 `CreateAsset` 入库，资产审核通过后，Seedance 视频任务以 `asset://<id>` 引用生成，这是使用私域人像的官方通道。管理员在管理页导入配置 JSON，页面只显示 `has_*` 摘要；未配置时上传返回 503，不会回退第三方图床。配置格式见 `server/config/asset-library.example.json` 与 `docs/installation.md`。
+
 提示词节点内置 4 种可选择的优化 Skill，并采用“预览后应用”流程。默认只展示 Skill，管理员设置 Ark 文本模型后才启用调用：`AICC_PROMPT_SKILL_MODEL=<文本模型ID> bash scripts/run-real-media-local.sh`。文本模型与媒体模型共用服务端 `ARK_API_KEY`，Key 不会发送或保存到浏览器。
 
 ## 可迁移安装

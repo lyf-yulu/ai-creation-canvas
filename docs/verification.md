@@ -108,6 +108,18 @@ Cookie 认证的 Portal 图像、视频和人像验收必须单独证明：新�
 迁移验收必须从无 `completion_mode` 的历史未终态行开始，证明启动只按受信服务端能力分类可识别行，无法分类的行保持不可领取。备份/恢复验收仅覆盖单实例 SQLite：必须使用 SQLite 在线备份，或停止唯一实例后一致备份数据库与资产/结果；不验收多实例共享一个 SQLite 目录。
 
 本验收产生的媒体只存在于 pytest 临时目录。正式门禁前确认仓库工作树没有 `.local-real-media-data/`、结果文件、凭据或本地验证日志；这些内容已被忽略且不得提交。
+## 人像资产库验收
+
+`tests/integration/test_ark_library_flow.py` 使用全新 SQLite 数据、真实 FastAPI 路由与 `httpx.MockTransport` 模拟方舟 OpenAPI/TOS。它必须证明：管理员导入配置后摘要只含 `has_*` 与非秘密字段；用户上传人像（≤10MB PNG/JPEG/WebP）依次产生 TOS PUT、`CreateAsset`、`GetAsset` 请求并到达 `active`；Seedance 作业的 `content[]` 精确携带 `asset://asset-xxx` 引用；库资产只能绑定声明了 `asset_kind=library` 的 `reference_images` 端口，接到其他端口或另一用户提交时被拒绝；换入新配置后无需重启即对后续上传生效。
+
+离线冒烟脚本复现同一条链路：
+
+```bash
+PYTHONPATH=.:server .venv/bin/python scripts/verify_asset_library.py --data-dir "$(mktemp -d)/aicc-asset-library-smoke"
+```
+
+该实例全部离线：使用占位凭据和固定 PNG，不连接方舟或 TOS，也不产生费用。真实 AK/SK、TOS 桶权限、CreateAsset 审核状态和区域网络仍需管理员单独批准的一次性小额验收；在此之前不得把离线结果描述成真实资产库调用成功。
+
 ## ComfyUI 工作流库验收
 
 工作流 round-trip 只做本地解析与重新编码，不向 ComfyUI、模型服务或第三方网络发送请求，也不会证明自定义节点或模型在任何 ComfyUI 实例中可用。它不创建任务、不产生费用，并且不会将外部工作流复制进仓库。

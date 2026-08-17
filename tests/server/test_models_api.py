@@ -43,8 +43,8 @@ def test_models_requires_session_cookie_and_returns_modelspec_json(tmp_path):
             "operations": ["image.generate"], "input_media": [], "parameter_schema": {"type": "object", "properties": {"steps": {"type": "integer"}}, "additionalProperties": False},
             "requires_asset_kind": None,
             "input_ports": [
-                {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1},
-                {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 14},
+                {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1, "asset_kind": None},
+                {"port_id": "reference_images", "media_type": "image", "min_items": 0, "max_items": 14, "asset_kind": None},
             ],
             "parameter_mappings": {"steps": "steps"},
         }],

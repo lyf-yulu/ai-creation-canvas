@@ -273,6 +273,8 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--comfyui-services", type=Path, help="administrator-owned ComfyUI service declarations")
     parser.add_argument("--credential-pools", type=Path, help="administrator-owned grouped provider credential pools")
     parser.add_argument("--credential-pools-root", type=Path, help="trusted administrator-owned root for credential pools")
+    parser.add_argument("--asset-library-config", type=Path, help="administrator-owned Ark asset library credentials (AK/SK and TOS)")
+    parser.add_argument("--asset-library-config-root", type=Path, help="trusted administrator-owned root for the asset library config")
     parser.add_argument("--static-dir", type=Path, default=Path(__file__).parents[2] / "web" / "dist")
     parser.add_argument("--allow-loopback-http", action="store_true")
     parser.add_argument("--check-config", action="store_true", help="validate the declaration file without serving HTTP")
@@ -314,6 +316,8 @@ def main() -> None:
         comfyui_services_config_root=args.comfyui_services.parent if args.comfyui_services is not None else None,
         credential_pools_path=args.credential_pools,
         credential_pools_root=args.credential_pools_root,
+        asset_library_config_path=args.asset_library_config,
+        asset_library_config_root=args.asset_library_config_root,
         portal_allow_loopback_http=args.allow_loopback_http,
         trusted_hosts=tuple(args.trusted_host),
         max_image_upload_bytes=args.max_image_upload_bytes,
