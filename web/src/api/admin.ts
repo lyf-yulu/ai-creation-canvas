@@ -44,7 +44,9 @@ export type AdminCredentialPool = {
     circuit_status: "unsupported"; circuit_open_count: number | null;
 };
 export type AdminUsageCounters = { jobs: number; succeeded: number; failed: number; active: number; image: number; video: number };
-export type AdminUserUsage = AdminUsageCounters & { user_id: string; username: string; display_name: string };
+export type AdminUsageCharged = { successful_jobs: number; image_count: number; video_seconds: number; total_cost_fen: string };
+export type AdminUserUsage = AdminUsageCounters & { user_id: string; username: string; display_name: string; summary: AdminUsageCharged };
+export type AdminUsageRates = { video_price_fen: number; image_price_fen: number };
 export type LogicalModelWrite = {
     model_id: string; display_name: string; introduction: string; modality: "image" | "video";
     operation_contracts: AdminOperationContract[]; enabled: boolean; revision?: number;
@@ -58,7 +60,9 @@ export type ModelRouteWrite = {
 const jsonHeaders = { "Content-Type": "application/json" };
 
 export const fetchAdminUsers = async () => (await apiFetch<{ users: AdminUser[] }>("/api/v1/admin/users")).users;
-export const fetchAdminUsage = () => apiFetch<{ totals: AdminUsageCounters; users: AdminUserUsage[] }>("/api/v1/admin/usage");
+export const fetchAdminUsage = () => apiFetch<{ totals: AdminUsageCounters; summary: AdminUsageCharged; users: AdminUserUsage[] }>("/api/v1/admin/usage");
+export const fetchAdminUsageRates = () => apiFetch<AdminUsageRates>("/api/v1/admin/usage/rates");
+export const updateAdminUsageRates = (rates: AdminUsageRates) => apiFetch<AdminUsageRates>("/api/v1/admin/usage/rates", { method: "PUT", headers: jsonHeaders, body: JSON.stringify(rates) });
 export const fetchAdminModels = async () => (await apiFetch<{ models: ModelSpec[] }>("/api/v1/admin/models")).models;
 
 export const fetchAdminLogicalModels = async (includeArchived = false) => (await apiFetch<{ models: AdminLogicalModel[] }>(`/api/v1/admin/logical-models?include_archived=${includeArchived ? "true" : "false"}`)).models;

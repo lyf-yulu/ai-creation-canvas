@@ -65,14 +65,35 @@ it("hides the ComfyUI library destination from ordinary users without requesting
 it("shows server-owned per-user image and video usage", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
         totals: { jobs: 4, succeeded: 2, failed: 1, active: 1, image: 2, video: 2 },
-        users: [{ user_id: "user-1", username: "canvas-user", display_name: "普通用户", jobs: 3, succeeded: 1, failed: 1, active: 1, image: 2, video: 1 }],
-    }), { status: 200, headers: { "content-type": "application/json" } }));
+        summary: { successful_jobs: 2, image_count: 2, video_seconds: 2, total_cost_fen: "150" },
+        users: [{ user_id: "user-1", username: "canvas-user", display_name: "普通用户", jobs: 3, succeeded: 1, failed: 1, active: 1, image: 2, video: 1, summary: { successful_jobs: 1, image_count: 2, video_seconds: 1, total_cost_fen: "120" } }],
+    }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 0, image_price_fen: 0 }), { status: 200, headers: { "content-type": "application/json" } }));
 
     render(<AdminUsagePage />);
 
     expect(await screen.findByRole("heading", { name: "使用统计" })).toBeVisible();
     expect(await screen.findByText("4", { selector: "strong" })).toBeVisible();
-    expect(screen.getByRole("row", { name: /普通用户.*canvas-user.*3.*2.*1.*1.*1/ })).toBeVisible();
+    expect(screen.getByRole("row", { name: /普通用户.*canvas-user.*3.*2.*1.*1.*1.*1\.20/ })).toBeVisible();
+    expect(await screen.findByLabelText("图片单价（分/张）")).toBeVisible();
+});
+
+it("saves the usage rates the administrator enters", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ totals: { jobs: 0, succeeded: 0, failed: 0, active: 0, image: 0, video: 0 }, summary: { successful_jobs: 0, image_count: 0, video_seconds: 0, total_cost_fen: "0" }, users: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 0, image_price_fen: 0 }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ video_price_fen: 5, image_price_fen: 40 }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<AdminUsagePage />);
+    fireEvent.change(await screen.findByLabelText("图片单价（分/张）"), { target: { value: "40" } });
+    fireEvent.change(screen.getByLabelText("视频单价（分/秒）"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存单价" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
+        "/api/v1/admin/usage/rates",
+        expect.objectContaining({ method: "PUT", body: JSON.stringify({ image_price_fen: 40, video_price_fen: 5 }) }),
+    ));
+    expect(await screen.findByText("单价已保存。")).toBeVisible();
 });
 
 it("lets an administrator disable an account without exposing sensitive fields", async () => {
