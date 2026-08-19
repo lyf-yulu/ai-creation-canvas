@@ -132,6 +132,38 @@ describe("compileGraphJob", () => {
         const result = compileGraphJob([...nodes.slice(0, 1), nodes[2], resultNode], [connections[0], { id: "r", fromNodeId: "result", fromPortId: "media", toNodeId: "model", toPortId: "reference_images" }], "model", model);
         expect(result.inputs.reference_images).toEqual(["job-result.source.1"]);
     });
+
+    it("derives the asset id of a legacy result node from its source job", () => {
+        const legacyResultNode: CanvasNodeData = {
+            id: "legacy-result",
+            type: CanvasNodeType.Image,
+            title: "生成图片",
+            position: { x: 0, y: 0 },
+            width: 1,
+            height: 1,
+            metadata: {
+                content: "/api/v1/results/job-legacy",
+                status: "success",
+                sourceJobId: "job-legacy",
+                graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" },
+            },
+        };
+        const result = compileGraphJob([nodes[0], nodes[2], legacyResultNode], [connections[0], { id: "r", fromNodeId: "legacy-result", fromPortId: "media", toNodeId: "model", toPortId: "reference_images" }], "model", model);
+        expect(result.inputs.reference_images).toEqual(["job-result.job-legacy.0"]);
+    });
+
+    it("rejects a result reference without any resolvable asset", () => {
+        const orphanResultNode: CanvasNodeData = {
+            id: "orphan-result",
+            type: CanvasNodeType.Image,
+            title: "生成图片",
+            position: { x: 0, y: 0 },
+            width: 1,
+            height: 1,
+            metadata: { graph: { schemaVersion: GRAPH_SCHEMA_VERSION, role: "result", mediaType: "image", inputPortId: "result", outputPortId: "media" } },
+        };
+        expect(() => compileGraphJob([nodes[0], nodes[2], orphanResultNode], [connections[0], { id: "r", fromNodeId: "orphan-result", fromPortId: "media", toNodeId: "model", toPortId: "reference_images" }], "model", model)).toThrow("reference_images 的连接类型不正确。");
+    });
 });
 
 describe("compileGraphJob with library assets", () => {

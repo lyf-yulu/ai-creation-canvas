@@ -177,6 +177,27 @@ describe("legacy graph normalization", () => {
         ]);
     });
 
+    it("migrates legacy result ownership into a reusable reference asset", () => {
+        const legacyResult = node("output", CanvasNodeType.Image, { content: "/api/v1/results/job-9", status: "success", sourceJobId: "job-9" });
+        const legacyIndexed = node("frame", CanvasNodeType.Image, { content: "/api/v1/results/job-9/2", status: "success", sourceJobId: "job-9", sourceResultIndex: 2 });
+        const legacyAnonymous = node("upload", CanvasNodeType.Image, { content: "/api/v1/assets/x.png", status: "success" });
+
+        const normalized = normalizeCanvasProject(project([legacyResult, legacyIndexed, legacyAnonymous]));
+
+        expect(normalized.nodes[0].metadata?.graph).toMatchObject({
+            role: "result",
+            mediaType: "image",
+            inputPortId: "result",
+            outputPortId: "media",
+            jobId: "job-9",
+            assetId: "job-result.job-9.0",
+        });
+        expect(normalized.nodes[1].metadata?.graph).toMatchObject({ assetId: "job-result.job-9.2", jobId: "job-9" });
+        expect(normalized.nodes[2].metadata?.graph).toMatchObject({ role: "result", mediaType: "image" });
+        const anonymousGraph = normalized.nodes[2].metadata?.graph;
+        expect(anonymousGraph?.role === "result" ? anonymousGraph.assetId : undefined).toBeUndefined();
+    });
+
     it("rejects dangling, self and ambiguous edges while preserving raw duplicates and prompt conflicts", () => {
         const legacy = project(
             [node("prompt-a", CanvasNodeType.Text), node("prompt-b", CanvasNodeType.Text), node("model", CanvasNodeType.Config), node("image-a", CanvasNodeType.Image), node("image-b", CanvasNodeType.Image)],

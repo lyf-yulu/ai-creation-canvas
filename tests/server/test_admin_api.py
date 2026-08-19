@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from ai_creation_canvas.api.auth import _register_rate_limiter
-from tests.server.test_model_assignments import local_clients
+from tests.server.test_model_assignments import ORIGIN, local_clients
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +57,171 @@ def test_admin_can_disable_user_and_revoke_their_session(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["enabled"] is False
     assert user.get("/api/v1/session").status_code == 401
+
+
+def test_admin_can_set_a_regular_users_password_and_revokes_sessions(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del user_headers
+    assert accounts.admin is not None and accounts.user is not None
+
+    response = admin.post(
+        f"/api/v1/admin/users/{accounts.user.user_id}/password",
+        headers=admin_headers,
+        json={"new_password": "admin-issued-correct-horse", "must_change_password": False},
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()) == {
+        "user_id",
+        "username",
+        "display_name",
+        "role",
+        "enabled",
+        "must_change_password",
+        "approval_status",
+        "model_ids",
+        "created_at",
+        "updated_at",
+    }
+    assert response.json()["must_change_password"] is False
+    assert "password_hash" not in response.text.lower()
+
+    # The target user's existing session is revoked; the new password works immediately.
+    assert user.get("/api/v1/session").status_code == 401
+    login = user.post(
+        "/api/v1/auth/login",
+        json={"username": accounts.user_username, "password": "admin-issued-correct-horse"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is False
+
+    events = app.state.canvas_store.admin_audit_events()
+    assert any(
+        event["action"] == "set_password"
+        and event["actor_user_id"] == accounts.admin.user_id
+        and event["target_type"] == "user"
+        and event["target_id"] == accounts.user.user_id
+        for event in events
+    )
+
+
+def test_admin_set_password_can_force_change_on_next_login(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, user_headers
+    assert accounts.user is not None
+
+    response = admin.post(
+        f"/api/v1/admin/users/{accounts.user.user_id}/password",
+        headers=admin_headers,
+        json={"new_password": "forced-change-correct-horse", "must_change_password": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["must_change_password"] is True
+
+    login = user.post(
+        "/api/v1/auth/login",
+        json={"username": accounts.user_username, "password": "forced-change-correct-horse"},
+    )
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    csrf = login.json()["csrf_token"]
+
+    changed = user.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": csrf},
+        json={"current_password": "forced-change-correct-horse", "new_password": "finally-their-own-password"},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["user"]["must_change_password"] is False
+
+
+def test_admin_set_password_hides_admin_unknown_and_pending_targets(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, user, user_headers
+    assert accounts.admin is not None
+
+    body = {"new_password": "admin-issued-correct-horse"}
+
+    assert admin.post(
+        f"/api/v1/admin/users/{accounts.admin.user_id}/password",
+        headers=admin_headers,
+        json=body,
+    ).status_code == 404
+    assert admin.post(
+        "/api/v1/admin/users/no-such-user/password",
+        headers=admin_headers,
+        json=body,
+    ).status_code == 404
+
+    admin.post(
+        "/api/v1/auth/register",
+        json={"username": "still-pending", "display_name": "待审核", "password": "correct-horse-battery"},
+    )
+    pending_id = next(
+        item["user_id"]
+        for item in admin.get("/api/v1/admin/registrations", headers=admin_headers).json()["registrations"]
+        if item["username"] == "still-pending"
+    )
+    assert admin.post(
+        f"/api/v1/admin/users/{pending_id}/password",
+        headers=admin_headers,
+        json=body,
+    ).status_code == 404
+
+
+def test_admin_set_password_is_admin_only_and_validates_body(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app
+    assert accounts.user is not None
+    user_id = accounts.user.user_id
+    del accounts
+
+    assert user.post(
+        f"/api/v1/admin/users/{user_id}/password",
+        headers=user_headers,
+        json={"new_password": "admin-issued-correct-horse"},
+    ).status_code == 404
+
+    assert admin.post(
+        f"/api/v1/admin/users/{user_id}/password",
+        headers=admin_headers,
+        json={"new_password": "too-short"},
+    ).status_code == 400
+    assert admin.post(
+        f"/api/v1/admin/users/{user_id}/password",
+        headers=admin_headers,
+        json={"new_password": "admin-issued-correct-horse", "extra": 1},
+    ).status_code == 400
+
+
+def test_admin_can_set_password_for_a_disabled_user(tmp_path) -> None:
+    app, accounts, admin, user, admin_headers, user_headers = local_clients(tmp_path)
+    del app, user_headers
+    assert accounts.user is not None
+
+    assert admin.patch(
+        f"/api/v1/admin/users/{accounts.user.user_id}",
+        headers=admin_headers,
+        json={"enabled": False},
+    ).status_code == 200
+
+    response = admin.post(
+        f"/api/v1/admin/users/{accounts.user.user_id}/password",
+        headers=admin_headers,
+        json={"new_password": "disabled-user-correct-horse"},
+    )
+    assert response.status_code == 200
+
+    assert admin.patch(
+        f"/api/v1/admin/users/{accounts.user.user_id}",
+        headers=admin_headers,
+        json={"enabled": True},
+    ).status_code == 200
+    assert user.post(
+        "/api/v1/auth/login",
+        json={"username": accounts.user_username, "password": "disabled-user-correct-horse"},
+    ).status_code == 200
 
 
 def test_admin_usage_aggregates_jobs_by_server_owned_user_id(tmp_path) -> None:

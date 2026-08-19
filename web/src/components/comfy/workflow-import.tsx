@@ -13,10 +13,22 @@ export function WorkflowImport({ onImport = importAdminComfyWorkflow, onImported
     const [displayName, setDisplayName] = useState("");
     const [serviceId, setServiceId] = useState("");
     const [status, setStatus] = useState<"idle" | "uploading" | "succeeded" | "failed">("idle");
+    const [missing, setMissing] = useState<string | null>(null);
     const locked = status === "uploading";
 
+    const clearMissing = () => setMissing(null);
+
     const submit = async () => {
-        if (!file || !displayName.trim() || !serviceId.trim() || locked) return;
+        if (locked) return;
+        const problems: string[] = [];
+        if (!file) problems.push("工作流 JSON 文件");
+        if (!displayName.trim()) problems.push("工作流显示名");
+        if (!serviceId.trim()) problems.push("ComfyUI 服务 ID");
+        if (problems.length || !file) {
+            setMissing(`请先填写：${problems.join("、")}。`);
+            return;
+        }
+        setMissing(null);
         setStatus("uploading");
         try {
             const imported = await onImport(file, { displayName: displayName.trim(), serviceId: serviceId.trim() });
@@ -45,23 +57,29 @@ export function WorkflowImport({ onImport = importAdminComfyWorkflow, onImported
                         onChange={(event) => {
                             setFile(event.target.files?.[0] || null);
                             setStatus("idle");
+                            clearMissing();
                         }}
                         className="mt-1 block max-w-full text-xs file:mr-3 file:rounded file:border file:border-[#285038] file:bg-[#102719] file:px-3 file:py-2 file:text-[#8ff0aa]"
                     />
                 </label>
                 <label className="text-sm text-[#b9d0c0]">
                     工作流显示名
-                    <input aria-label="工作流显示名" value={displayName} disabled={locked} onChange={(event) => setDisplayName(event.target.value)} className="mt-1 block w-full rounded border border-[#3a7650] bg-[#0b1710] px-3 py-2 text-[#e5f5e9]" />
+                    <input aria-label="工作流显示名" value={displayName} disabled={locked} onChange={(event) => { setDisplayName(event.target.value); clearMissing(); }} placeholder="例如：贝尔尼尼写真工作流" className="mt-1 block w-full rounded border border-[#3a7650] bg-[#0b1710] px-3 py-2 text-[#e5f5e9]" />
                 </label>
                 <label className="text-sm text-[#b9d0c0]">
                     ComfyUI 服务 ID
-                    <input aria-label="ComfyUI 服务 ID" value={serviceId} disabled={locked} onChange={(event) => setServiceId(event.target.value)} className="mt-1 block w-full rounded border border-[#3a7650] bg-[#0b1710] px-3 py-2 text-[#e5f5e9]" />
+                    <input aria-label="ComfyUI 服务 ID" value={serviceId} disabled={locked} onChange={(event) => { setServiceId(event.target.value); clearMissing(); }} placeholder="服务声明中的 service_id，例如 comfy-local" className="mt-1 block w-full rounded border border-[#3a7650] bg-[#0b1710] px-3 py-2 text-[#e5f5e9]" />
                 </label>
             </div>
             <p className="mt-2 max-w-xs truncate text-xs text-[#86a991]">{file ? `${file.name} · ${file.size} bytes` : "尚未选择文件"}</p>
-            <button type="button" disabled={!file || !displayName.trim() || !serviceId.trim() || locked} onClick={() => void submit()} className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40">
+            <button type="button" disabled={locked} onClick={() => void submit()} className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40">
                 {locked ? "正在导入…" : "导入工作流"}
             </button>
+            {missing && (
+                <p role="alert" className="mt-3 text-sm text-[#ffbd73]">
+                    {missing}
+                </p>
+            )}
             {status === "succeeded" && (
                 <p role="status" className="mt-3 text-sm text-[#58d881]">
                     工作流已导入，当前处于停用状态。

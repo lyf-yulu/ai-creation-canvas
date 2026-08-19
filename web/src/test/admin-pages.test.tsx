@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { App } from "antd";
 
 import { ProductShell } from "@/components/layout/product-shell";
 import AdminModelsPage from "@/pages/admin/models";
@@ -88,6 +89,58 @@ it("lets an administrator disable an account without exposing sensitive fields",
         expect.objectContaining({ method: "PATCH", body: JSON.stringify({ enabled: false }) }),
     ));
     expect(await screen.findByText("已停用")).toBeVisible();
+});
+
+it("lets an administrator set a regular user's password from the account list", async () => {
+    const extraAdmin = { ...users[0], user_id: "admin-2", username: "canvas-admin-2" };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ users: [...users, extraAdmin] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ registrations: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ...users[1] }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<MemoryRouter><App><AdminUsersPage /></App></MemoryRouter>);
+    expect(await screen.findByRole("button", { name: "修改密码 canvas-admin" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "设置密码 canvas-user" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "设置密码 canvas-admin-2" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修改密码 canvas-admin-2" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/password|secret|token/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "设置密码 canvas-user" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("新密码"), { target: { value: "set-by-admin-password" } });
+    fireEvent.change(within(dialog).getByLabelText("确认新密码"), { target: { value: "set-by-admin-password" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
+        "/api/v1/admin/users/user-1/password",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ new_password: "set-by-admin-password", must_change_password: false }) }),
+    ));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+it("supports random generation and forced change when setting a user password", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify({ users }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ registrations: [] }), { status: 200, headers: { "content-type": "application/json" } }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ...users[1], must_change_password: true }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    render(<MemoryRouter><App><AdminUsersPage /></App></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "设置密码 canvas-user" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "随机生成" }));
+    const newPassword = within(dialog).getByLabelText("新密码") as HTMLInputElement;
+    expect(newPassword.value).toMatch(/^[A-Za-z0-9_-]{18}$/);
+    fireEvent.change(within(dialog).getByLabelText("确认新密码"), { target: { value: newPassword.value } });
+
+    fireEvent.click(within(dialog).getByRole("checkbox"));
+    fireEvent.click(within(dialog).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenLastCalledWith(
+        "/api/v1/admin/users/user-1/password",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ new_password: newPassword.value, must_change_password: true }) }),
+    ));
+    expect(await screen.findByText("已为 普通用户 设置新密码")).toBeInTheDocument();
 });
 
 it("approves and rejects pending registrations from the review section", async () => {

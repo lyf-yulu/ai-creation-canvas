@@ -1,4 +1,4 @@
-import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, graphInputPortDescriptor, isGraphNodeRole, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
+import { GRAPH_SCHEMA_VERSION, STANDARD_MODEL_INPUT_PORTS, assertSafeGraphInputPorts, assertSafeGraphPortId, assertSafeLegacyGraphInputPortIds, deriveResultAssetId, graphInputPortDescriptor, isGraphNodeRole, isGraphPortValueType, type CanvasGraphNodeMetadata, type GraphInputPortDescriptor, type GraphMediaType, type GraphParameterValue, type GraphPortValueType } from "@/features/graph/contracts";
 import type { NodeDefinition } from "@/features/nodes/types";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
@@ -163,10 +163,14 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
             parameters: { ...metadata.graph.parameters },
         };
     }
-    if (isLegacyGraphResultMetadata(metadata?.graph)) return {
-        ...metadata.graph,
-        inputPortId: "result",
-    };
+    if (isLegacyGraphResultMetadata(metadata?.graph)) {
+        const assetId = metadata.graph.assetId ?? deriveResultAssetId(metadata);
+        return {
+            ...metadata.graph,
+            inputPortId: "result",
+            ...(assetId ? { assetId } : {}),
+        };
+    }
     if (node.type === CanvasNodeType.Text) {
         return {
             schemaVersion: GRAPH_SCHEMA_VERSION,
@@ -196,6 +200,7 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
         executionEnabled: false,
     };
     const mediaType = mediaTypeForNode(node.type) ?? "image";
+    const assetId = deriveResultAssetId(metadata);
     return {
         schemaVersion: GRAPH_SCHEMA_VERSION,
         role: "result",
@@ -203,6 +208,7 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
         inputPortId: "result",
         outputPortId: "media",
         ...(metadata?.sourceJobId ? { jobId: metadata.sourceJobId } : {}),
+        ...(assetId ? { assetId } : {}),
     };
 }
 

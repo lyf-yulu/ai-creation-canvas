@@ -40,6 +40,27 @@ it("uploads workflow JSON without reading it in the browser", async () => {
     expect(onImported).toHaveBeenCalledWith(workflow);
 });
 
+it("explains which fields are missing instead of silently disabling the import button", async () => {
+    const onImport = vi.fn().mockResolvedValue(workflow);
+    render(<WorkflowImport onImport={onImport} onImported={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "导入工作流" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("工作流 JSON 文件、工作流显示名、ComfyUI 服务 ID");
+    expect(onImport).not.toHaveBeenCalled();
+
+    const file = new File(["{}"], "workflow.json", { type: "application/json" });
+    fireEvent.change(screen.getByLabelText("选择工作流 JSON"), { target: { files: [file] } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "导入工作流" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("工作流显示名、ComfyUI 服务 ID");
+
+    fireEvent.change(screen.getByLabelText("工作流显示名"), { target: { value: "Bernini" } });
+    fireEvent.change(screen.getByLabelText("ComfyUI 服务 ID"), { target: { value: "comfy-local" } });
+    fireEvent.click(screen.getByRole("button", { name: "导入工作流" }));
+    await waitFor(() => expect(onImport).toHaveBeenCalledWith(file, { displayName: "Bernini", serviceId: "comfy-local" }));
+});
+
 it("prevents duplicate imports and does not show server error details", async () => {
     let rejectImport!: (reason?: unknown) => void;
     const onImport = vi.fn(

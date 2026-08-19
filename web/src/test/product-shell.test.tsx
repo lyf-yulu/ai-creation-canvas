@@ -1,6 +1,7 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { App } from "antd";
 
 import { ProductShell } from "@/components/layout/product-shell";
 import { useSessionStore } from "@/stores/portal/use-session-store";
@@ -17,6 +18,23 @@ beforeEach(() => {
 });
 
 afterEach(() => cleanup());
+
+it("opens the change-password dialog from the sidebar footer and submits", async () => {
+    const changePassword = vi.fn(async () => ({ user_id: "user-a", username: "普通用户 A", role: "user" as const, must_change_password: false }));
+    useSessionStore.setState({ changePassword });
+
+    render(<MemoryRouter><App><ProductShell><div>内容区域</div></ProductShell></App></MemoryRouter>);
+
+    fireEvent.click(within(screen.getByRole("complementary", { name: "侧边栏" })).getByRole("button", { name: "修改密码" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("当前密码"), { target: { value: "old-password" } });
+    fireEvent.change(within(dialog).getByLabelText("新密码"), { target: { value: "new-password-123456" } });
+    fireEvent.change(within(dialog).getByLabelText("确认新密码"), { target: { value: "new-password-123456" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => expect(changePassword).toHaveBeenCalledWith("old-password", "new-password-123456"));
+    expect(await screen.findByText("密码已修改")).toBeInTheDocument();
+});
 
 it("keeps the fixed task tray outside the scrollable content", () => {
     render(<MemoryRouter><ProductShell><div>内容区域</div></ProductShell></MemoryRouter>);

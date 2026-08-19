@@ -133,6 +133,12 @@ export const setAdminUserEnabled = (userId: string, enabled: boolean) => apiFetc
     body: JSON.stringify({ enabled }),
 });
 
+export const setAdminUserPassword = (userId: string, newPassword: string, mustChangePassword: boolean) => apiFetch<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ new_password: newPassword, must_change_password: mustChangePassword }),
+});
+
 export const fetchAdminRegistrations = async () => (await apiFetch<{ registrations: AdminRegistration[] }>("/api/v1/admin/registrations")).registrations;
 export const approveAdminRegistration = (userId: string) => apiFetch<AdminUser>(`/api/v1/admin/registrations/${encodeURIComponent(userId)}/approve`, { method: "POST", headers: jsonHeaders });
 export const rejectAdminRegistration = (userId: string) => apiFetch<void>(`/api/v1/admin/registrations/${encodeURIComponent(userId)}/reject`, { method: "POST", headers: jsonHeaders });

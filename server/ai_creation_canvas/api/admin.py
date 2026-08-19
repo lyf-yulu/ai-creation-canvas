@@ -102,6 +102,12 @@ class UserPatch(BaseModel):
     enabled: bool
 
 
+class UserPasswordSet(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    new_password: str = Field(min_length=12, max_length=128)
+    must_change_password: bool = False
+
+
 class UsageRates(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     video_price_fen: int = Field(ge=0, le=1_000_000_000)
@@ -220,6 +226,25 @@ async def update_user(user_id: str, body: UserPatch, request: Request) -> dict[s
         row = store.set_user_enabled(user_id, body.enabled)
     except KeyError:
         raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404) from None
+    return _safe_user(row, _assigned_model_ids(store, user_id))
+
+
+@router.post("/users/{user_id}/password")
+async def set_user_password(user_id: str, body: UserPasswordSet, request: Request) -> dict[str, object]:
+    admin = _require_admin(request)
+    store = request.app.state.canvas_store
+    auth = request.app.state.local_auth
+    try:
+        auth.set_user_password(
+            user_id,
+            body.new_password,
+            must_change_password=body.must_change_password,
+            actor_user_id=admin.user_id,
+        )
+    except ValueError:
+        raise problem(request, "USER_NOT_FOUND", "The requested user was not found.", status=404) from None
+    row = store.user_by_id(user_id)
+    assert row is not None
     return _safe_user(row, _assigned_model_ids(store, user_id))
 
 

@@ -1,7 +1,8 @@
-import { BarChart3, Boxes, FolderKanban, Images, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
+import { BarChart3, Boxes, FolderKanban, Images, KeyRound, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
+import { ChangePasswordDialog } from "@/components/auth/change-password-dialog";
 import { TaskTray } from "@/components/layout/task-tray";
 import { useSessionStore } from "@/stores/portal/use-session-store";
 
@@ -26,6 +27,7 @@ export function ProductShell({ children }: { children: ReactNode }) {
     const logout = useSessionStore((state) => state.logout);
     const location = useLocation();
     const currentCanvasPath = /^\/canvas\/[^/]+$/.test(location.pathname) ? location.pathname : null;
+    const [passwordOpen, setPasswordOpen] = useState(false);
     const [rememberedCanvas, setRememberedCanvas] = useState(() => ({ userId: session?.user_id ?? null, path: currentCanvasPath ?? "/canvas", ignoredPath: null as string | null }));
     const sameUser = rememberedCanvas.userId === (session?.user_id ?? null);
     const projectTarget = sameUser && currentCanvasPath !== rememberedCanvas.ignoredPath ? currentCanvasPath ?? rememberedCanvas.path : sameUser ? rememberedCanvas.path : "/canvas";
@@ -46,9 +48,10 @@ export function ProductShell({ children }: { children: ReactNode }) {
             <header className="flex h-14 items-center justify-between gap-2 overflow-x-auto border-b border-[#193523] bg-[#08100b] px-3 md:hidden">
                 <div className="flex shrink-0 items-center gap-2 font-semibold"><Orbit className="size-5 text-[#57ed86]" /><span className="hidden sm:inline">AI 创作画布</span></div>
                 <nav className="flex shrink-0 gap-1">{[...navigation, ...(session?.role === "admin" ? adminNavigation : [])].map(({ label, to }) => <NavLink key={label} to={to} className="rounded px-2 py-1 text-xs text-[#a8bbae]">{label}</NavLink>)}</nav>
+                <button aria-label="修改密码" title="修改密码" className="shrink-0 rounded p-1.5 text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => setPasswordOpen(true)}><KeyRound className="size-4" /></button>
                 <button aria-label="退出登录" title="退出登录" className="shrink-0 rounded p-1.5 text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => void logout()}><LogOut className="size-4" /></button>
             </header>
-            <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 border-r border-[#193523] bg-[#08100b] p-4 md:flex md:flex-col">
+            <aside aria-label="侧边栏" className="fixed inset-y-0 left-0 z-30 hidden w-56 border-r border-[#193523] bg-[#08100b] p-4 md:flex md:flex-col">
                 <div className="flex items-center gap-2 text-base font-semibold"><Orbit className="size-5 text-[#57ed86]" /><span><i className="not-italic text-[#57ed86]">AI</i> 创作画布</span></div>
                 <p className="mt-2 text-xs text-[#688371]">本地创作工作室</p>
                 <nav className="mt-8 space-y-1" aria-label="主导航">
@@ -58,11 +61,13 @@ export function ProductShell({ children }: { children: ReactNode }) {
                 <div className="mt-auto border-t border-[#193523] pt-4">
                     <div className="text-sm text-[#d8eadd]">{session?.username || "未登录"}</div>
                     <div className="mt-1 text-xs text-[#688371]">{session?.role === "admin" ? "管理员" : "普通用户"}</div>
-                    <button className="mt-3 flex items-center gap-2 rounded px-2 py-1.5 text-xs text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => void logout()}><LogOut className="size-3.5" />退出登录</button>
+                    <button className="mt-3 flex items-center gap-2 rounded px-2 py-1.5 text-xs text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => setPasswordOpen(true)}><KeyRound className="size-3.5" />修改密码</button>
+                    <button className="mt-1 flex items-center gap-2 rounded px-2 py-1.5 text-xs text-[#8fa596] hover:bg-[#102219] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]" onClick={() => void logout()}><LogOut className="size-3.5" />退出登录</button>
                 </div>
             </aside>
             <main data-testid="product-main" className="h-[calc(100dvh-3.5rem)] overflow-auto bg-[#050806] pb-[var(--task-tray-height)] md:ml-56 md:h-dvh">{children}</main>
             <TaskTray />
+            <ChangePasswordDialog open={passwordOpen} onClose={() => setPasswordOpen(false)} />
         </div>
     );
 }

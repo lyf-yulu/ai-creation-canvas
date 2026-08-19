@@ -2092,6 +2092,24 @@ class CanvasStore:
         assert updated is not None
         return dict(updated)
 
+    def set_user_password(self, user_id: str, password_hash: str, *, must_change_password: bool, actor_user_id: str) -> dict[str, object]:
+        with self._connection(immediate=True) as db:
+            row = db.execute(
+                "SELECT user_id FROM canvas_users WHERE user_id=? AND role='user' AND approval_status='approved'",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(user_id)
+            db.execute(
+                "UPDATE canvas_users SET password_hash=?,must_change_password=?,updated_at=? WHERE user_id=?",
+                (password_hash, int(must_change_password), _now(), user_id),
+            )
+            db.execute("DELETE FROM canvas_sessions WHERE user_id=?", (user_id,))
+            self._audit(db, actor_user_id=actor_user_id, action="set_password", target_type="user", target_id=user_id)
+            updated = db.execute("SELECT * FROM canvas_users WHERE user_id=?", (user_id,)).fetchone()
+        assert updated is not None
+        return dict(updated)
+
     def create_session(self, *, token_hash: str, csrf_token: str, user_id: str, expires_at: float) -> None:
         with self._connection(immediate=True) as db:
             db.execute("DELETE FROM canvas_sessions WHERE expires_at<=?", (time.time(),))

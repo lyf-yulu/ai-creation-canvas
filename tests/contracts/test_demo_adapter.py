@@ -39,6 +39,11 @@ def test_demo_adapter_is_offline_idempotent_and_range_capable(monkeypatch) -> No
         assert models[0].model_id == "demo-image-v1"
         assert models[0].display_name == "本地演示图片"
         assert models[0].parameter_schema["properties"]["aspect_ratio"]["enum"] == ("square", "portrait", "landscape")
+        declared = {port.port_id: port for port in models[0].input_ports}
+        assert declared["prompt"].media_type == "text"
+        assert (declared["prompt"].min_items, declared["prompt"].max_items) == (1, 1)
+        assert declared["reference_images"].media_type == "image"
+        assert declared["reference_images"].min_items == 0
 
         first = await adapter.submit(context(), request())
         second = await adapter.submit(context(), request())

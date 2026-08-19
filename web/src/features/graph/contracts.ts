@@ -100,6 +100,17 @@ export type GraphResultMetadata = {
 export const MAX_GRAPH_PORTS = 32;
 export const SAFE_GRAPH_PORT_ID = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 
+// 服务端以 job-result.{jobId}.{index} 解析历史任务结果资产(见 server/api/jobs.py 的 _RESULT_ASSET)。
+// 旧版结果节点只记录 sourceJobId,这里按同一契约派生 asset id,使历史结果也能连入新生成节点。
+// 失败/进行中的节点没有可引用的输出,不派生。
+export function deriveResultAssetId(metadata: { sourceJobId?: string; sourceResultIndex?: number; status?: string } | undefined): string | undefined {
+    if (metadata?.status !== undefined && metadata.status !== "success") return undefined;
+    const jobId = metadata?.sourceJobId;
+    if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(jobId)) return undefined;
+    const index = typeof metadata?.sourceResultIndex === "number" && Number.isInteger(metadata.sourceResultIndex) && metadata.sourceResultIndex >= 0 && metadata.sourceResultIndex < 100 ? metadata.sourceResultIndex : 0;
+    return `job-result.${jobId}.${index}`;
+}
+
 export class InvalidGraphPortDeclarationError extends TypeError {
     constructor() {
         super("Invalid graph port declaration");

@@ -211,6 +211,28 @@ export default function CanvasProjectPage() {
             .catch(() => setModels([]));
     }, []);
 
+    // 模型目录与节点声明对账:旧版本保存的模型节点可能缺失端口(如本地演示模型当时未声明任何端口),
+    // 导致提示词无法连入;目录就绪后按当前声明补齐端口并修正不再支持的 operation。
+    useEffect(() => {
+        if (readOnly || models.length === 0) return;
+        const current = useCanvasStore.getState().openProject(id);
+        if (!current) return;
+        let changed = false;
+        const nodes = current.nodes.map((node) => {
+            const graph = node.metadata?.graph;
+            if (graph?.role !== "model") return node;
+            const model = models.find((candidate) => candidate.model_id === graph.modelId);
+            if (!model) return node;
+            const ports = graphPortsForModel(model);
+            const operation = model.operations.includes(graph.operation as ModelOperation) ? graph.operation : model.operations[0];
+            const portsMatch = graph.inputPorts.length === ports.length && graph.inputPorts.every((port, index) => port.id === ports[index].id && port.accepts === ports[index].accepts);
+            if (operation === graph.operation && portsMatch) return node;
+            changed = true;
+            return { ...node, metadata: { ...node.metadata, graph: { ...graph, operation, inputPorts: ports } } };
+        });
+        if (changed) updateProject(id, { nodes });
+    }, [id, models, readOnly, updateProject]);
+
     const onSucceeded = useCallback(
         (job: JobState, ref?: PendingRef) => {
             const targetProjectId = ref?.projectId;

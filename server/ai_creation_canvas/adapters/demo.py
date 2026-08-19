@@ -7,7 +7,7 @@ import hashlib
 from importlib.resources import files
 import re
 
-from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelSpec, RequestContext, UpstreamJob
+from ai_creation_canvas.domain.models import AssetRef, JobRequest, JobState, ModelInputPort, ModelSpec, RequestContext, UpstreamJob
 
 
 _UPSTREAM_ID = re.compile(r"demo_[0-9a-f]{64}\Z")
@@ -47,7 +47,7 @@ class DemoGenerationAdapter:
             self.service_id,
             "本地演示图片",
             ("image.generate",),
-            ("text",),
+            ("text", "image"),
             {
                 "type": "object",
                 "properties": {
@@ -60,6 +60,11 @@ class DemoGenerationAdapter:
                 "required": ["aspect_ratio"],
                 "additionalProperties": False,
             },
+            None,
+            (
+                ModelInputPort("prompt", "text", 1, 1),
+                ModelInputPort("reference_images", "image", 0, 4),
+            ),
         ),)
 
     async def submit(self, context: RequestContext, request: JobRequest) -> UpstreamJob:
