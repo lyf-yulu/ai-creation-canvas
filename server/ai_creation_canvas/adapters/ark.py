@@ -110,12 +110,13 @@ class ArkGenerationAdapter:
     requires_portal_cookie = False
     supports_background_polling = True
 
-    def __init__(self, *, api_key: str, data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None, reusable_result_services: frozenset[str] | None = None) -> None:
-        if not isinstance(api_key, str) or len(api_key.strip()) < 8:
+    def __init__(self, *, api_key: str | Callable[[], str], data_dir: Path | str, models: tuple[ArkModelDeclaration, ...], transport: httpx.AsyncBaseTransport | None = None, asset_loader: Callable[[str], tuple[bytes, str]] | None = None, reusable_result_services: frozenset[str] | None = None) -> None:
+        if not callable(api_key) and (not isinstance(api_key, str) or len(api_key.strip()) < 8):
             raise ValueError("Ark API key is unavailable")
         if not models or len({model.model_id for model in models}) != len(models) or len({model.service_id for model in models}) != 1:
             raise ValueError("Ark model declarations are invalid")
-        self._api_key, self._models, self._transport, self._asset_loader = api_key, {model.model_id: model for model in models}, transport, asset_loader
+        self._api_key = api_key if callable(api_key) else (lambda: api_key)
+        self._models, self._transport, self._asset_loader = {model.model_id: model for model in models}, transport, asset_loader
         self.service_id = models[0].service_id
         self.reusable_result_services = reusable_result_services or frozenset({self.service_id})
         root = Path(data_dir) / "ark-results"
@@ -326,7 +327,7 @@ class ArkGenerationAdapter:
         submission_error: SubmissionError | None = None
         try:
             async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
-                kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}}
+                kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}}
                 if json is not None:
                     kwargs["json"] = json
                 response = await client.request(method, path, **kwargs)
@@ -604,7 +605,7 @@ def _compile_provider_parameters(mappings: Mapping[str, str], values: Mapping[st
     return result
 
 
-def build_ark_adapters(*, api_key: str, data_dir: Path | str, config_path: Path | str, config_root: Path | str, transport: httpx.AsyncBaseTransport | None = None) -> tuple[ArkGenerationAdapter, ...]:
+def build_ark_adapters(*, api_key: str | Callable[[], str], data_dir: Path | str, config_path: Path | str, config_root: Path | str, transport: httpx.AsyncBaseTransport | None = None) -> tuple[ArkGenerationAdapter, ...]:
     grouped: dict[str, list[ArkModelDeclaration]] = {}
     for declaration in load_ark_model_declarations(config_path, config_root):
         grouped.setdefault(declaration.service_id, []).append(declaration)

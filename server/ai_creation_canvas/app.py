@@ -138,11 +138,26 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         registry.register_generation(DemoGenerationAdapter())
     if settings.enable_ark_adapter:
         import os
-        api_key = os.environ.get("ARK_API_KEY", "")
-        if not api_key:
-            raise ValueError("ARK_API_KEY is required when real Ark media is enabled")
         assert settings.ark_models_config_path is not None and settings.ark_models_config_root is not None
-        for adapter in build_ark_adapters(api_key=api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
+        ark_key_loader = None
+        if settings.ark_key_config_path is not None:
+            from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader
+            ark_key_loader = ArkKeyConfigLoader(settings.ark_key_config_path)
+
+        def ark_api_key() -> str:
+            if ark_key_loader is not None:
+                try:
+                    imported = ark_key_loader.current_key()
+                except ValueError:
+                    imported = None
+                if imported:
+                    return imported
+            return os.environ.get("ARK_API_KEY", "")
+
+        app.state.ark_key_loader = ark_key_loader
+        if ark_key_loader is None and not ark_api_key():
+            raise ValueError("ARK_API_KEY is required when real Ark media is enabled")
+        for adapter in build_ark_adapters(api_key=ark_api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
             registry.register_generation(adapter)
     store = canvas_store or CanvasStore(settings.data_dir)
     active_managed_routes = tuple(route for route in store.list_model_routes(include_archived=False) if route.enabled)
@@ -225,9 +240,9 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         import os
         if settings.environment == "production" and len(os.environ.get("AICC_CREDENTIAL_HMAC_KEY", "").encode("utf-8")) < 32:
             raise ValueError("a server-only credential HMAC key is required for managed production routes")
-        loader = CredentialPoolLoader(Path(settings.credential_pools_path), production=settings.environment == "production")
-        loader.load()
-        app.state.credential_pool_loader = loader
+        pools_loader = CredentialPoolLoader(Path(settings.credential_pools_path), production=settings.environment == "production")
+        pools_loader.load()
+        app.state.credential_pool_loader = pools_loader
         from ai_creation_canvas.trusted_routing import provider_protocol_for_definition
         providers = {}
         for provider in store.list_provider_definitions():
@@ -242,7 +257,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
             provider_protocols=providers,
         )
         managed_routing_runtime = ManagedRoutingRuntime(
-            store, lambda: loader.reload().as_mapping(), RouteSelector(trusted_routes_only=True), execution_coordinator, route_factory,
+            store, lambda: pools_loader.reload().as_mapping(), RouteSelector(trusted_routes_only=True), execution_coordinator, route_factory,
             provider_submission_budget,
         )
     refresh_background_adapters = getattr(model_catalog, "refresh_background_adapters", None)

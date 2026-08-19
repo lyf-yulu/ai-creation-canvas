@@ -16,6 +16,8 @@ set -eu
 #   AICC_LOCAL_DATA              (default: .local-data in the repo root)
 #   AICC_ASSET_LIBRARY_CONFIG    (optional: Ark portrait asset library JSON)
 #   AICC_ASSET_LIBRARY_CONFIG_ROOT (required together with the config path)
+#   AICC_ARK_KEY_CONFIG          (optional: web-importable Ark generation key JSON)
+#   AICC_ARK_KEY_CONFIG_ROOT     (required together with the key config path)
 
 aicc_repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 AICC_LOCAL_HOST=${AICC_LOCAL_HOST:-0.0.0.0}
@@ -29,8 +31,8 @@ case "$AICC_LOCAL_PORT" in
     8991|9090|8787|8797|8891) echo "Refusing to use a reserved production port" >&2; exit 64 ;;
 esac
 
-if [ -z "${ARK_API_KEY:-}" ]; then
-    echo "ARK_API_KEY is required for real Seedream and Seedance media." >&2
+if [ -z "${ARK_API_KEY:-}" ] && [ -z "${AICC_ARK_KEY_CONFIG:-}" ]; then
+    echo "ARK_API_KEY or AICC_ARK_KEY_CONFIG is required for real Seedream and Seedance media." >&2
     exit 64
 fi
 if [ ! -f "$AICC_ARK_MODELS_CONFIG" ] || [ -L "$AICC_ARK_MODELS_CONFIG" ]; then
@@ -64,6 +66,13 @@ if [ -n "${AICC_ASSET_LIBRARY_CONFIG:-}" ]; then
         exit 64
     fi
     set -- "$@" --asset-library-config "$AICC_ASSET_LIBRARY_CONFIG" --asset-library-config-root "$AICC_ASSET_LIBRARY_CONFIG_ROOT"
+fi
+if [ -n "${AICC_ARK_KEY_CONFIG:-}" ]; then
+    if [ -z "${AICC_ARK_KEY_CONFIG_ROOT:-}" ]; then
+        echo "AICC_ARK_KEY_CONFIG requires AICC_ARK_KEY_CONFIG_ROOT" >&2
+        exit 64
+    fi
+    set -- "$@" --ark-key-config "$AICC_ARK_KEY_CONFIG" --ark-key-config-root "$AICC_ARK_KEY_CONFIG_ROOT"
 fi
 if [ -n "${AICC_PROMPT_SKILL_MODEL:-}" ]; then
     set -- "$@" --prompt-skill-model "$AICC_PROMPT_SKILL_MODEL"

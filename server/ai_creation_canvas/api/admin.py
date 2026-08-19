@@ -16,6 +16,8 @@ from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.api.usage import all_usage_projection
 from ai_creation_canvas.asset_library_config import AssetLibraryConfigLoader
 from ai_creation_canvas.asset_library_import import import_asset_library_config
+from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader
+from ai_creation_canvas.ark_key_import import import_ark_key_config
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.credential_pool_import import import_credential_pool_json
 from ai_creation_canvas.credential_pools import CredentialPoolLoader
@@ -978,6 +980,60 @@ async def import_asset_library(request: Request) -> dict[str, object]:
         if form is not None:
             await form.close()
     return await asset_library_summary(request)
+
+
+@router.get("/ark-key")
+async def ark_key_summary(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    loader = getattr(request.app.state, "ark_key_loader", None)
+    if not isinstance(loader, ArkKeyConfigLoader):
+        return {"configured": False, "has_key": False}
+    try:
+        key = loader.current_key()
+    except ValueError:
+        key = None
+    return {"configured": True, "has_key": bool(key)}
+
+
+@router.post("/ark-key/import")
+async def import_ark_key(request: Request) -> dict[str, object]:
+    _require_admin(request)
+    loader = getattr(request.app.state, "ark_key_loader", None)
+    target = getattr(request.app.state.settings, "ark_key_config_path", None)
+    root = getattr(request.app.state.settings, "ark_key_config_root", None)
+    if not isinstance(loader, ArkKeyConfigLoader) or target is None or root is None:
+        raise problem(
+            request,
+            "ARK_KEY_IMPORT_UNAVAILABLE",
+            "Ark key import is not configured.",
+            status=409,
+        )
+    stated = request.headers.get("content-length", "")
+    if stated and (not stated.isdecimal() or len(stated) > 20 or int(stated) > _CREDENTIAL_JSON_MAX_BYTES + _CREDENTIAL_MULTIPART_OVERHEAD):
+        raise problem(request, "ARK_KEY_INVALID", "The Ark key file is invalid.", status=400)
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
+        raise problem(request, "ARK_KEY_INVALID", "The Ark key file is invalid.", status=400)
+    form = None
+    try:
+        form = await _CredentialJsonParser(request).parse()
+        upload = form.get("file")
+        if (
+            not isinstance(upload, UploadFile)
+            or not isinstance(upload.filename, str)
+            or not upload.filename.lower().endswith(".json")
+            or upload.content_type != "application/json"
+        ):
+            raise ValueError("invalid Ark key upload")
+        raw = await upload.read(_CREDENTIAL_JSON_MAX_BYTES + 1)
+        if len(raw) > _CREDENTIAL_JSON_MAX_BYTES:
+            raise ValueError("invalid Ark key upload")
+        import_ark_key_config(loader, target, root, raw)
+    except (MultiPartException, MultipartParseError, OSError, ValueError):
+        raise problem(request, "ARK_KEY_INVALID", "The Ark key file is invalid.", status=400) from None
+    finally:
+        if form is not None:
+            await form.close()
+    return await ark_key_summary(request)
 
 
 @router.get("/asset-library/groups")

@@ -167,7 +167,7 @@ def _local_data_dir(data_dir: Path) -> Path:
     return resolved
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, asset_library_config: Path | None = None, asset_library_config_root: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, asset_library_config: Path | None = None, asset_library_config_root: Path | None = None, credential_pools: Path | None = None, credential_pools_root: Path | None = None, ark_key_config: Path | None = None, ark_key_config_root: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
     origins = public_origins or (f"http://127.0.0.1:{port}",)
     local_data_dir = _local_data_dir(data_dir)
     comfy_config_path, comfy_config_root = _local_comfyui_config(local_data_dir, comfyui_services_config)
@@ -189,6 +189,10 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_orig
         redis_url=redis_url,
         asset_library_config_path=asset_library_config,
         asset_library_config_root=asset_library_config_root,
+        credential_pools_path=credential_pools,
+        credential_pools_root=credential_pools_root,
+        ark_key_config_path=ark_key_config,
+        ark_key_config_root=ark_key_config_root,
         max_image_upload_bytes=max_image_upload_bytes,
         max_video_upload_bytes=max_video_upload_bytes,
         max_audio_upload_bytes=max_audio_upload_bytes,
@@ -196,7 +200,24 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_orig
         user_asset_quota_bytes=user_asset_quota_bytes,
         total_asset_quota_bytes=total_asset_quota_bytes,
     )
-    app = create_app(settings, static_dir=static_dir)
+    canvas_store = None
+    if credential_pools is not None:
+        # Managed routes need the code-owned provider definitions in the store.
+        # Provider definitions are deployment-owned (read-only in the admin API),
+        # so the local entry seeds the trusted trio before wiring the runtime.
+        from ai_creation_canvas.model_registry import ProviderDefinition
+        canvas_store = CanvasStore(local_data_dir)
+        for provider_id, display_name, adapter_type, base_url in (
+            ("chiyun-banana", "Chiyun Banana", "chiyun_gemini_images", "https://chiyun.work"),
+            ("chiyun-gpt-image2", "Chiyun GPT-Image2", "chiyun_openai_images", "https://chiyun.work"),
+            ("ark", "Ark", "ark", "https://ark.cn-beijing.volces.com"),
+        ):
+            if canvas_store.provider_definition(provider_id) is None:
+                canvas_store.create_provider_definition(
+                    ProviderDefinition(provider_id, display_name, adapter_type, base_url, "pools"),
+                    actor_user_id="local-deployment",
+                )
+    app = create_app(settings, static_dir=static_dir, canvas_store=canvas_store)
     accounts: BootstrapResult | None = None
     if bootstrap_if_empty:
         model_ids = ["demo-image-v1"]
@@ -274,6 +295,10 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--redis-url", help="optional Redis coordination URL; governed production models require Redis")
     parser.add_argument("--asset-library-config", type=Path, help="administrator-owned Ark asset library credentials (AK/SK and TOS)")
     parser.add_argument("--asset-library-config-root", type=Path, help="trusted administrator-owned root for the asset library config")
+    parser.add_argument("--credential-pools", type=Path, help="administrator-owned grouped provider credential pools")
+    parser.add_argument("--credential-pools-root", type=Path, help="trusted administrator-owned root for credential pools")
+    parser.add_argument("--ark-key-config", type=Path, help="administrator-owned Ark generation key file (web-importable, hot-reloaded)")
+    parser.add_argument("--ark-key-config-root", type=Path, help="trusted administrator-owned root for the Ark key config")
     _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
     bind_address = ipaddress.IPv4Address(args.host)
@@ -283,7 +308,7 @@ def _run_serve_local(argv: list[str]) -> None:
         parser.error("LAN public origin ports must match --port")
     if not bind_address.is_loopback and args.open_browser:
         parser.error("--open is only supported for loopback hosts")
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, comfyui_services_config=args.comfyui_services, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, asset_library_config=args.asset_library_config, asset_library_config_root=args.asset_library_config_root, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, comfyui_services_config=args.comfyui_services, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, asset_library_config=args.asset_library_config, asset_library_config_root=args.asset_library_config_root, credential_pools=args.credential_pools, credential_pools_root=args.credential_pools_root, ark_key_config=args.ark_key_config, ark_key_config_root=args.ark_key_config_root, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"

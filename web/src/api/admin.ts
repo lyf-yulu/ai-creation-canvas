@@ -97,6 +97,17 @@ export const importAdminAssetLibrary = (file: File) => {
 };
 export const fetchAdminAssetLibraryGroups = async () => (await apiFetch<{ groups: AdminAssetLibraryGroup[] }>("/api/v1/admin/asset-library/groups")).groups;
 
+export type AdminArkKey = {
+    configured: boolean;
+    has_key: boolean;
+};
+export const fetchAdminArkKey = () => apiFetch<AdminArkKey>("/api/v1/admin/ark-key");
+export const importAdminArkKey = (file: File) => {
+    const body = new FormData();
+    body.set("file", file, file.name);
+    return apiFetch<AdminArkKey>("/api/v1/admin/ark-key/import", { method: "POST", body });
+};
+
 type LifecycleKind = "enable" | "disable" | "archive" | "restore" | "purge-runtime";
 const lifecycle = <T>(path: string, revision: number) => apiFetch<T>(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ revision }) });
 export const changeAdminLogicalModelLifecycle = (modelId: string, action: LifecycleKind, revision: number) => lifecycle<AdminLogicalModel>(`/api/v1/admin/logical-models/${encodeURIComponent(modelId)}/${action}`, revision);

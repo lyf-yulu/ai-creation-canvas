@@ -79,6 +79,31 @@ def test_serve_local_cli_rejects_asset_library_config_without_root(tmp_path: Pat
         entrypoint.main()
 
 
+def test_serve_local_cli_wires_credential_pools_under_an_explicit_trusted_root(tmp_path: Path, monkeypatch) -> None:
+    received: dict[str, object] = {}
+    pools_path = tmp_path / "config" / "credential-pools.json"
+
+    def fake_create_local_app(**kwargs):
+        received.update(kwargs)
+        return SimpleNamespace(), None
+
+    monkeypatch.setattr(sys, "argv", [
+        "ai_creation_canvas",
+        "serve-local",
+        "--data-dir", str(tmp_path / "data"),
+        "--static-dir", str(tmp_path / "dist"),
+        "--credential-pools", str(pools_path),
+        "--credential-pools-root", str(pools_path.parent),
+    ])
+    monkeypatch.setattr(entrypoint, "create_local_app", fake_create_local_app)
+    monkeypatch.setattr(entrypoint.uvicorn, "run", lambda *_args, **_kwargs: None)
+
+    entrypoint.main()
+
+    assert received["credential_pools"] == pools_path
+    assert received["credential_pools_root"] == pools_path.parent
+
+
 def test_production_cli_requires_an_explicit_trusted_host_before_creating_the_app(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", [
         "ai_creation_canvas",
