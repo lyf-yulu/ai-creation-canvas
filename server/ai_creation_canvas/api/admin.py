@@ -38,6 +38,7 @@ from ai_creation_canvas.model_routing import (
     validate_route_pool,
 )
 from ai_creation_canvas.trusted_routing import provider_has_trusted_origin, validate_trusted_route
+from ai_creation_canvas.comfy.workflow_json import parse_workflow_json
 
 
 router = APIRouter(prefix="/api/v1/admin")
@@ -1067,7 +1068,7 @@ async def import_ark_key(request: Request) -> dict[str, object]:
 @router.get("/config-examples/{kind}")
 async def config_example(kind: str, request: Request) -> JSONResponse:
     _require_admin(request)
-    if kind not in ("ark-key", "credential-pools", "asset-library"):
+    if kind not in ("ark-key", "credential-pools", "asset-library", "comfy-workflow"):
         raise problem(request, "API_NOT_FOUND", "The requested API resource was not found.", status=404)
     example_path = Path(__file__).resolve().parents[2] / "config" / f"{kind}.example.json"
     try:
@@ -1079,8 +1080,10 @@ async def config_example(kind: str, request: Request) -> JSONResponse:
         parse_ark_key_config_json(raw)
     elif kind == "credential-pools":
         parse_credential_pool_json(raw)
-    else:
+    elif kind == "asset-library":
         parse_asset_library_config_json(raw)
+    else:
+        parse_workflow_json(raw)
     headers = {"Content-Disposition": f'attachment; filename="{kind}.example.json"'}
     return JSONResponse(json.loads(raw.decode("utf-8")), headers=headers)
 

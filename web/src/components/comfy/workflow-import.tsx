@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import { importAdminComfyWorkflow, type AdminComfyWorkflow, type WorkflowImportMetadata } from "@/api/comfy-workflows";
+import { ConfigExampleDownload } from "@/components/admin/config-example-download";
 
 type Props = {
     onImport?: (file: File, metadata: WorkflowImportMetadata) => Promise<AdminComfyWorkflow>;
@@ -45,6 +46,9 @@ export function WorkflowImport({ onImport = importAdminComfyWorkflow, onImported
         <section className="rounded-xl border border-[#245a35] bg-[#07110b] p-4">
             <h2 className="text-lg font-semibold">导入 ComfyUI 工作流</h2>
             <p className="mt-1 text-xs text-[#86a991]">文件仅会原样上传到同源服务端验证；页面不会读取、展示、保存或记录 JSON 内容。</p>
+            <div className="mt-3">
+                <ConfigExampleDownload kind="comfy-workflow" />
+            </div>
             <div className="mt-4 grid gap-3 md:grid-cols-3">
                 <label className="text-sm text-[#b9d0c0]">
                     选择工作流 JSON

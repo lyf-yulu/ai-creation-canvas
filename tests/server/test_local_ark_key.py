@@ -106,7 +106,7 @@ def test_config_example_downloads_are_admin_only_and_valid(tmp_path: Path) -> No
     )
     admin = TestClient(app, base_url=ORIGIN)
     headers = _login(admin, accounts.admin_username, accounts.admin_password)
-    for kind in ("ark-key", "credential-pools", "asset-library"):
+    for kind in ("ark-key", "credential-pools", "asset-library", "comfy-workflow"):
         response = admin.get(f"/api/v1/admin/config-examples/{kind}", headers=headers)
         assert response.status_code == 200, kind
         assert response.headers["content-disposition"] == f'attachment; filename="{kind}.example.json"'

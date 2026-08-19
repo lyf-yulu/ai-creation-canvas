@@ -108,7 +108,7 @@ export const importAdminArkKey = (file: File) => {
     return apiFetch<AdminArkKey>("/api/v1/admin/ark-key/import", { method: "POST", body });
 };
 
-export const downloadAdminConfigExample = (kind: "ark-key" | "credential-pools" | "asset-library") => {
+export const downloadAdminConfigExample = (kind: "ark-key" | "credential-pools" | "asset-library" | "comfy-workflow") => {
     const path = safeApiPath(`/api/v1/admin/config-examples/${encodeURIComponent(kind)}`);
     const headers = new Headers({ Accept: "application/json" });
     const csrfToken = csrfTokenForRequest();

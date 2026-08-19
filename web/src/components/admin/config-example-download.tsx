@@ -6,7 +6,7 @@ import { downloadAdminConfigExample } from "@/api/admin";
 
 
 type Props = {
-    kind: "ark-key" | "credential-pools" | "asset-library";
+    kind: "ark-key" | "credential-pools" | "asset-library" | "comfy-workflow";
 };
 
 
