@@ -68,9 +68,9 @@ def _validate_trusted_pools(snapshot: CredentialPoolSnapshot) -> None:
     trusted_provider_families = {(preset.provider_id, preset.family) for preset in trusted_route_presets().values()}
     for pool in snapshot.as_mapping().values():
         if any((pool.provider_id, pool.group, family) not in allowed for family in pool.allowed_families):
-            raise _invalid()
+            raise ValueError("provider/group/family 组合不受支持，请对照示例文件")
         if any((pool.provider_id, family) not in trusted_provider_families for family in pool.allowed_families):
-            raise _invalid()
+            raise ValueError("provider/group/family 组合不受支持，请对照示例文件")
 
 
 def _write_exclusive(path: Path, raw: bytes) -> None:
@@ -89,9 +89,15 @@ def import_credential_pool_json(
     raw: bytes,
 ) -> CredentialPoolImportResult:
     """Validate fully, then atomically replace the configured pool file."""
-    candidate = parse_credential_pool_json(raw)
+    try:
+        candidate = parse_credential_pool_json(raw)
+    except ValueError:
+        raise ValueError("JSON 语法或字段有误，请对照示例文件") from None
     _validate_trusted_pools(candidate)
-    target, parent = _validate_target(Path(target), Path(root))
+    try:
+        target, parent = _validate_target(Path(target), Path(root))
+    except ValueError:
+        raise ValueError("服务器配置文件位置不安全，请联系技术人员") from None
     temporary = parent / f".{target.name}.{secrets.token_hex(12)}.import"
     try:
         _write_exclusive(temporary, raw)

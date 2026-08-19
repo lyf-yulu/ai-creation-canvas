@@ -940,14 +940,16 @@ async def import_credential_pools(request: Request) -> dict[str, object]:
             not isinstance(upload, UploadFile)
             or not isinstance(upload.filename, str)
             or not upload.filename.lower().endswith(".json")
-            or upload.content_type != "application/json"
+            or upload.content_type not in ("", "application/json", "application/octet-stream")
         ):
-            raise ValueError("invalid credential upload")
+            raise ValueError("上传的文件必须是 .json 文件")
         raw = await upload.read(_CREDENTIAL_JSON_MAX_BYTES + 1)
         if len(raw) > _CREDENTIAL_JSON_MAX_BYTES:
-            raise ValueError("invalid credential upload")
+            raise ValueError("文件过大，请检查内容")
         import_credential_pool_json(loader, target, root, raw)
-    except (MultiPartException, MultipartParseError, OSError, ValueError):
+    except ValueError as error:
+        raise problem(request, "CREDENTIAL_POOLS_INVALID", f"凭据池导入失败：{error}", status=400) from None
+    except (MultiPartException, MultipartParseError, OSError):
         raise problem(request, "CREDENTIAL_POOLS_INVALID", "The credential pool file is invalid.", status=400) from None
     finally:
         if form is not None:

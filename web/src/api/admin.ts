@@ -73,7 +73,8 @@ export const updateAdminModelRoute = (body: ModelRouteWrite & { revision: number
 export const fetchAdminCredentialPools = async () => (await apiFetch<{ pools: AdminCredentialPool[] }>("/api/v1/admin/credential-pools")).pools;
 export const importAdminCredentialPools = (file: File) => {
     const body = new FormData();
-    body.set("file", file, file.name);
+    // Windows may report .json files as octet-stream; pin the JSON type explicitly.
+    body.set("file", new Blob([file], { type: "application/json" }), file.name);
     return apiFetch<{ pools: AdminCredentialPool[] }>("/api/v1/admin/credential-pools/import", { method: "POST", body });
 };
 
@@ -92,7 +93,8 @@ export type AdminAssetLibraryGroup = { group_id: string; name: string };
 export const fetchAdminAssetLibrary = () => apiFetch<AdminAssetLibrary>("/api/v1/admin/asset-library");
 export const importAdminAssetLibrary = (file: File) => {
     const body = new FormData();
-    body.set("file", file, file.name);
+    // Windows may report .json files as octet-stream; pin the JSON type explicitly.
+    body.set("file", new Blob([file], { type: "application/json" }), file.name);
     return apiFetch<AdminAssetLibrary>("/api/v1/admin/asset-library/import", { method: "POST", body });
 };
 export const fetchAdminAssetLibraryGroups = async () => (await apiFetch<{ groups: AdminAssetLibraryGroup[] }>("/api/v1/admin/asset-library/groups")).groups;
@@ -104,7 +106,8 @@ export type AdminArkKey = {
 export const fetchAdminArkKey = () => apiFetch<AdminArkKey>("/api/v1/admin/ark-key");
 export const importAdminArkKey = (file: File) => {
     const body = new FormData();
-    body.set("file", file, file.name);
+    // Windows may report .json files as octet-stream; pin the JSON type explicitly.
+    body.set("file", new Blob([file], { type: "application/json" }), file.name);
     return apiFetch<AdminArkKey>("/api/v1/admin/ark-key/import", { method: "POST", body });
 };
 

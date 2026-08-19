@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import { importAdminCredentialPools, type AdminCredentialPool } from "@/api/admin";
+import { ApiRequestError } from "@/api/client";
 import { ConfigExampleDownload } from "@/components/admin/config-example-download";
 
 
@@ -15,6 +16,7 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
     const [file, setFile] = useState<File | null>(null);
     const [confirmed, setConfirmed] = useState(false);
     const [status, setStatus] = useState<"idle" | "uploading" | "succeeded" | "failed">("idle");
+    const [detail, setDetail] = useState<string | null>(null);
     const [poolCount, setPoolCount] = useState(0);
     const locked = status === "uploading";
 
@@ -27,13 +29,15 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
     const submit = async () => {
         if (!file || !confirmed || locked) return;
         setStatus("uploading");
+        setDetail(null);
         try {
             const result = await onImport(file);
             setPoolCount(result.pools.length);
             onImported(result.pools);
             setStatus("succeeded");
-        } catch {
+        } catch (error) {
             setStatus("failed");
+            setDetail(error instanceof ApiRequestError ? error.message : null);
         } finally {
             clearSelection();
         }
@@ -84,7 +88,7 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
                 {locked ? "正在导入…" : "导入并替换凭据池"}
             </button>
             {status === "succeeded" && <p role="status" className="mt-3 text-sm text-[#58d881]">已导入 {poolCount} 个凭据池。</p>}
-            {status === "failed" && <p role="alert" className="mt-3 text-sm text-[#ffbd73]">导入失败，请检查 JSON 格式和服务端配置。</p>}
+            {status === "failed" && <p role="alert" className="mt-3 text-sm text-[#ffbd73]">{detail || "导入失败，请检查 JSON 格式和服务端配置。"}</p>}
         </section>
     );
 }

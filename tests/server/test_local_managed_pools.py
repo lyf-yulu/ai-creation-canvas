@@ -138,3 +138,22 @@ def test_serve_local_with_credential_pools_wires_runtime_providers_and_import(tm
     refreshed = admin.get("/api/v1/admin/credential-pools", headers=headers).json()["pools"]
     seedream = next(item for item in refreshed if item["pool_id"] == "seedream-ark")
     assert seedream["total_capacity"] == 2
+
+    # Windows browsers often report .json files as octet-stream; accept them too.
+    octet = admin.post(
+        "/api/v1/admin/credential-pools/import",
+        headers=headers,
+        files={"file": ("pools.json", json.dumps(EXAMPLE_POOLS).encode("utf-8"), "application/octet-stream")},
+    )
+    assert octet.status_code == 200, octet.text
+
+    # Unsupported provider combinations report a readable reason.
+    bad = dict(EXAMPLE_POOLS)
+    bad["pools"]["seedream-ark"]["provider"] = "unknown-provider"
+    rejected = admin.post(
+        "/api/v1/admin/credential-pools/import",
+        headers=headers,
+        files={"file": ("pools.json", json.dumps(bad).encode("utf-8"), "application/json")},
+    )
+    assert rejected.status_code == 400
+    assert "组合不受支持" in rejected.json()["message"]
