@@ -117,10 +117,10 @@ class PromptSkillService:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.4,
-            "max_tokens": 2048,
+            "max_tokens": 1024,
         }
         try:
-            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(180.0, connect=10.0)) as client:
                 response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}, json=payload)
             if response.status_code != 200 or "application/json" not in response.headers.get("content-type", "").lower():
                 raise RuntimeError
