@@ -97,6 +97,25 @@ def test_ark_key_endpoints_report_unconfigured_without_the_flag(tmp_path: Path, 
     assert summary.json() == {"configured": False, "has_key": False}
 
 
+def test_config_example_downloads_are_admin_only_and_valid(tmp_path: Path) -> None:
+    app, accounts = create_local_app(
+        port=45994,
+        data_dir=tmp_path / "data",
+        static_dir=tmp_path / "dist",
+        bootstrap_if_empty=True,
+    )
+    admin = TestClient(app, base_url=ORIGIN)
+    headers = _login(admin, accounts.admin_username, accounts.admin_password)
+    for kind in ("ark-key", "credential-pools", "asset-library"):
+        response = admin.get(f"/api/v1/admin/config-examples/{kind}", headers=headers)
+        assert response.status_code == 200, kind
+        assert response.headers["content-disposition"] == f'attachment; filename="{kind}.example.json"'
+        assert isinstance(response.json(), dict)
+    assert admin.get("/api/v1/admin/config-examples/unknown", headers=headers).status_code == 404
+    anonymous = TestClient(app, base_url=ORIGIN)
+    assert anonymous.get("/api/v1/admin/config-examples/ark-key").status_code != 200
+
+
 def test_ark_models_still_require_a_key_without_any_key_source(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ARK_API_KEY", raising=False)
     try:

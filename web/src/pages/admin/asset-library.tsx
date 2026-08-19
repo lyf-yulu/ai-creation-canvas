@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { ConfigExampleDownload } from "@/components/admin/config-example-download";
 import {
     fetchAdminAssetLibrary,
     fetchAdminAssetLibraryGroups,
@@ -86,6 +87,7 @@ export function AdminAssetLibraryContent({ fetchSummary = fetchAdminAssetLibrary
                 <h2 className="text-lg font-semibold">导入资产库 JSON</h2>
                 <p className="mt-1 text-xs text-[#86a991]">文件只会原样上传到服务端验证；页面不会读取、展示或保存任何凭据。</p>
                 <div className="mt-4 flex flex-wrap items-end gap-3">
+                    <ConfigExampleDownload kind="asset-library" />
                     <label className="text-sm text-[#b9d0c0]">
                         选择配置 JSON
                         <input

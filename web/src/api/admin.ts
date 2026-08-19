@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, csrfTokenForRequest, safeApiPath } from "./client";
 import type { ModelSpec, PortalSession } from "./contracts";
 
 
@@ -106,6 +106,18 @@ export const importAdminArkKey = (file: File) => {
     const body = new FormData();
     body.set("file", file, file.name);
     return apiFetch<AdminArkKey>("/api/v1/admin/ark-key/import", { method: "POST", body });
+};
+
+export const downloadAdminConfigExample = (kind: "ark-key" | "credential-pools" | "asset-library") => {
+    const path = safeApiPath(`/api/v1/admin/config-examples/${encodeURIComponent(kind)}`);
+    const headers = new Headers({ Accept: "application/json" });
+    const csrfToken = csrfTokenForRequest();
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    return fetch(path, { credentials: "same-origin", headers }).then(async (response) => {
+        if (!response.ok) throw new Error("config example download failed");
+        const filename = /^attachment;\s*filename="([A-Za-z0-9._-]+)"$/i.exec(response.headers.get("content-disposition") || "")?.[1] || `${kind}.example.json`;
+        return { blob: await response.blob(), filename };
+    });
 };
 
 type LifecycleKind = "enable" | "disable" | "archive" | "restore" | "purge-runtime";

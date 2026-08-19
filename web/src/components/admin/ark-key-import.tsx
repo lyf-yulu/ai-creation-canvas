@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import { importAdminArkKey, type AdminArkKey } from "@/api/admin";
+import { ConfigExampleDownload } from "@/components/admin/config-example-download";
 
 
 type Props = {
@@ -41,6 +42,7 @@ export function ArkKeyImport({ onImport = importAdminArkKey, onImported }: Props
             <h2 className="text-lg font-semibold">导入方舟生成 Key</h2>
             <p className="mt-1 text-xs text-[#86a991]">文件只会原样上传到服务端验证；页面不会读取、展示或保存 Key，导入后新任务立即生效，无需重启。</p>
             <div className="mt-4 flex flex-wrap items-end gap-3">
+                <ConfigExampleDownload kind="ark-key" />
                 <label className="text-sm text-[#b9d0c0]">
                     选择 Key JSON
                     <input

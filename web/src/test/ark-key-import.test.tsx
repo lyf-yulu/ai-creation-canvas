@@ -4,9 +4,26 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ArkKeyImport } from "@/components/admin/ark-key-import";
 
 
+vi.mock("file-saver", () => ({ saveAs: vi.fn() }));
+
 afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+});
+
+it("downloads the shipped example JSON for the operator", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        new Response(JSON.stringify({ version: 1, api_key: "replace-with-ark-api-key" }), {
+            status: 200,
+            headers: { "content-type": "application/json", "content-disposition": 'attachment; filename="ark-key.example.json"' },
+        }),
+    );
+    render(<ArkKeyImport />);
+    fireEvent.click(screen.getByRole("button", { name: "下载示例 JSON" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/config-examples/ark-key",
+        expect.objectContaining({ credentials: "same-origin" }),
+    ));
 });
 
 it("uploads the selected Ark key file without reading it", async () => {

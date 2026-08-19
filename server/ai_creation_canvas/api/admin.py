@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -14,13 +17,13 @@ from python_multipart.exceptions import MultipartParseError
 
 from ai_creation_canvas.api._common import context_for, problem
 from ai_creation_canvas.api.usage import all_usage_projection
-from ai_creation_canvas.asset_library_config import AssetLibraryConfigLoader
+from ai_creation_canvas.asset_library_config import AssetLibraryConfigLoader, parse_asset_library_config_json
 from ai_creation_canvas.asset_library_import import import_asset_library_config
-from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader
+from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader, parse_ark_key_config_json
 from ai_creation_canvas.ark_key_import import import_ark_key_config
 from ai_creation_canvas.auth.local import LocalAuthService
 from ai_creation_canvas.credential_pool_import import import_credential_pool_json
-from ai_creation_canvas.credential_pools import CredentialPoolLoader
+from ai_creation_canvas.credential_pools import CredentialPoolLoader, parse_credential_pool_json
 from ai_creation_canvas.domain.models import PortalRole
 from ai_creation_canvas.errors import InvalidUpstreamResult, PortalUpstreamError
 from ai_creation_canvas.domain.models import ModelInputPort, ModelOperation
@@ -1034,6 +1037,27 @@ async def import_ark_key(request: Request) -> dict[str, object]:
         if form is not None:
             await form.close()
     return await ark_key_summary(request)
+
+
+@router.get("/config-examples/{kind}")
+async def config_example(kind: str, request: Request) -> JSONResponse:
+    _require_admin(request)
+    if kind not in ("ark-key", "credential-pools", "asset-library"):
+        raise problem(request, "API_NOT_FOUND", "The requested API resource was not found.", status=404)
+    example_path = Path(__file__).resolve().parents[2] / "config" / f"{kind}.example.json"
+    try:
+        raw = example_path.read_bytes()
+    except OSError:
+        raise problem(request, "API_NOT_FOUND", "The requested API resource was not found.", status=404) from None
+    # The shipped example must always satisfy the corresponding import validator.
+    if kind == "ark-key":
+        parse_ark_key_config_json(raw)
+    elif kind == "credential-pools":
+        parse_credential_pool_json(raw)
+    else:
+        parse_asset_library_config_json(raw)
+    headers = {"Content-Disposition": f'attachment; filename="{kind}.example.json"'}
+    return JSONResponse(json.loads(raw.decode("utf-8")), headers=headers)
 
 
 @router.get("/asset-library/groups")
