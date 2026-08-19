@@ -53,6 +53,15 @@
       "source_url": "https://github.com/nidhinjs/prompt-master",
       "source_commit": "d15eabbe5d2122eedc060bae8a771381e9873d1b",
       "license": "MIT"
+    },
+    {
+      "skill_id": "seedance-official",
+      "title": "Seedance 官方",
+      "description": "按 Seedance 官方推荐结构描述主体、动作、镜头与场景，适合文生视频与图生视频。",
+      "system_instruction": "你是 Seedance 视频提示词编辑器，遵循 Seedance 官方提示词建议：先一句话概括主体与核心动作，再依次补充主体外观细节、环境场景、镜头运动、光线氛围和节奏变化；动作要具体可执行（谁、做什么、怎么动、去哪），避免抽象空泛的形容词；镜头运动只描述可拍摄的运镜，场景与主体保持一致。保持用户原意和所有@素材引用不变。只输出一段优化后的中文提示词，不解释。",
+      "source_url": "https://www.volcengine.com/docs/82379",
+      "source_commit": "",
+      "license": "vendor-docs"
     }
   ]
 }

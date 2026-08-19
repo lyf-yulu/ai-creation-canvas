@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from ai_creation_canvas.app import create_app
@@ -47,10 +48,35 @@ def test_skill_config_is_bounded_data_only(tmp_path: Path) -> None:
 def test_builtin_skill_catalog_has_pinned_distinct_visual_themes() -> None:
     config = Path(__file__).parents[2] / "server" / "config" / "prompt-skills.example.json"
     skills = load_prompt_skills(config, config.parent)
-    assert len(skills) == 6
-    assert len({item.skill_id for item in skills}) == 6
-    assert {item.skill_id for item in skills} >= {"photography-realism", "commercial-product", "cinematic-motion", "character-continuity", "graphic-poster"}
-    assert all(len(item.source_commit) == 40 and item.license == "MIT" for item in skills)
+    assert len(skills) == 7
+    assert len({item.skill_id for item in skills}) == 7
+    assert {item.skill_id for item in skills} >= {"photography-realism", "commercial-product", "cinematic-motion", "character-continuity", "graphic-poster", "seedance-official"}
+    open_source = [item for item in skills if item.skill_id != "seedance-official"]
+    assert all(len(item.source_commit) == 40 and item.license == "MIT" for item in open_source)
+    seedance = next(item for item in skills if item.skill_id == "seedance-official")
+    assert seedance.source_url.startswith("https://www.volcengine.com/docs/")
+    assert seedance.source_commit == "" and seedance.license == "vendor-docs"
+
+
+def test_vendor_docs_sources_require_empty_commit_and_vendor_license(tmp_path: Path) -> None:
+    config = tmp_path / "skills.json"
+    config.write_text(json.dumps({"skills": [{
+        "skill_id": "seedance-official", "title": "Seedance 官方", "description": "官方结构",
+        "system_instruction": "只输出优化后的提示词。",
+        "source_url": "https://www.volcengine.com/docs/82379", "source_commit": "", "license": "vendor-docs",
+    }]}), encoding="utf-8")
+    assert [item.skill_id for item in load_prompt_skills(config, tmp_path)] == ["seedance-official"]
+    payload = json.loads(config.read_text())
+    payload["skills"][0]["source_commit"] = "a" * 40
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid"):
+        load_prompt_skills(config, tmp_path)
+    payload = json.loads(config.read_text())
+    payload["skills"][0]["source_commit"] = ""
+    payload["skills"][0]["license"] = "MIT"
+    config.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid"):
+        load_prompt_skills(config, tmp_path)
 
 
 def test_catalog_marks_skills_unavailable_without_admin_text_model(tmp_path: Path) -> None:

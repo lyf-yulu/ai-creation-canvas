@@ -10,7 +10,7 @@ AI 创作画布将 Infinite Canvas 的无限画布交互，与受控 Portal 内�
 | 本地演示图片 | 完全离线的固定演示结果，不联网不付费 | 无 |
 | Seedream 图片生成 / 编辑 | 4 个官方模型，支持参考图、组图 | 火山方舟 `ARK_API_KEY` |
 | Seedance 视频生成 | 文本视频、图片参考视频 | 火山方舟 `ARK_API_KEY` |
-| 提示词优化 Skill | 内置 6 个 Skill，“预览后应用” | 方舟文本模型 ID（`AICC_PROMPT_SKILL_MODEL`） |
+| 提示词优化 Skill | 内置 7 个 Skill（含 Seedance 官方），“预览后应用” | 方舟文本模型 ID（`AICC_PROMPT_SKILL_MODEL`） |
 | 多供应商调用线路 | Banana、GPT-Image2、Seedream、Seedance 凭据池 | 凭据池 JSON（管理页导入） |
 | 人像资产库 | 虚拟人图片 → 方舟私域资产库 → Seedance 视频 | 方舟 OpenAPI AK/SK + TOS AK/SK |
 | ComfyUI 工作流库 | 导入 / 预览 / 导出工作流并派发给用户 | ComfyUI 服务声明 JSON |
@@ -89,7 +89,7 @@ ARK_API_KEY=你的方舟APIKey bash scripts/run-real-media-local.sh
 
 ### 2. 提示词优化 Skill（方舟文本模型）
 
-提示词节点内置 6 个优化 Skill（精准结构、摄影写实、商业产品、电影动态、角色连续性、平面海报），采用“预览后应用”流程。
+提示词节点内置 7 个优化 Skill（精准结构、摄影写实、商业产品、电影动态、角色连续性、平面海报、Seedance 官方），采用“预览后应用”流程。
 
 - **默认只展示、不可执行**。管理员设置文本模型后才启用调用：
 

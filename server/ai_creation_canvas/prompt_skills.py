@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import httpx
 
@@ -15,6 +15,9 @@ _SKILL_ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_CONFIG_BYTES = 64 * 1024
 _FIELDS = {"skill_id", "title", "description", "system_instruction", "source_url", "source_commit", "license"}
+_GITHUB_PREFIX = "https://github.com/"
+_VENDOR_DOCS_PREFIX = "https://www.volcengine.com/docs/"
+_OPEN_LICENSES = {"MIT", "Apache-2.0", "CC0-1.0"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,15 +57,20 @@ def load_prompt_skills(path: Path | str, root: Path | str) -> tuple[PromptSkill,
         values = {name: item[name] for name in _FIELDS}
         if any(not isinstance(value, str) for value in values.values()):
             raise ValueError("prompt skills configuration is invalid")
+        source_url = values["source_url"]
+        from_github = source_url.startswith(_GITHUB_PREFIX)
+        from_vendor_docs = source_url.startswith(_VENDOR_DOCS_PREFIX)
         if (
             not _SKILL_ID.fullmatch(values["skill_id"])
             or not 1 <= len(values["title"]) <= 80
             or not 1 <= len(values["description"]) <= 240
             or not 1 <= len(values["system_instruction"]) <= 2000
-            or not values["source_url"].startswith("https://github.com/")
-            or len(values["source_url"]) > 240
-            or not _COMMIT.fullmatch(values["source_commit"])
-            or values["license"] not in {"MIT", "Apache-2.0", "CC0-1.0"}
+            or not (from_github or from_vendor_docs)
+            or len(source_url) > 240
+            or from_github and not _COMMIT.fullmatch(values["source_commit"])
+            or from_vendor_docs and values["source_commit"] != ""
+            or from_github and values["license"] not in _OPEN_LICENSES
+            or from_vendor_docs and values["license"] != "vendor-docs"
             or any(char in values["title"] + values["description"] for char in "<>")
         ):
             raise ValueError("prompt skills configuration is invalid")
@@ -75,15 +83,16 @@ def load_prompt_skills(path: Path | str, root: Path | str) -> tuple[PromptSkill,
 class PromptSkillService:
     endpoint = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 
-    def __init__(self, skills: tuple[PromptSkill, ...], *, model_id: str | None = None, api_key: str | None = None, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(self, skills: tuple[PromptSkill, ...], *, model_id: str | None = None, api_key: str | Callable[[], str] | None = None, transport: httpx.AsyncBaseTransport | None = None) -> None:
         if not skills:
             raise ValueError("prompt skills are required")
         if (model_id is None) != (api_key is None):
             raise ValueError("prompt skill model and key must be configured together")
-        if model_id is not None and (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", model_id) or not isinstance(api_key, str) or len(api_key) < 8):
+        if model_id is not None and (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", model_id) or not (callable(api_key) or (isinstance(api_key, str) and len(api_key) >= 8))):
             raise ValueError("prompt skill service configuration is invalid")
         self._skills = {item.skill_id: item for item in skills}
-        self._model_id, self._api_key, self._transport = model_id, api_key, transport
+        self._model_id, self._transport = model_id, transport
+        self._api_key = api_key if callable(api_key) else (lambda: api_key)
 
     @property
     def available(self) -> bool:
@@ -112,7 +121,7 @@ class PromptSkillService:
         }
         try:
             async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-                response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}, json=payload)
+                response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}, json=payload)
             if response.status_code != 200 or "application/json" not in response.headers.get("content-type", "").lower():
                 raise RuntimeError
             body = response.json()

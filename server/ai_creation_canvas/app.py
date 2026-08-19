@@ -139,25 +139,25 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         registry = AdapterRegistry()
     if settings.identity_mode == "local" and settings.enable_demo_adapter:
         registry.register_generation(DemoGenerationAdapter())
+    import os
+    ark_key_loader = None
+    if settings.ark_key_config_path is not None:
+        from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader
+        ark_key_loader = ArkKeyConfigLoader(settings.ark_key_config_path)
+
+    def ark_api_key() -> str:
+        if ark_key_loader is not None:
+            try:
+                imported = ark_key_loader.current_key()
+            except ValueError:
+                imported = None
+            if imported:
+                return imported
+        return os.environ.get("ARK_API_KEY", "")
+
+    app.state.ark_key_loader = ark_key_loader
     if settings.enable_ark_adapter:
-        import os
         assert settings.ark_models_config_path is not None and settings.ark_models_config_root is not None
-        ark_key_loader = None
-        if settings.ark_key_config_path is not None:
-            from ai_creation_canvas.ark_key_config import ArkKeyConfigLoader
-            ark_key_loader = ArkKeyConfigLoader(settings.ark_key_config_path)
-
-        def ark_api_key() -> str:
-            if ark_key_loader is not None:
-                try:
-                    imported = ark_key_loader.current_key()
-                except ValueError:
-                    imported = None
-                if imported:
-                    return imported
-            return os.environ.get("ARK_API_KEY", "")
-
-        app.state.ark_key_loader = ark_key_loader
         if ark_key_loader is None and not ark_api_key():
             raise ValueError("ARK_API_KEY is required when real Ark media is enabled")
         for adapter in build_ark_adapters(api_key=ark_api_key, data_dir=settings.data_dir, config_path=settings.ark_models_config_path, config_root=settings.ark_models_config_root):
@@ -214,7 +214,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         prompt_skill_service = PromptSkillService(
             load_prompt_skills(skill_path, skill_path.parent),
             model_id=settings.prompt_skill_model_id,
-            api_key=os.environ.get("ARK_API_KEY") if settings.prompt_skill_model_id else None,
+            api_key=ark_api_key if settings.prompt_skill_model_id else None,
         )
     app.state.prompt_skill_service = prompt_skill_service
     if execution_coordinator is None:
