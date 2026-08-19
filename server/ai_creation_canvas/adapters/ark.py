@@ -326,7 +326,7 @@ class ArkGenerationAdapter:
     ) -> httpx.Response:
         submission_error: SubmissionError | None = None
         try:
-            async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(180), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(600), follow_redirects=False, trust_env=False) as client:
                 kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}}
                 if json is not None:
                     kwargs["json"] = json
@@ -437,7 +437,7 @@ class ArkGenerationAdapter:
             mime = json.loads(metadata.read_text(encoding="utf-8"))["mime"]
             return AssetRef(result_id, "reference", "active", mime)
         try:
-            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(60), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(600), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("GET", url, headers={}) as response:
                     if response.status_code != 200:
                         raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=response.status_code >= 500 or response.status_code in {408, 429}, status_code=response.status_code)

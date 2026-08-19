@@ -169,7 +169,7 @@ class ChiyunGeminiGenerationAdapter:
     async def _post(self, model_name: str, payload: Mapping[str, object]) -> Mapping[str, object]:
         path = f"/v1beta/models/{quote(model_name, safe='')}:generateContent"
         try:
-            async with httpx.AsyncClient(base_url=self._provider.base_url, transport=self._transport, timeout=httpx.Timeout(180, connect=10), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(base_url=self._provider.base_url, transport=self._transport, timeout=httpx.Timeout(600, connect=10), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", path, headers={"Authorization": f"Bearer {self._api_key}"}, json=payload) as response:
                     if not 200 <= response.status_code < 300:
                         body = await response.aread()

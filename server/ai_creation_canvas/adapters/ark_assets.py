@@ -248,7 +248,7 @@ class ArkAssetLibraryAdapter:
                     now=self._now(),
                 )
                 try:
-                    async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(60), follow_redirects=False, trust_env=False) as client:
+                    async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(600), follow_redirects=False, trust_env=False) as client:
                         response = await client.put(f"https://{signed['Host']}/{quote(object_key, safe='/')}", headers=signed, content=body)
                 except httpx.HTTPError as error:
                     raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error
@@ -361,7 +361,7 @@ class ArkAssetLibraryAdapter:
         )
         headers["Authorization"] = authorization
         try:
-            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(transport=self._transport, timeout=httpx.Timeout(600), follow_redirects=False, trust_env=False) as client:
                 response = await client.post(f"https://{_HOST}/?{query}", headers=headers, content=body)
         except httpx.HTTPError as error:
             raise PortalUpstreamError("UPSTREAM_UNAVAILABLE", retryable=True) from error

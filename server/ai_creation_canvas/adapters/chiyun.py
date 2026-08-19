@@ -216,7 +216,7 @@ class ChiyunGenerationAdapter:
     async def _post(self, data: Mapping[str, str], files: list[tuple[str, tuple[str, bytes, str]]]) -> Mapping[str, object]:
         submission_error: SubmissionError | None = None
         try:
-            async with httpx.AsyncClient(base_url=self._provider.base_url, transport=self._transport, timeout=httpx.Timeout(180, connect=10), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(base_url=self._provider.base_url, transport=self._transport, timeout=httpx.Timeout(600, connect=10), follow_redirects=False, trust_env=False) as client:
                 async with client.stream("POST", "/v1/images/edits", headers={"Authorization": f"Bearer {self._api_key}"}, data=data, files=files) as response:
                     if not 200 <= response.status_code < 300:
                         error_body = bytearray()
