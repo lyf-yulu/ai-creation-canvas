@@ -19,6 +19,11 @@ import yaml
 _MAX_POOL_FILE_BYTES = 1024 * 1024
 
 
+def _without_utf8_bom(text: str) -> str:
+    """Strip a leading byte-order mark, which Windows Notepad adds to UTF-8 files."""
+    return text.removeprefix("\ufeff")
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class CredentialKey:
     key_id: str
@@ -264,7 +269,7 @@ def parse_credential_pool_json(raw: bytes) -> CredentialPoolSnapshot:
     if not isinstance(raw, bytes) or len(raw) > _MAX_POOL_FILE_BYTES:
         raise _invalid_configuration()
     try:
-        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        payload = json.loads(_without_utf8_bom(raw.decode("utf-8")), object_pairs_hook=_unique_json_object)
         document = _CredentialPoolsInput.model_validate(payload)
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         raise _invalid_configuration() from None

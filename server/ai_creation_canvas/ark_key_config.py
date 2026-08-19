@@ -41,7 +41,7 @@ def parse_ark_key_config_json(raw: bytes) -> ArkKeyConfig:
     if not raw or len(raw) > _MAX_CONFIG_BYTES:
         raise _invalid_configuration()
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8").removeprefix("\ufeff"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise _invalid_configuration() from error
     if not isinstance(document, dict):

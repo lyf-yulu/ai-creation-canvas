@@ -133,7 +133,7 @@ def parse_asset_library_config_json(raw: bytes) -> AssetLibraryConfig:
     if not isinstance(raw, bytes) or len(raw) > _MAX_CONFIG_BYTES:
         raise _invalid_configuration()
     try:
-        payload = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+        payload = json.loads(raw.decode("utf-8").removeprefix("\ufeff"), object_pairs_hook=_unique_json_object)
         document = _AssetLibraryConfigInput.model_validate(payload)
     except (UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         raise _invalid_configuration() from None

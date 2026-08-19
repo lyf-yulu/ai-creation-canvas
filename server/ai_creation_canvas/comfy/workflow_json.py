@@ -137,7 +137,7 @@ def _decode_json_object(raw: bytes, *, max_bytes: int) -> dict[str, Any]:
     if not isinstance(raw, bytes) or len(raw) > max_bytes:
         raise WorkflowValidationError("WORKFLOW_SIZE_EXCEEDED")
     try:
-        decoded = raw.decode("utf-8")
+        decoded = raw.decode("utf-8").removeprefix("\ufeff")
     except UnicodeDecodeError as error:
         raise WorkflowValidationError("WORKFLOW_ENCODING_INVALID") from error
     try:

@@ -75,6 +75,29 @@ def test_credential_pools_and_asset_library_can_be_configured_together(tmp_path:
     assert {item for item in runtime.pools()} == {"seedream-ark", "seedance-ark"}
 
 
+def test_import_parsers_tolerate_a_utf8_bom() -> None:
+    """Windows Notepad saves UTF-8 files with a BOM; imports must still parse."""
+    from ai_creation_canvas.ark_key_config import parse_ark_key_config_json
+    from ai_creation_canvas.asset_library_config import parse_asset_library_config_json
+    from ai_creation_canvas.comfy.workflow_json import parse_workflow_json
+    from ai_creation_canvas.credential_pools import parse_credential_pool_json
+    bom = "﻿"
+    parse_credential_pool_json((bom + json.dumps(EXAMPLE_POOLS)).encode("utf-8"))
+    parse_ark_key_config_json((bom + json.dumps({"version": 1, "api_key": "replace-with-api-key"})).encode("utf-8"))
+    parse_asset_library_config_json((bom + json.dumps({
+        "version": 1,
+        "ark_access_key": "replace-with-ark-access-key",
+        "ark_secret_key": "replace-with-ark-secret-key",
+        "tos_access_key": "replace-with-tos-access-key",
+        "tos_secret_key": "replace-with-tos-secret-key",
+        "tos_bucket": "replace-with-tos-bucket",
+        "tos_region": "cn-beijing",
+        "project_name": "Seedance2.0",
+    })).encode("utf-8"))
+    workflow = Path(__file__).resolve().parents[2] / "server" / "config" / "comfy-workflow.example.json"
+    parse_workflow_json((bom + workflow.read_text(encoding="utf-8")).encode("utf-8"))
+
+
 def test_serve_local_with_credential_pools_wires_runtime_providers_and_import(tmp_path: Path) -> None:
     root = tmp_path / "config"
     root.mkdir()
