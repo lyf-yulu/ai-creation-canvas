@@ -105,6 +105,12 @@ def test_example_catalog_declares_current_official_ark_model_matrix() -> None:
     assert lite.parameter_mappings["max_images"] == "sequential_image_generation_options.max_images"
     assert old.parameter_schema["properties"]["prompt_optimization"]["enum"] == ["standard", "fast"]
 
+    assert pro.parameter_mappings["ratio"] == "ratio"
+    assert pro.parameter_schema["properties"]["ratio"]["enum"] == ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"]
+    assert pro.parameter_schema["properties"]["ratio"]["default"] == "1:1"
+    assert "ratio" not in lite.parameter_schema["properties"]
+    assert "ratio" not in old.parameter_schema["properties"]
+
     seedance_25 = declarations["doubao-seedance-2-5-260628"]
     seedance_20 = declarations["doubao-seedance-2-0-260128"]
     seedance_fast = declarations["doubao-seedance-2-0-fast-260128"]

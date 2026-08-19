@@ -118,6 +118,18 @@ def _factory(tmp_path: Path, requests: list[httpx.Request]) -> RouteAdapterFacto
             {"model": "ep-provider-2026", "prompt": "make it", "n": 2, "response_format": "url"},
         ),
         (
+            ModelOperation.IMAGE_GENERATE,
+            (ModelInputPort("prompt", "text", 1, 1),),
+            {
+                "size": {"type": "string", "default": "2K", "x-ark-size": {"presets": ["1K", "1.5K", "2K"], "min_pixels": 921600, "max_pixels": 4624220, "min_ratio": 0.0625, "max_ratio": 16}},
+                "ratio": {"type": "string", "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1"},
+            },
+            {"size": "size", "ratio": "ratio"},
+            {"size": "1.5K", "ratio": "16:9"},
+            "/api/v3/images/generations",
+            {"model": "ep-provider-2026", "prompt": "make it，宽高比为16:9", "size": "1.5K", "response_format": "url"},
+        ),
+        (
             ModelOperation.IMAGE_EDIT,
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 14)),
             {"watermark": {"type": "boolean", "default": False}},
@@ -326,6 +338,16 @@ def test_route_factory_rejects_parameter_contracts_that_widen_trusted_templates(
         properties={"ratio": {"type": "string", "enum": ["16:9", "cinema"], "default": "16:9"}},
         mappings={"ratio": "ratio"},
     ))
+    widened_image_ratio = _route(contract=_contract(
+        ModelOperation.IMAGE_GENERATE,
+        properties={"ratio": {"type": "string", "enum": ["1:1", "16:9", "5:4"], "default": "1:1"}},
+        mappings={"ratio": "ratio"},
+    ))
+    image_ratio_missing_default = _route(contract=_contract(
+        ModelOperation.IMAGE_GENERATE,
+        properties={"ratio": {"type": "string", "enum": ["1:1", "16:9"]}},
+        mappings={"ratio": "ratio"},
+    ))
     missing_required = _route(
         provider_id="chiyun",
         adapter_type="chiyun_openai_images",
@@ -353,7 +375,7 @@ def test_route_factory_rejects_parameter_contracts_that_widen_trusted_templates(
             required=["size", "output_count"],
         ),
     )
-    for route in (chiyun, ark_video, ark_image, wrong_default, widened_enum, missing_required, wrong_chiyun_default):
+    for route in (chiyun, ark_video, ark_image, wrong_default, widened_enum, widened_image_ratio, image_ratio_missing_default, missing_required, wrong_chiyun_default):
         with pytest.raises(ValueError, match="parameter"):
             factory.build(route, _lease(route.route_id))
 
@@ -376,5 +398,21 @@ def test_route_factory_accepts_exact_and_strict_parameter_subsets(tmp_path: Path
         },
         mappings={"ratio": "ratio", "duration": "duration"},
     ))
+    image_ratio_exact = _route(route_id="route-image-ratio", contract=_contract(
+        ModelOperation.IMAGE_GENERATE,
+        properties={
+            "ratio": {"type": "string", "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1"},
+        },
+        mappings={"ratio": "ratio"},
+    ))
+    image_ratio_subset = _route(route_id="route-image-ratio-subset", contract=_contract(
+        ModelOperation.IMAGE_GENERATE,
+        properties={
+            "ratio": {"type": "string", "enum": ["1:1", "16:9"], "default": "1:1"},
+        },
+        mappings={"ratio": "ratio"},
+    ))
     assert isinstance(factory.build(exact, _lease(exact.route_id)), ArkGenerationAdapter)
     assert isinstance(factory.build(subset, _lease(subset.route_id)), ArkGenerationAdapter)
+    assert isinstance(factory.build(image_ratio_exact, _lease(image_ratio_exact.route_id)), ArkGenerationAdapter)
+    assert isinstance(factory.build(image_ratio_subset, _lease(image_ratio_subset.route_id)), ArkGenerationAdapter)

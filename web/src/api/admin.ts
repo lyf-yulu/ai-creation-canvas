@@ -123,6 +123,31 @@ export const downloadAdminConfigExample = (kind: "ark-key" | "credential-pools" 
     });
 };
 
+export type AdminLogFile = { name: string; size: number; mtime: number };
+export type AdminLogContent = { file: string; lines: number; window_total: number; truncated: boolean; log_lines: string[] };
+
+export const fetchAdminLogFiles = async () => (await apiFetch<{ files: AdminLogFile[] }>("/api/v1/admin/logs/files")).files;
+
+export const fetchAdminLogContent = (file: string, opts: { lines?: number; level?: string; q?: string } = {}) => {
+    const params = new URLSearchParams({ file });
+    if (opts.lines !== undefined) params.set("lines", String(opts.lines));
+    if (opts.level) params.set("level", opts.level);
+    if (opts.q) params.set("q", opts.q);
+    return apiFetch<AdminLogContent>(`/api/v1/admin/logs/content?${params.toString()}`);
+};
+
+export const downloadAdminLog = (name: string) => {
+    const path = safeApiPath(`/api/v1/admin/logs/download?file=${encodeURIComponent(name)}`);
+    const headers = new Headers({ Accept: "text/plain" });
+    const csrfToken = csrfTokenForRequest();
+    if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    return fetch(path, { credentials: "same-origin", headers }).then(async (response) => {
+        if (!response.ok) throw new Error("log download failed");
+        const filename = /^attachment;\s*filename="([A-Za-z0-9._-]+)"$/i.exec(response.headers.get("content-disposition") || "")?.[1] || name;
+        return { blob: await response.blob(), filename };
+    });
+};
+
 type LifecycleKind = "enable" | "disable" | "archive" | "restore" | "purge-runtime";
 const lifecycle = <T>(path: string, revision: number) => apiFetch<T>(path, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ revision }) });
 export const changeAdminLogicalModelLifecycle = (modelId: string, action: LifecycleKind, revision: number) => lifecycle<AdminLogicalModel>(`/api/v1/admin/logical-models/${encodeURIComponent(modelId)}/${action}`, revision);

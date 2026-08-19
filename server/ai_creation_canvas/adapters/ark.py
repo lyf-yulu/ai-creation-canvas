@@ -167,10 +167,12 @@ class ArkGenerationAdapter:
         params = self._validated_params(declaration, request.params)
         provider_params = _compile_provider_parameters(declaration.parameter_mappings, params)
         if request.operation in {ModelOperation.IMAGE_GENERATE, ModelOperation.IMAGE_EDIT}:
+            ratio = provider_params.pop("ratio", None)
+            prompt = f"{request.prompt}，宽高比为{ratio}" if ratio is not None else request.prompt
             references = self._image_references(declaration, request)
             if request.operation is ModelOperation.IMAGE_EDIT and not references or request.operation is ModelOperation.IMAGE_GENERATE and references:
                 raise ValueError("Ark image operation does not match its inputs")
-            payload = {"model": declaration.provider_model_name, "prompt": request.prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
+            payload = {"model": declaration.provider_model_name, "prompt": prompt, **({"image": references} if references else {}), **provider_params, "response_format": "url"}
             response = await self._api(
                 "POST",
                 "/api/v3/images/generations",

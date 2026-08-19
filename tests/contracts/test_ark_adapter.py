@@ -123,6 +123,96 @@ def test_ark_adapter_maps_seedream_image_and_keeps_key_server_side(tmp_path: Pat
     asyncio.run(scenario())
 
 
+def test_ark_image_ratio_goes_into_prompt_and_never_into_body(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "image-endpoint", "ark-image", "Seedream", ("image.generate",),
+            {
+                "type": "object",
+                "properties": {
+                    "size": {"type": "string", "default": "2K", "x-ark-size": {"presets": ["1K", "1.5K", "2K"], "min_pixels": 921600, "max_pixels": 4624220, "min_ratio": 0.0625, "max_ratio": 16}},
+                    "ratio": {"type": "string", "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1"},
+                },
+                "additionalProperties": False,
+            },
+            parameter_mappings={"size": "size", "ratio": "ratio"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler))
+        await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "a tiny green robot", "with-ratio", {"size": "2K", "ratio": "16:9"}))
+        await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "a tiny green robot", "without-ratio", {"size": "1K"}))
+
+    asyncio.run(scenario())
+    assert payloads == [
+        {"model": "image-endpoint", "prompt": "a tiny green robot，宽高比为16:9", "size": "2K", "response_format": "url"},
+        {"model": "image-endpoint", "prompt": "a tiny green robot", "size": "1K", "response_format": "url"},
+    ]
+
+
+def test_ark_image_edit_ratio_suffix_applies_with_reference_images(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+    from ai_creation_canvas.domain.models import ModelInputPort
+
+    payloads: list[dict[str, object]] = []
+    assets = {"ref-a": (b"first", "image/png")}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://download.volces.com/image.png"}]})
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "image-endpoint", "ark-image", "Seedream", ("image.generate", "image.edit"),
+            {
+                "type": "object",
+                "properties": {
+                    "size": {"type": "string"},
+                    "ratio": {"type": "string", "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1"},
+                },
+                "additionalProperties": False,
+            },
+            (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 0, 14)),
+            {"size": "size", "ratio": "ratio"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: assets[asset_id])
+        await adapter.submit(context(), JobRequest("image.edit", "image-endpoint", "combine", "edit-ratio", {"size": "2K", "ratio": "9:16"}, inputs={"reference_images": ("ref-a",)}))
+
+    asyncio.run(scenario())
+    assert payloads == [{
+        "model": "image-endpoint", "prompt": "combine，宽高比为9:16",
+        "image": ["data:image/png;base64,Zmlyc3Q="], "size": "2K", "response_format": "url",
+    }]
+
+
+def test_ark_image_ratio_rejects_values_outside_the_trusted_enum(tmp_path: Path) -> None:
+    from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
+
+    async def scenario() -> None:
+        declaration = ArkModelDeclaration(
+            "image-endpoint", "ark-image", "Seedream", ("image.generate",),
+            {
+                "type": "object",
+                "properties": {
+                    "ratio": {"type": "string", "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], "default": "1:1"},
+                },
+                "additionalProperties": False,
+            },
+            parameter_mappings={"ratio": "ratio"},
+        )
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(lambda request: httpx.Response(500)))
+        with pytest.raises(ValueError):
+            await adapter.submit(context(), JobRequest("image.generate", "image-endpoint", "prompt", "bad-ratio", {"ratio": "5:4"}))
+
+    asyncio.run(scenario())
+
+
 def test_ark_seedream_preserves_a_bounded_multi_result_response(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
 

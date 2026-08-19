@@ -21,6 +21,7 @@ function validateParameter(control: ReturnType<typeof parameterControls>[number]
     if (value === undefined) return !control.required;
     if (control.type === "enum") return control.enum?.some((candidate) => Object.is(candidate, value)) === true;
     if (control.type === "string") return typeof value === "string";
+    if (control.type === "preset") return typeof value === "string";
     if (control.type === "boolean") return typeof value === "boolean";
     return typeof value === "number" && Number.isFinite(value) && (control.type !== "integer" || Number.isInteger(value))
         && (control.minimum === undefined || value >= control.minimum) && (control.maximum === undefined || value <= control.maximum);

@@ -20,6 +20,7 @@ from ai_creation_canvas.app import create_app
 from ai_creation_canvas.auth.local import BootstrapResult, LocalAuthService
 from ai_creation_canvas.config import Settings, is_within_production_repository, load_comfyui_service_declarations
 from ai_creation_canvas.domain.models import PortalRole
+from ai_creation_canvas.logging_setup import configure_logging
 from ai_creation_canvas.storage.sqlite import CanvasStore
 
 
@@ -315,7 +316,8 @@ def _run_serve_local(argv: list[str]) -> None:
         async def open_after_startup() -> None:
             threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
         app.router.on_startup.append(open_after_startup)
-    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
+    configure_logging(args.data_dir)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, log_config=None)
 
 
 def _arguments() -> argparse.Namespace:
@@ -394,7 +396,8 @@ def main() -> None:
     if args.check_config:
         print(" ".join(adapter.service_id for adapter in app.state.adapter_registry.generation_adapters()))
         return
-    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
+    configure_logging(settings.data_dir)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, log_config=None)
 
 
 if __name__ == "__main__":

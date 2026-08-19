@@ -24,6 +24,7 @@
       ],
       "parameter_mappings": {
         "size": "size",
+        "ratio": "ratio",
         "output_format": "output_format",
         "prompt_optimization": "optimize_prompt_options.mode",
         "watermark": "watermark"
@@ -47,6 +48,21 @@
               "min_ratio": 0.0625,
               "max_ratio": 16
             }
+          },
+          "ratio": {
+            "type": "string",
+            "enum": [
+              "1:1",
+              "4:3",
+              "3:4",
+              "16:9",
+              "9:16",
+              "3:2",
+              "2:3",
+              "21:9"
+            ],
+            "default": "1:1",
+            "title": "比例"
           },
           "output_format": {
             "type": "string",

@@ -29,7 +29,7 @@ _CODE_OWNED_PROTOCOLS = frozenset({
 })
 _PROTOCOL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _ARK_IMAGE_TARGETS = frozenset({
-    "size", "quality", "n", "strength", "watermark", "output_format",
+    "size", "ratio", "quality", "n", "strength", "watermark", "output_format",
     "optimize_prompt_options.mode", "sequential_image_generation",
     "sequential_image_generation_options.max_images",
 })
@@ -38,6 +38,7 @@ _ARK_VIDEO_TARGETS = frozenset({
     "return_last_frame", "output_format", "watermark",
 })
 _RATIO_VALUES = ("adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
+_ARK_IMAGE_RATIO_VALUES = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9")
 _ARK_SIZE_RULE = {
     "type": "string",
     "default": "2K",
@@ -49,8 +50,14 @@ _ARK_SIZE_RULE = {
         "max_ratio": 16,
     },
 }
+_ARK_IMAGE_RATIO_RULE = {
+    "type": "string",
+    "enum": list(_ARK_IMAGE_RATIO_VALUES),
+    "default": "1:1",
+}
 _ARK_IMAGE_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
     "size": ("size", _ARK_SIZE_RULE),
+    "ratio": ("ratio", _ARK_IMAGE_RATIO_RULE),
     "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 15, "default": 1}),
     "watermark": ("watermark", {"type": "boolean", "default": False}),
     "output_format": ("output_format", {"type": "string", "enum": ["png", "jpeg"], "default": "png"}),

@@ -40,6 +40,7 @@ it("shows administrator destinations only to an administrator", () => {
     expect(screen.getAllByRole("link", { name: "账号管理" })).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "模型派发" })).toHaveLength(2);
     expect(screen.getAllByRole("link", { name: "使用统计" })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: "后台日志" })).toHaveLength(2);
 
     useSessionStore.setState({ session: { user_id: "user-1", username: "普通用户", role: "user", must_change_password: false } });
     rerender(<MemoryRouter><ProductShell><div /></ProductShell></MemoryRouter>);
@@ -47,6 +48,7 @@ it("shows administrator destinations only to an administrator", () => {
     expect(screen.queryByRole("link", { name: "账号管理" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "模型派发" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "使用统计" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "后台日志" })).not.toBeInTheDocument();
 });
 
 it("hides the ComfyUI library destination from ordinary users without requesting admin APIs", () => {

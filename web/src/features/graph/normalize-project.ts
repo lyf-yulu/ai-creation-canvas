@@ -160,7 +160,7 @@ function normalizeGraphMetadata(node: CanvasNodeInput, metadata?: CanvasNodeInpu
             operation: metadata.graph.operation,
             inputPorts: metadata.graph.inputPortIds.map(graphInputPortDescriptor),
             outputPortId: metadata.graph.outputPortId,
-            parameters: { ...metadata.graph.parameters },
+            parameters: pruneModelParameters(metadata.graph.modelId, { ...metadata.graph.parameters }),
         };
     }
     if (isLegacyGraphResultMetadata(metadata?.graph)) {
@@ -317,6 +317,16 @@ function isParameterRecord(value: unknown): value is Record<string, GraphParamet
     return Boolean(value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => item === null || typeof item === "string" || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))));
 }
 
+const KNOWN_MODEL_PARAMETERS: Readonly<Record<string, ReadonlySet<string>>> = {
+    "demo-image-v1": new Set(["size", "ratio"]),
+};
+
+function pruneModelParameters(modelId: string, parameters: Record<string, GraphParameterValue>): Record<string, GraphParameterValue> {
+    const allowed = KNOWN_MODEL_PARAMETERS[modelId];
+    if (!allowed) return { ...parameters };
+    return Object.fromEntries(Object.entries(parameters).filter(([name]) => allowed.has(name)));
+}
+
 function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeMetadata {
     if (metadata.role === "media-collection") return { ...metadata, items: metadata.items.map((item) => ({ ...item })) };
     if (metadata.role === "model") return {
@@ -326,7 +336,7 @@ function cloneGraphMetadata(metadata: CanvasGraphNodeMetadata): CanvasGraphNodeM
         operation: metadata.operation,
         inputPorts: metadata.inputPorts.map(projectGraphInputPortDescriptor),
         outputPortId: metadata.outputPortId,
-        parameters: { ...metadata.parameters },
+        parameters: pruneModelParameters(metadata.modelId, metadata.parameters),
     };
     if (metadata.role === "comfy-workflow") return {
         schemaVersion: GRAPH_SCHEMA_VERSION,

@@ -1,4 +1,4 @@
-import { BarChart3, Boxes, FolderKanban, Images, KeyRound, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
+import { BarChart3, Boxes, FileText, FolderKanban, Images, KeyRound, LogOut, Orbit, Rows3, SlidersHorizontal, Users } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
@@ -20,6 +20,7 @@ const adminNavigation = [
     { label: "工作流库", to: "/admin/comfy-workflows", icon: Boxes },
     { label: "人像资产库", to: "/admin/asset-library", icon: Images },
     { label: "使用统计", to: "/admin/usage", icon: BarChart3 },
+    { label: "后台日志", to: "/admin/logs", icon: FileText },
 ] as const;
 
 export function ProductShell({ children }: { children: ReactNode }) {

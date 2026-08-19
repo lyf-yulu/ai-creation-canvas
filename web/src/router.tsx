@@ -14,6 +14,7 @@ import AdminUsersPage from "@/pages/admin/users";
 import AdminUsagePage from "@/pages/admin/usage";
 import AdminComfyWorkflowsPage from "@/pages/admin/comfy-workflows";
 import AdminAssetLibraryPage from "@/pages/admin/asset-library";
+import AdminLogsPage from "@/pages/admin/logs";
 import UsagePage from "@/pages/usage";
 
 export const router = createBrowserRouter([
@@ -33,6 +34,7 @@ export const router = createBrowserRouter([
             { path: "/admin/comfy-workflows", element: <RoleGate allowed={["admin"]}><AdminComfyWorkflowsPage /></RoleGate> },
             { path: "/admin/usage", element: <RoleGate allowed={["admin"]}><AdminUsagePage /></RoleGate> },
             { path: "/admin/asset-library", element: <RoleGate allowed={["admin"]}><AdminAssetLibraryPage /></RoleGate> },
+            { path: "/admin/logs", element: <RoleGate allowed={["admin"]}><AdminLogsPage /></RoleGate> },
         ],
     },
     { path: "*", element: <NotFound /> },

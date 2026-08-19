@@ -12,11 +12,12 @@ const size = { type: "string", default: "2K", title: "尺寸", description: "可
 
 const arkImageProperties = {
     size,
+    ratio: { type: "string", enum: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"], default: "1:1", title: "比例" },
     output_format: { type: "string", enum: ["png", "jpeg"], default: "png", title: "图片格式" },
     prompt_optimization: { type: "string", enum: ["standard", "fast"], default: "standard", title: "提示词优化" },
     watermark: { type: "boolean", default: false, title: "添加水印" },
 };
-const arkImageMappings = { size: "size", watermark: "watermark", output_format: "output_format", prompt_optimization: "optimize_prompt_options.mode" };
+const arkImageMappings = { size: "size", ratio: "ratio", watermark: "watermark", output_format: "output_format", prompt_optimization: "optimize_prompt_options.mode" };
 const chiyunProperties = {
     size: { type: "string", enum: ["auto", "1024x1024", "1024x1536", "1536x1024"], default: "auto" },
     output_count: { type: "integer", minimum: 1, maximum: 4, default: 1 },

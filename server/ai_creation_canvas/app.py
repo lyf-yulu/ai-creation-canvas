@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import stat
 import uuid
@@ -31,6 +32,7 @@ from ai_creation_canvas.api.results import router as results_router
 from ai_creation_canvas.api.auth import router as auth_router
 from ai_creation_canvas.api.activity import router as activity_router
 from ai_creation_canvas.api.admin import router as admin_router
+from ai_creation_canvas.api.log_files import router as logs_router
 from ai_creation_canvas.api.usage import router as usage_router
 from ai_creation_canvas.api.projects import router as projects_router
 from ai_creation_canvas.api.prompt_skills import router as prompt_skills_router
@@ -57,6 +59,7 @@ from ai_creation_canvas.routing import RouteSelector
 
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+_LOG = logging.getLogger(__name__)
 
 
 def _request_id(value: str | None) -> str:
@@ -271,6 +274,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.state.job_worker = JobWorker(store, app.state.job_polling_service)
 
     async def start_job_worker() -> None:
+        _LOG.info("application startup (data_dir=%s)", settings.data_dir)
         if callable(refresh_background_adapters):
             await refresh_background_adapters()
         adapters = registry.generation_adapters()
@@ -363,6 +367,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
         except DomainError as error:
             response = _error_response(error, request.state.request_id)
         except Exception:
+            _LOG.exception("unhandled request failure: %s %s", request.method, request.url.path)
             response = JSONResponse(
                 status_code=500,
                 content=ApiError(
@@ -400,6 +405,7 @@ def create_app(settings: Settings, *, static_dir: Path | str | None = None, mode
     app.include_router(auth_router)
     app.include_router(activity_router)
     app.include_router(admin_router)
+    app.include_router(logs_router)
     app.include_router(usage_router)
     app.include_router(projects_router)
     app.include_router(session_router)

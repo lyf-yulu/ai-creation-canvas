@@ -117,7 +117,7 @@ def test_slice1_admin_user_project_assignment_and_demo_result(tmp_path) -> None:
     assert project.status_code == 201
     payload = {
         "operation": "image.generate", "model_id": "demo-image-v1", "prompt": "slice one acceptance",
-        "params": {"aspect_ratio": "landscape"}, "asset_ids": [], "idempotency_key": "slice-one-demo",
+        "params": {"size": "2K", "ratio": "1:1"}, "asset_ids": [], "idempotency_key": "slice-one-demo",
     }
     created = user.post("/api/v1/jobs", headers=user_headers, json=payload)
     assert created.status_code == 201

@@ -20,7 +20,7 @@ def context(user_id: str = "user-a") -> RequestContext:
 
 
 def request(key: str = "same-key") -> JobRequest:
-    return JobRequest("image.generate", "demo-image-v1", "offline prompt", key, {"aspect_ratio": "landscape"})
+    return JobRequest("image.generate", "demo-image-v1", "offline prompt", key, {"size": "2K", "ratio": "1:1"})
 
 
 async def stream_bytes(stream) -> bytes:
@@ -38,7 +38,9 @@ def test_demo_adapter_is_offline_idempotent_and_range_capable(monkeypatch) -> No
         models = await adapter.list_models(context())
         assert models[0].model_id == "demo-image-v1"
         assert models[0].display_name == "本地演示图片"
-        assert models[0].parameter_schema["properties"]["aspect_ratio"]["enum"] == ("square", "portrait", "landscape")
+        assert models[0].parameter_schema["properties"]["size"]["x-ark-size"]["presets"] == ("1K", "1.5K", "2K")
+        assert models[0].parameter_schema["properties"]["ratio"]["enum"] == ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9")
+        assert models[0].parameter_schema["properties"]["ratio"]["default"] == "1:1"
         declared = {port.port_id: port for port in models[0].input_ports}
         assert declared["prompt"].media_type == "text"
         assert (declared["prompt"].min_items, declared["prompt"].max_items) == (1, 1)

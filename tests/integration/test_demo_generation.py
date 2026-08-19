@@ -37,7 +37,7 @@ def test_complete_offline_demo_flow_is_owned_and_idempotent(tmp_path) -> None:
     assert [model["model_id"] for model in models] == ["demo-image-v1"]
     payload = {
         "operation": "image.generate", "model_id": "demo-image-v1", "prompt": "黑绿科技产品海报",
-        "params": {"aspect_ratio": "landscape"}, "asset_ids": [], "idempotency_key": "demo-once",
+        "params": {"size": "2K", "ratio": "1:1"}, "asset_ids": [], "idempotency_key": "demo-once",
     }
     created = user_a.post("/api/v1/jobs", headers=headers_a, json=payload)
     repeated = user_a.post("/api/v1/jobs", headers=headers_a, json=payload)

@@ -51,13 +51,25 @@ class DemoGenerationAdapter:
             {
                 "type": "object",
                 "properties": {
-                    "aspect_ratio": {
+                    "size": {
                         "type": "string",
-                        "enum": ["square", "portrait", "landscape"],
-                        "default": "landscape",
+                        "default": "2K",
+                        "title": "尺寸档位",
+                        "x-ark-size": {
+                            "presets": ["1K", "1.5K", "2K"],
+                            "min_pixels": 921600,
+                            "max_pixels": 4624220,
+                            "min_ratio": 0.0625,
+                            "max_ratio": 16,
+                        },
+                    },
+                    "ratio": {
+                        "type": "string",
+                        "enum": ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"],
+                        "default": "1:1",
+                        "title": "比例",
                     },
                 },
-                "required": ["aspect_ratio"],
                 "additionalProperties": False,
             },
             None,

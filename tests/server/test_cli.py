@@ -9,6 +9,12 @@ import pytest
 import ai_creation_canvas.__main__ as entrypoint
 
 
+@pytest.fixture(autouse=True)
+def _stub_logging_setup(monkeypatch):
+    # Keep CLI wiring tests hermetic: no global logging handlers or log files.
+    monkeypatch.setattr(entrypoint, "configure_logging", lambda _data_dir: None)
+
+
 def test_production_cli_wires_credential_pool_path_under_an_explicit_trusted_root(tmp_path: Path, monkeypatch) -> None:
     received: dict[str, object] = {}
     pools_path = tmp_path / "config" / "credential-pools.yaml"
