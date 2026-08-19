@@ -326,7 +326,7 @@ class ArkGenerationAdapter:
     ) -> httpx.Response:
         submission_error: SubmissionError | None = None
         try:
-            async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(30), follow_redirects=False, trust_env=False) as client:
+            async with httpx.AsyncClient(base_url=_ARK_URL, transport=self._transport, timeout=httpx.Timeout(180), follow_redirects=False, trust_env=False) as client:
                 kwargs: dict[str, object] = {"headers": {"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json"}}
                 if json is not None:
                     kwargs["json"] = json
