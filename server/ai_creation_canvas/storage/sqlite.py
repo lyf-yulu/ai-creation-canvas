@@ -742,6 +742,16 @@ class CanvasStore:
             ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def list_all_library_assets(self, limit: int = 200) -> tuple[dict[str, object], ...]:
+        """Administrator view over every owner's library assets."""
+        safe_limit = min(max(limit, 1), 200)
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT asset_id,kind,media_type,mime_type,status,size_bytes,created_at,updated_at FROM canvas_assets WHERE kind='library' ORDER BY created_at DESC,asset_id DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def create_user(self, *, user_id: str, username_normalized: str, display_name: str, password_hash: str, role: str, must_change_password: bool, enabled: int = 1, approval_status: str = "approved") -> dict[str, object]:
         if enabled not in (0, 1) or approval_status not in ("pending", "approved"):
             raise ValueError("user approval state is invalid")

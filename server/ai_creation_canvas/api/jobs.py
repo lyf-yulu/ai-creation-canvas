@@ -457,17 +457,22 @@ async def create_job(payload: Submission, request: Request) -> dict[str, object]
             upstream_asset_ids.append(asset["upstream_asset_id"])
         elif asset["kind"] == "library":
             port = declared_ports[port_id] if port_id != "legacy" else None
-            if (
-                port is None
-                or port.asset_kind != AssetKind.LIBRARY
-                or asset.get("service_id") != model.service_id
-                or not isinstance(asset.get("upstream_asset_id"), str)
-                or _ARK_ASSET_ID.fullmatch(asset["upstream_asset_id"]) is None
-            ):
+            if port is not None and port.asset_kind == AssetKind.LIBRARY:
+                if (
+                    asset.get("service_id") != model.service_id
+                    or not isinstance(asset.get("upstream_asset_id"), str)
+                    or _ARK_ASSET_ID.fullmatch(asset["upstream_asset_id"]) is None
+                ):
+                    raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
+                # The binding layer is the only place that injects the asset:// prefix,
+                # and only for provider-validated upstream identifiers.
+                upstream_asset_ids.append(f"asset://{asset['upstream_asset_id']}")
+            elif port is not None:
+                # Library assets keep their local file; ports without the
+                # private-library requirement consume them like references.
+                upstream_asset_ids.append(str(asset_id))
+            else:
                 raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
-            # The binding layer is the only place that injects the asset:// prefix,
-            # and only for provider-validated upstream identifiers.
-            upstream_asset_ids.append(f"asset://{asset['upstream_asset_id']}")
         elif asset["kind"] != "reference":
             raise problem(request, "ASSET_INVALID", "The selected asset is invalid.")
         else:

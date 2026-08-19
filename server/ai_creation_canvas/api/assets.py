@@ -14,7 +14,7 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from python_multipart.exceptions import MultipartParseError
 
 from ai_creation_canvas.api._common import context_for, problem
-from ai_creation_canvas.domain.models import AssetRef
+from ai_creation_canvas.domain.models import AssetRef, PortalRole
 from ai_creation_canvas.errors import AdapterNotFoundError, PortalUpstreamError, InvalidUpstreamResult
 from ai_creation_canvas.storage.sqlite import AssetQuotaExceeded
 
@@ -506,7 +506,11 @@ async def get_asset(asset_id: str, request: Request) -> dict[str, object]:
 @router.get("/library-assets")
 async def list_library_assets(request: Request) -> dict[str, object]:
     context = context_for(request)
-    items = request.app.state.canvas_store.list_library_assets_for_owner(context.user.user_id)
+    store = request.app.state.canvas_store
+    if context.user.role is PortalRole.ADMIN:
+        items = store.list_all_library_assets()
+    else:
+        items = store.list_library_assets_for_owner(context.user.user_id)
     return {"assets": [_asset(item) for item in items]}
 
 

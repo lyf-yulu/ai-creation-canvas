@@ -161,6 +161,99 @@ def test_library_upload_to_seedance_job_round_trip_with_asset_reference(tmp_path
     assert "AK-TEST" not in json.dumps(listed) and "decoded-ark-sk" not in json.dumps(listed)
     assert b"AK-TEST" not in (tmp_path / "data" / "canvas.sqlite3").read_bytes()
 
+    admin_listed = admin.get("/api/v1/library-assets", headers=admin_headers).json()["assets"]
+    assert [item["asset_id"] for item in admin_listed] == [asset["asset_id"]]
+
+
+def test_library_asset_can_feed_an_image_reference_port(tmp_path: Path) -> None:
+    """A library portrait also carries a local file, so image models may use it
+    as an ordinary reference (the private asset:// path stays video-only)."""
+    from ai_creation_canvas.adapters.ark import _local_asset_loader
+    from ai_creation_canvas.asset_library_config import AssetLibraryConfig
+
+    image_payloads: list[dict[str, object]] = []
+
+    def image_handler(request: httpx.Request) -> httpx.Response:
+        image_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"url": "https://ark-content-cn-beijing.tos-cn-beijing.volces.com/out.png"}]})
+
+    def seedream_declaration() -> ArkModelDeclaration:
+        return ArkModelDeclaration(
+            "seedream-v1", "ark-image", "Seedream", ("image.generate", "image.edit"),
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            (
+                ModelInputPort("prompt", "text", 1, 1),
+                ModelInputPort("reference_images", "image", 0, 10),
+            ),
+            {},
+        )
+
+    generation = ArkGenerationAdapter(
+        api_key="test-only-secret", data_dir=tmp_path / "data",
+        models=(seedream_declaration(),),
+        transport=httpx.MockTransport(image_handler),
+        asset_loader=_local_asset_loader(tmp_path / "data"),
+    )
+    registry = AdapterRegistry()
+    registry.register_generation(generation)
+    service = ArkAssetLibraryAdapter(
+        config=AssetLibraryConfig(
+            ark_access_key="AK-TEST", ark_secret_key="SK-TEST-0123456789",
+            tos_access_key="TOS-AK-TEST", tos_secret_key="TOS-SK-TEST",
+            tos_bucket="canvas-uploads", tos_region="cn-beijing", project_name="Seedance2.0",
+        ),
+        group_id_getter=lambda: "asset-grp-1",
+        group_id_setter=lambda gid: None,
+        transport=httpx.MockTransport(library_handler([])),
+        get_asset_attempts=0,
+        get_asset_interval=0.0,
+    )
+    settings = Settings(
+        "test", 8992, tmp_path / "data", "test-secret",
+        identity_mode="local", allowed_origins=(ORIGIN,),
+    )
+    app = create_app(settings, registry=registry, model_catalog=ModelCatalog(registry), asset_library_service=service)
+    accounts = app.state.local_auth.bootstrap_accounts(("seedream-v1",))
+    user = TestClient(app, base_url=ORIGIN)
+    login = user.post("/api/v1/auth/login", json={"username": accounts.user_username, "password": accounts.user_password}).json()
+    changed = user.post(
+        "/api/v1/auth/change-password",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": login["csrf_token"]},
+        json={"current_password": accounts.user_password, "new_password": "new-user-correct-horse"},
+    ).json()
+    user_headers = {"Origin": ORIGIN, "X-CSRF-Token": changed["csrf_token"]}
+
+    uploaded = user.post(
+        "/api/v1/assets",
+        files={"file": ("portrait.png", PNG, "image/png")},
+        data={"kind": "library", "media_type": "image"},
+        headers=user_headers,
+    )
+    assert uploaded.status_code == 201
+    asset = uploaded.json()
+
+    polled = user.get(f"/api/v1/assets/{asset['asset_id']}", headers=user_headers)
+    assert polled.status_code == 200 and polled.json()["status"] == "active"
+
+    submitted = user.post(
+        "/api/v1/jobs",
+        json={
+            "operation": "image.edit",
+            "model_id": "seedream-v1",
+            "prompt": "restyle the portrait",
+            "params": {},
+            "asset_ids": [],
+            "inputs": {"reference_images": [asset["asset_id"]]},
+            "idempotency_key": "integration-key-3",
+        },
+        headers=user_headers,
+    )
+    assert submitted.status_code == 201, submitted.text
+    assert len(image_payloads) == 1
+    reference = image_payloads[0]["image"][0]
+    assert isinstance(reference, str) and reference.startswith("data:image/png;base64,")
+    assert "asset://" not in reference
+
 
 def test_library_assets_are_isolated_between_users(tmp_path: Path) -> None:
     """Cross-user reads and job submissions against another user's library asset

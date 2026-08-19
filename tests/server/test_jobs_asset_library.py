@@ -101,17 +101,18 @@ def test_library_asset_binds_to_declared_library_port(tmp_path: Path) -> None:
     assert "asset://asset-abc123" not in adapter.submitted[0].asset_ids
 
 
-def test_library_asset_rejected_on_undeclared_port_and_legacy_ids(tmp_path: Path) -> None:
+def test_library_asset_binds_locally_on_undeclared_ports_but_not_legacy_ids(tmp_path: Path) -> None:
+    """Ports without the private-library requirement consume library assets as
+    ordinary local references; the legacy asset_ids array stays rejected."""
     client_, adapter = client(tmp_path)
     add_library_asset(tmp_path, asset_id="lib-1")
 
     first_frame = submit(client_, inputs={"first_frame": ["lib-1"]}, key="key-2")
-    assert first_frame.status_code == 400 and first_frame.json()["code"] == "ASSET_INVALID"
+    assert first_frame.status_code == 201
+    assert adapter.submitted[0].inputs == {"first_frame": ("lib-1",)}
 
     legacy = submit(client_, asset_ids=["lib-1"], key="key-3")
     assert legacy.status_code == 400 and legacy.json()["code"] == "ASSET_INVALID"
-
-    assert adapter.submitted == []
 
 
 def test_library_asset_requires_matching_service_and_active_status(tmp_path: Path) -> None:

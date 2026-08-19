@@ -645,7 +645,7 @@ def _local_asset_loader(data_dir: Path) -> Callable[[str], tuple[bytes, str]]:
             return body, "image/png"
         with sqlite3.connect(database) as connection:
             row = connection.execute("SELECT relative_path,mime_type,status,kind,size_bytes FROM canvas_assets WHERE asset_id=?", (asset_id,)).fetchone()
-        if row is None or row[2] != "active" or row[3] != "reference" or row[1] not in _IMAGE_MIME | _AUDIO_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
+        if row is None or row[2] != "active" or row[3] not in {"reference", "library"} or row[1] not in _IMAGE_MIME | _AUDIO_MIME or not isinstance(row[4], int) or not 0 < row[4] <= 20 * 1024 * 1024:
             raise ValueError("Ark asset is invalid")
         relative = Path(str(row[0]))
         if len(relative.parts) != 2 or relative.parts[0] != "assets" or relative.name in {"", ".", ".."}:
