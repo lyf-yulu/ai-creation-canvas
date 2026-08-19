@@ -74,6 +74,13 @@ if [ -n "${AICC_ARK_KEY_CONFIG:-}" ]; then
     fi
     set -- "$@" --ark-key-config "$AICC_ARK_KEY_CONFIG" --ark-key-config-root "$AICC_ARK_KEY_CONFIG_ROOT"
 fi
+if [ -n "${AICC_CREDENTIAL_POOLS:-}" ]; then
+    if [ -z "${AICC_CREDENTIAL_POOLS_ROOT:-}" ]; then
+        echo "AICC_CREDENTIAL_POOLS requires AICC_CREDENTIAL_POOLS_ROOT" >&2
+        exit 64
+    fi
+    set -- "$@" --credential-pools "$AICC_CREDENTIAL_POOLS" --credential-pools-root "$AICC_CREDENTIAL_POOLS_ROOT"
+fi
 if [ -n "${AICC_PROMPT_SKILL_MODEL:-}" ]; then
     set -- "$@" --prompt-skill-model "$AICC_PROMPT_SKILL_MODEL"
 fi
