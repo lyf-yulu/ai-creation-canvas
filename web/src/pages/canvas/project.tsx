@@ -523,7 +523,10 @@ export default function CanvasProjectPage() {
             if (sourceNode?.metadata?.status === "loading" || sourceNode?.metadata?.jobStatus === "queued" || sourceNode?.metadata?.jobStatus === "running") return;
             const graph = sourceNode?.metadata?.graph;
             const model = graph?.role === "model" ? models.find((candidate) => candidate.model_id === graph.modelId) : undefined;
-            if (!current || !model) return;
+            if (!current || !model) {
+                setModelMessages((messages) => ({ ...messages, [nodeId]: "当前账号没有该模型的授权，请管理员在「用户模型派发」中授权后重试。" }));
+                return;
+            }
             try {
                 const frozen = compileGraphJob(current.nodes, current.connections, nodeId, model);
                 updateProject(id, {
