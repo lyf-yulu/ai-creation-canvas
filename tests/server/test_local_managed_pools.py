@@ -98,6 +98,35 @@ def test_import_parsers_tolerate_a_utf8_bom() -> None:
     parse_workflow_json((bom + workflow.read_text(encoding="utf-8")).encode("utf-8"))
 
 
+def test_the_shipped_example_file_imports_verbatim(tmp_path: Path) -> None:
+    example = Path(__file__).resolve().parents[2] / "server" / "config" / "credential-pools.example.json"
+    root = tmp_path / "config"
+    root.mkdir()
+    pools_path = root / "credential-pools.json"
+    pools_path.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    pools_path.chmod(0o600)
+
+    app, accounts = create_local_app(
+        port=45993,
+        data_dir=tmp_path / "data",
+        static_dir=tmp_path / "dist",
+        credential_pools=pools_path,
+        credential_pools_root=root,
+        bootstrap_if_empty=True,
+    )
+    admin = TestClient(app, base_url=ORIGIN)
+    headers = _login(admin, accounts.admin_username, accounts.admin_password)
+    response = admin.post(
+        "/api/v1/admin/credential-pools/import",
+        headers=headers,
+        files={"file": ("pools.json", example.read_bytes(), "application/json")},
+    )
+    assert response.status_code == 200, response.text
+    assert {item["pool_id"] for item in response.json()["pools"]} == {
+        "banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark",
+    }
+
+
 def test_serve_local_with_credential_pools_wires_runtime_providers_and_import(tmp_path: Path) -> None:
     root = tmp_path / "config"
     root.mkdir()

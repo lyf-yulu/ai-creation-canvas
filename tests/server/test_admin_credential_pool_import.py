@@ -70,7 +70,7 @@ def test_import_failure_preserves_previous_bytes_and_snapshot(tmp_path: Path) ->
     loader, target = configured_loader(tmp_path)
     before = target.read_bytes()
 
-    with pytest.raises(ValueError, match="credential pools configuration is invalid"):
+    with pytest.raises(ValueError, match="JSON 语法或字段有误"):
         import_credential_pool_json(loader, target, tmp_path, b'{"version":1,"version":1,"pools":{}}')
 
     assert target.read_bytes() == before
@@ -82,9 +82,9 @@ def test_import_rejects_untrusted_provider_family_and_oversized_file(tmp_path: P
     untrusted = json.loads(pool_json())
     untrusted["pools"]["banana-chiyun"]["provider"] = "attacker"
 
-    with pytest.raises(ValueError, match="credential pools configuration is invalid"):
+    with pytest.raises(ValueError, match="组合不受支持"):
         import_credential_pool_json(loader, target, tmp_path, json.dumps(untrusted).encode())
-    with pytest.raises(ValueError, match="credential pools configuration is invalid"):
+    with pytest.raises(ValueError, match="JSON 语法或字段有误"):
         import_credential_pool_json(loader, target, tmp_path, b"{" + b" " * (1024 * 1024) + b"}")
 
 
@@ -102,7 +102,7 @@ def test_import_rejects_target_or_parent_symlink(tmp_path: Path) -> None:
     loader = CredentialPoolLoader(real_target, production=True)
     loader.load()
 
-    with pytest.raises(ValueError, match="credential pools configuration is invalid"):
+    with pytest.raises(ValueError, match="服务器配置文件位置不安全"):
         import_credential_pool_json(loader, target, root, pool_json(secret="new-secret"))
 
 

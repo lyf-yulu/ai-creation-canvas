@@ -131,7 +131,7 @@ bash scripts/run-real-media-local.sh
 | 逻辑模型 | provider | group | family |
 | --- | --- | --- | --- |
 | Banana | `chiyun-banana` | `banana` | `nano-banana` |
-| GPT-Image2 | `chiyun-gpt-image2` | `gpt-image` | `gpt-image2` |
+| GPT-Image2 | `chiyun-gpt-image2` | `gpt-image` | `gpt-image` |
 | Seedream | `ark` | `official` | `seedream` |
 | Seedance | `ark` | `official` | `seedance` |
 

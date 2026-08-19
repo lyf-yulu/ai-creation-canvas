@@ -61,7 +61,7 @@ def _validate_target(target: Path, root: Path) -> tuple[Path, Path]:
 def _validate_trusted_pools(snapshot: CredentialPoolSnapshot) -> None:
     allowed = {
         ("chiyun-banana", "banana", "nano-banana"),
-        ("chiyun-gpt-image2", "gpt-image", "gpt-image2"),
+        ("chiyun-gpt-image2", "gpt-image", "gpt-image"),
         ("ark", "official", "seedream"),
         ("ark", "official", "seedance"),
     }

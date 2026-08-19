@@ -104,7 +104,7 @@ AI 创作画布 · 管理员操作指南
    Seedream   对应 provider 填 ark          group 填 official   family 填 seedream
    Seedance   对应 provider 填 ark          group 填 official   family 填 seedance
    Banana     对应 provider 填 chiyun-banana       group 填 banana   family 填 nano-banana
-   GPT-Image2 对应 provider 填 chiyun-gpt-image2   group 填 gpt-image  family 填 gpt-image2
+   GPT-Image2 对应 provider 填 chiyun-gpt-image2   group 填 gpt-image  family 填 gpt-image
 
 
 六、人像资产库日常使用
