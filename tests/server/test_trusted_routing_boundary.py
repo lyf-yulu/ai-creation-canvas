@@ -47,9 +47,9 @@ def test_four_profiles_have_exact_code_owned_positive_presets() -> None:
     assert {profile for profile, _channel in presets} == {"banana", "gpt_image2", "seedream", "seedance"}
     assert set(presets) == {
         ("banana", "chiyun"),
-        ("gpt_image2", "chiyun"), ("seedream", "ark"), ("seedance", "ark"),
+        ("gpt_image2", "chiyun"), ("gpt_image2", "pindo"), ("seedream", "ark"), ("seedance", "ark"),
     }
-    for profile_id, channel_id in (("banana", "chiyun"), ("gpt_image2", "chiyun"), ("seedream", "ark"), ("seedance", "ark")):
+    for profile_id, channel_id in (("banana", "chiyun"), ("gpt_image2", "chiyun"), ("gpt_image2", "pindo"), ("seedream", "ark"), ("seedance", "ark")):
         route = _route(profile_id, channel_id)
         assert validate_trusted_route(route, _model(route)).profile_id == profile_id
 

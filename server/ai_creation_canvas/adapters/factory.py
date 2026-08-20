@@ -26,6 +26,7 @@ _CODE_OWNED_PROTOCOLS = frozenset({
     ("ark", "ark", _ARK_URL),
     ("chiyun-banana", "chiyun_gemini_images", "https://chiyun.work"),
     ("chiyun-gpt-image2", "chiyun_openai_images", "https://chiyun.work"),
+    ("pindo-gpt-image2", "chiyun_openai_images", "https://api.pindo.cc"),
 })
 _PROTOCOL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _ARK_IMAGE_TARGETS = frozenset({

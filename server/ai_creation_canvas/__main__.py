@@ -211,6 +211,7 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_orig
         for provider_id, display_name, adapter_type, base_url in (
             ("chiyun-banana", "Chiyun Banana", "chiyun_gemini_images", "https://chiyun.work"),
             ("chiyun-gpt-image2", "Chiyun GPT-Image2", "chiyun_openai_images", "https://chiyun.work"),
+            ("pindo-gpt-image2", "Pindo GPT-Image2", "chiyun_openai_images", "https://api.pindo.cc"),
             ("ark", "Ark", "ark", "https://ark.cn-beijing.volces.com"),
         ):
             if canvas_store.provider_definition(provider_id) is None:

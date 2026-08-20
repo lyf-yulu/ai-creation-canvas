@@ -27,9 +27,9 @@ def test_published_json_example_uses_real_schema_and_placeholder_secrets_only() 
     raw = path.read_bytes()
     snapshot = parse_credential_pool_json(raw)
 
-    assert set(snapshot.as_mapping()) == {"banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark"}
+    assert set(snapshot.as_mapping()) == {"banana-chiyun", "gpt-image2-chiyun", "gpt-image2-pindo", "seedream-ark", "seedance-ark"}
     lowered = raw.lower()
-    assert lowered.count(b"replace-with-provider-key") == 4
+    assert lowered.count(b"replace-with-provider-key") == 5
     assert b"sk-" not in lowered and b"ark-" not in lowered
     for summary in snapshot.safe_summaries():
         assert summary["key_count"] == 1

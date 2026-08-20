@@ -123,7 +123,7 @@ def test_the_shipped_example_file_imports_verbatim(tmp_path: Path) -> None:
     )
     assert response.status_code == 200, response.text
     assert {item["pool_id"] for item in response.json()["pools"]} == {
-        "banana-chiyun", "gpt-image2-chiyun", "seedream-ark", "seedance-ark",
+        "banana-chiyun", "gpt-image2-chiyun", "gpt-image2-pindo", "seedream-ark", "seedance-ark",
     }
 
 
@@ -146,6 +146,7 @@ def test_serve_local_with_credential_pools_wires_runtime_providers_and_import(tm
     assert {item.provider_id for item in app.state.canvas_store.list_provider_definitions()} == {
         "chiyun-banana",
         "chiyun-gpt-image2",
+        "pindo-gpt-image2",
         "ark",
     }
 
