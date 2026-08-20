@@ -269,7 +269,12 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
             </div>
             {overlays}
             {selected && !disabled && onScaleChange ? (
-                <div data-canvas-no-drag data-canvas-no-zoom className="absolute top-2 left-2 z-10 flex items-center gap-0.5 rounded-lg border border-[#285038] bg-[#08100b]/95 px-0.5 py-0.5">
+                <div
+                    data-canvas-no-drag
+                    data-canvas-no-zoom
+                    className="absolute top-2 left-2 z-10 flex items-center gap-0.5 rounded-lg border border-[#285038] bg-[#08100b]/95 px-0.5 py-0.5"
+                    style={{ transform: `scale(${1 / normalizedScale(scale)})`, transformOrigin: "top left" }}
+                >
                     <button type="button" aria-label="缩小节点" title="缩小节点" onClick={() => stepScale(-1)} className="rounded px-1.5 text-sm leading-5 text-[#bcebc9] hover:bg-[#102319]">−</button>
                     <button type="button" aria-label="重置节点缩放" title="重置为真实大小" onClick={() => onScaleChange(node.id, 1)} className="min-w-10 rounded px-1 text-xs leading-5 text-[#65e98d] hover:bg-[#102319]">{formatNodeScale(nodeScale)}</button>
                     <button type="button" aria-label="放大节点" title="放大节点" onClick={() => stepScale(1)} className="rounded px-1.5 text-sm leading-5 text-[#bcebc9] hover:bg-[#102319]">+</button>

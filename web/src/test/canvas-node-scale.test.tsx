@@ -95,6 +95,23 @@ it("hides zoom controls when the node is not selected", () => {
     expect(screen.queryByRole("button", { name: "放大节点" })).toBeNull();
 });
 
+it("keeps the scale toolbar at constant on-screen size across canvas zoom", () => {
+    const { rerender } = render(
+        <DraggableCanvasNode node={nodeAt({ scale: 1 })} scale={1} selected onPositionChange={vi.fn()} onScaleChange={vi.fn()}>
+            <span>inner content</span>
+        </DraggableCanvasNode>,
+    );
+    const toolbar = screen.getByRole("button", { name: "缩小节点" }).parentElement as HTMLElement;
+    expect(toolbar.style.transform).toBe("scale(1)");
+    rerender(
+        <DraggableCanvasNode node={nodeAt({ scale: 1 })} scale={0.2} selected onPositionChange={vi.fn()} onScaleChange={vi.fn()}>
+            <span>inner content</span>
+        </DraggableCanvasNode>,
+    );
+    expect(toolbar.style.transform).toBe("scale(5)");
+    expect(toolbar.style.transformOrigin).toBe("top left");
+});
+
 it("clamps node scale changes at the minimum and maximum", () => {
     const onScaleChange = vi.fn();
     const { rerender } = render(
