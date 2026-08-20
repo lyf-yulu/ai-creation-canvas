@@ -48,14 +48,20 @@ def test_skill_config_is_bounded_data_only(tmp_path: Path) -> None:
 def test_builtin_skill_catalog_has_pinned_distinct_visual_themes() -> None:
     config = Path(__file__).parents[2] / "server" / "config" / "prompt-skills.example.json"
     skills = load_prompt_skills(config, config.parent)
-    assert len(skills) == 7
-    assert len({item.skill_id for item in skills}) == 7
-    assert {item.skill_id for item in skills} >= {"photography-realism", "commercial-product", "cinematic-motion", "character-continuity", "graphic-poster", "seedance-official"}
+    assert len(skills) == 9
+    assert len({item.skill_id for item in skills}) == 9
+    assert {item.skill_id for item in skills} >= {"photography-realism", "commercial-product", "cinematic-motion", "character-continuity", "graphic-poster", "seedance-official", "seedance-director", "seedance-prompt-helper"}
     open_source = [item for item in skills if item.skill_id != "seedance-official"]
     assert all(len(item.source_commit) == 40 and item.license == "MIT" for item in open_source)
     seedance = next(item for item in skills if item.skill_id == "seedance-official")
     assert seedance.source_url.startswith("https://www.volcengine.com/docs/")
     assert seedance.source_commit == "" and seedance.license == "vendor-docs"
+    director = next(item for item in skills if item.skill_id == "seedance-director")
+    assert director.source_url == "https://github.com/Emily2040/seedance-2.0"
+    assert director.source_commit == "44b514992963a2570beee71aaf2a8720785f7ec2"
+    helper = next(item for item in skills if item.skill_id == "seedance-prompt-helper")
+    assert helper.source_url == "https://github.com/songguoxs/seedance-prompt-skill"
+    assert helper.source_commit == "57d1e2f273747c238dd892698a05137ab2f10d4a"
 
 
 def test_vendor_docs_sources_require_empty_commit_and_vendor_license(tmp_path: Path) -> None:
