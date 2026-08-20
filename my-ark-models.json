@@ -129,6 +129,12 @@
           "media_type": "audio",
           "min_items": 0,
           "max_items": 10
+        },
+        {
+          "port_id": "reference_video",
+          "media_type": "video",
+          "min_items": 0,
+          "max_items": 3
         }
       ],
       "parameter_mappings": {

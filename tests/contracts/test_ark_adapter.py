@@ -462,7 +462,7 @@ def test_seedance_rejects_images_below_the_official_300px_floor_before_post(tmp_
     assert requests == []
 
 
-def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_closed(tmp_path: Path) -> None:
+def test_seedance_maps_owned_audio_and_video_references_as_bounded_data_urls(tmp_path: Path) -> None:
     from ai_creation_canvas.adapters.ark import ArkGenerationAdapter, ArkModelDeclaration
     from ai_creation_canvas.domain.models import ModelInputPort
 
@@ -471,22 +471,27 @@ def test_seedance_maps_owned_audio_as_bounded_data_url_and_keeps_video_fail_clos
         payloads.append(json.loads(request.content)); return httpx.Response(200, json={"id": "cgt-audio"})
     declaration = ArkModelDeclaration(
         "seedance", "ark-video", "Seedance", ("video.generate",), {"type": "object", "properties": {}, "additionalProperties": False},
-        (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("first_frame", "image", 0, 1), ModelInputPort("reference_audio", "audio", 0, 3)), {},
+        (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("first_frame", "image", 0, 1), ModelInputPort("reference_audio", "audio", 0, 3), ModelInputPort("reference_video", "video", 0, 3)), {},
     )
 
     async def scenario() -> None:
-        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: ((b"RIFFaudioWAVE" if asset_id == "audio" else png(640, 640)), "audio/wav" if asset_id == "audio" else "image/png"))
-        await adapter.submit(context(), JobRequest("video.generate", "seedance", "speak", "audio", inputs={"first_frame": ("image",), "reference_audio": ("audio",)}))
+        adapter = ArkGenerationAdapter(api_key="test-only-secret", data_dir=tmp_path, models=(declaration,), transport=httpx.MockTransport(handler), asset_loader=lambda asset_id: (
+            b"RIFFaudioWAVE" if asset_id == "audio" else b"\x00\x00\x00\x18ftypmp42" if asset_id == "video" else png(640, 640),
+            "audio/wav" if asset_id == "audio" else "video/mp4" if asset_id == "video" else "image/png"))
+        await adapter.submit(context(), JobRequest("video.generate", "seedance", "speak", "audio", inputs={"first_frame": ("image",), "reference_audio": ("audio",), "reference_video": ("video",)}))
         with pytest.raises(ValueError, match="audio inputs are invalid"):
             await adapter.submit(context(), JobRequest("video.generate", "seedance", "audio only", "audio-only", inputs={"reference_audio": ("audio",)}))
+        with pytest.raises(ValueError, match="video reference inputs are invalid"):
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "too many", "video-count", inputs={"reference_video": ("video",) * 4}))
         with pytest.raises(ValueError, match="unsupported asset flow"):
-            await adapter.submit(context(), JobRequest("video.generate", "seedance", "move", "video", inputs={"reference_video": ("video",)}))
+            await adapter.submit(context(), JobRequest("video.generate", "seedance", "move", "video", inputs={"reference_pose": ("pose",)}))
 
     asyncio.run(scenario())
     assert payloads == [{"model": "seedance", "content": [
         {"type": "text", "text": "speak"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(png(640, 640)).decode()}, "role": "first_frame"},
         {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,UklGRmF1ZGlvV0FWRQ=="}, "role": "reference_audio"},
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAAGGZ0eXBtcDQy"}, "role": "reference_video"},
     ]}]
 
 

@@ -40,6 +40,7 @@ _IMAGE_MIME = frozenset({"image/jpeg", "image/png", "image/webp"})
 _AUDIO_MIME = frozenset({"audio/wav", "audio/mpeg"})
 _VIDEO_MIME = frozenset({"video/mp4", "video/webm"})
 _MAX_AUDIO_BYTES = 15 * 1024 * 1024
+_MAX_VIDEO_BYTES = 15 * 1024 * 1024
 _MAX_REQUEST_BYTES = 64 * 1024 * 1024
 _MAX_CONFIG_BYTES = 64 * 1024
 _ARK_PARAMETER_TARGETS = frozenset({
@@ -226,9 +227,8 @@ class ArkGenerationAdapter:
 
     def _video_content(self, declaration: ArkModelDeclaration, request: JobRequest) -> list[dict[str, object]]:
         declared = {port.port_id: port for port in declaration.input_ports}
-        supported = {"first_frame", "last_frame", "reference_images", "reference_audio"}
+        supported = {"first_frame", "last_frame", "reference_images", "reference_audio", "reference_video"}
         if set(request.inputs) - supported:
-            # Video references require the provider asset-upload flow; never pretend to submit them.
             raise ValueError("Ark video input requires an unsupported asset flow")
         content: list[dict[str, object]] = [{"type": "text", "text": request.prompt}]
         roles = (("first_frame", "first_frame"), ("last_frame", "last_frame"), ("reference_images", "reference_image"))
@@ -254,6 +254,12 @@ class ArkGenerationAdapter:
             raise ValueError("Ark video audio inputs are invalid")
         for asset_id in audio_values:
             content.append({"type": "audio_url", "audio_url": {"url": self._asset_data_url(asset_id, _AUDIO_MIME, _MAX_AUDIO_BYTES)}, "role": "reference_audio"})
+        video_values = tuple(request.inputs.get("reference_video", ()))
+        video_port = declared.get("reference_video")
+        if video_values and (video_port is None or len(video_values) > video_port.max_items):
+            raise ValueError("Ark video reference inputs are invalid")
+        for asset_id in video_values:
+            content.append({"type": "video_url", "video_url": {"url": self._asset_data_url(asset_id, _VIDEO_MIME, _MAX_VIDEO_BYTES)}, "role": "reference_video"})
         return content
 
     async def poll(self, context: RequestContext, upstream_job_id: str) -> JobState:

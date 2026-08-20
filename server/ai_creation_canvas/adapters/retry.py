@@ -127,6 +127,8 @@ def local_rejection(error: ValueError, adapter_template: str) -> RejectedSubmiss
         safe = "Submission parameters are invalid"
     elif "audio inputs" in message:
         safe = "Submission audio inputs are invalid"
+    elif "video reference" in message:
+        safe = "Submission video reference inputs are invalid"
     elif "unsupported asset flow" in message:
         safe = "Submission uses an unsupported asset flow"
     elif "reference count" in message:
