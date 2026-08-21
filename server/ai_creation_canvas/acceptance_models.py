@@ -11,7 +11,7 @@ from ai_creation_canvas.adapters.ark import ArkModelDeclaration, load_ark_model_
 _PROMPT = {"port_id": "prompt", "media_type": "text", "min_items": 1, "max_items": 1}
 _REFERENCE = {"port_id": "reference_images", "media_type": "image", "min_items": 1, "max_items": 10}
 _CHIYUN_OPENAI_PROPERTIES = {
-    "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+    "ratio": {"type": "string", "enum": ["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], "default": "auto"},
     "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
 }
 
@@ -25,8 +25,8 @@ def _chiyun_openai(profile: str, family: str, provider_model_name: str) -> dict[
             "operation": "image.edit",
             "input_ports": [_PROMPT, _REFERENCE],
             "output_media_type": "image",
-            "parameter_schema": {"type": "object", "x-aicc-profile": profile, "properties": _CHIYUN_OPENAI_PROPERTIES, "required": ["size", "output_count"], "additionalProperties": False},
-            "parameter_mappings": {"size": "size", "output_count": "n"},
+            "parameter_schema": {"type": "object", "x-aicc-profile": profile, "properties": _CHIYUN_OPENAI_PROPERTIES, "required": ["ratio", "output_count"], "additionalProperties": False},
+            "parameter_mappings": {"ratio": "ratio", "output_count": "n"},
         },
     }
 

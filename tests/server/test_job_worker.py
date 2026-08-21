@@ -228,7 +228,7 @@ async def test_local_recovery_io_retries_then_succeeds_without_losing_pending_st
     )
     upstream = await adapter.submit(context(), JobRequest(
         "image.edit", "chiyun-gpt-image-2", "recover", "worker-local-io",
-        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+        {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
     ))
     store = CanvasStore(tmp_path / "worker-data", clock=clock)
     reservation = store.reserve_job(

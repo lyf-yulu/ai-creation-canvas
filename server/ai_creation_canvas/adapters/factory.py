@@ -77,7 +77,7 @@ _ARK_VIDEO_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingP
     "watermark": ("watermark", {"type": "boolean", "default": False}),
 })
 _CHIYUN_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
-    "size": ("size", {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"}),
+    "ratio": ("ratio", {"type": "string", "enum": ["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], "default": "auto"}),
     "output_count": ("n", {"type": "integer", "minimum": 1, "maximum": 4, "default": 1}),
 })
 _CHIYUN_GEMINI_PARAMETERS: Mapping[str, tuple[str, Mapping[str, object]]] = MappingProxyType({
@@ -314,7 +314,7 @@ class RouteAdapterFactory:
             or references.media_type != "image"
             or references.min_items < 1
             or references.max_items > 10
-            or dict(contract.parameter_mappings) != {"size": "size", "output_count": "n"}
+            or dict(contract.parameter_mappings) != {"ratio": "ratio", "output_count": "n"}
         ):
             raise ValueError("Chiyun route contract is unsupported")
 
@@ -484,7 +484,7 @@ def _validate_parameter_contract(
         required_template = frozenset()
     elif adapter_type == "chiyun_openai_images" and operation is ModelOperation.IMAGE_EDIT:
         template = _CHIYUN_PARAMETERS
-        required_template = frozenset({"size", "output_count"})
+        required_template = frozenset({"ratio", "output_count"})
     elif adapter_type == "chiyun_gemini_images" and operation is ModelOperation.IMAGE_EDIT:
         template = _CHIYUN_GEMINI_PARAMETERS
         required_template = frozenset({"aspect_ratio", "image_size"})

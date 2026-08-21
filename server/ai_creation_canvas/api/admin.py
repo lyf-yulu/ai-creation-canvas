@@ -350,8 +350,8 @@ def _chiyun_template() -> OperationContract:
         ModelOperation.IMAGE_EDIT,
         (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
         "image",
-        {"type": "object", "properties": {"size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto", "title": "尺寸"}, "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1, "title": "生成数量"}}, "required": ["size", "output_count"], "additionalProperties": False},
-        {"size": "size", "output_count": "n"},
+        {"type": "object", "properties": {"ratio": {"type": "string", "enum": ["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], "default": "auto", "title": "比例"}, "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1, "title": "生成数量"}}, "required": ["ratio", "output_count"], "additionalProperties": False},
+        {"ratio": "ratio", "output_count": "n"},
     )
 
 

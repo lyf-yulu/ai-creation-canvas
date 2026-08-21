@@ -23,6 +23,7 @@ from ai_creation_canvas.parameter_schema import validate_parameter_values
 
 
 _IMAGE_MIME = frozenset({"image/png", "image/jpeg", "image/webp"})
+_RATIO_TO_SIZE = {"1:1": "1024x1024", "3:2": "1536x1024", "16:9": "1536x1024", "2:3": "1024x1536", "9:16": "1024x1536"}
 _MAX_INPUT_ITEM = 32 * 1024 * 1024
 _MAX_INPUT_TOTAL = 64 * 1024 * 1024
 _MAX_RESPONSE = 64 * 1024 * 1024
@@ -133,10 +134,11 @@ class ChiyunGenerationAdapter:
                 raise ValueError("Chiyun reference images are too large")
             contents.append((body, mime))
         files = [("image[]", (f"reference-{index:03d}.{_extension(mime)}", body, mime)) for index, (body, mime) in enumerate(contents)]
+        size = _RATIO_TO_SIZE.get(str(params.get("ratio", "auto")), "auto")
         data = {
             "model": model.provider_model_name,
             "prompt": request.prompt,
-            "size": str(params["size"]),
+            "size": size,
             "n": str(params["output_count"]),
         }
         payload = await self._post(data, files)

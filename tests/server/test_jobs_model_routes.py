@@ -138,7 +138,7 @@ def build_app(tmp_path: Path, handler, coordinator: ScriptedCoordinator, *, stor
 
 
 def payload(**changes):
-    body = {"operation": "image.edit", "model_id": "nano-banana", "prompt": "edit @图片1", "params": {"size": "1024x1024", "output_count": 1}, "asset_ids": [], "inputs": {"reference_images": ["reference-1"]}, "idempotency_key": "managed-key"}
+    body = {"operation": "image.edit", "model_id": "nano-banana", "prompt": "edit @图片1", "params": {"ratio": "1:1", "output_count": 1}, "asset_ids": [], "inputs": {"reference_images": ["reference-1"]}, "idempotency_key": "managed-key"}
     body.update(changes)
     return body
 

@@ -35,8 +35,8 @@ def model() -> GovernedModelDefinition:
             ModelOperation.IMAGE_EDIT,
             (ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
             "image",
-            {"type": "object", "properties": {"size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"]}, "output_count": {"type": "integer", "minimum": 1, "maximum": 4}}, "required": ["size", "output_count"], "additionalProperties": False},
-            {"size": "size", "output_count": "n"},
+            {"type": "object", "properties": {"ratio": {"type": "string", "enum": ["auto", "1:1", "3:2", "2:3", "16:9", "9:16"]}, "output_count": {"type": "integer", "minimum": 1, "maximum": 4}}, "required": ["ratio", "output_count"], "additionalProperties": False},
+            {"ratio": "ratio", "output_count": "n"},
         ),),
     )
 
@@ -48,6 +48,28 @@ def fields(body: bytes, name: str) -> list[bytes]:
         if marker in section and b"\r\n\r\n" in section:
             values.append(section.split(b"\r\n\r\n", 1)[1].rsplit(b"\r\n", 1)[0])
     return values
+
+
+def test_chiyun_maps_ratio_options_onto_the_supported_size_presets(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(PNG).decode()}]})
+
+    assets = {"one": (PNG, "image/png")}
+    adapter = ChiyunGenerationAdapter(
+        provider=provider(), models=(model(),), api_key="test-only-secret", data_dir=tmp_path,
+        asset_loader=lambda asset_id: assets[asset_id], transport=httpx.MockTransport(handler),
+    )
+    async def scenario():
+        for ratio in ("16:9", "2:3", "1:1", "auto"):
+            await adapter.submit(context(), JobRequest(
+                "image.edit", "chiyun-gpt-image-2", "prompt", f"key-{ratio}",
+                {"ratio": ratio, "output_count": 1}, inputs={"reference_images": ("one",)},
+            ))
+    asyncio.run(scenario())
+    assert [fields(request.content, "size")[0].decode() for request in requests] == ["1536x1024", "1024x1536", "1024x1024", "auto"]
 
 
 def test_chiyun_submits_ordered_multipart_and_materializes_bounded_results(tmp_path: Path) -> None:
@@ -65,7 +87,7 @@ def test_chiyun_submits_ordered_multipart_and_materializes_bounded_results(tmp_p
     async def scenario():
         upstream = await adapter.submit(context(), JobRequest(
             "image.edit", "chiyun-gpt-image-2", "preserve @图片1 then @图片2", "same-key",
-            {"size": "1024x1536", "output_count": 1}, inputs={"reference_images": ("one", "two")},
+            {"ratio": "2:3", "output_count": 1}, inputs={"reference_images": ("one", "two")},
         ))
         state = await adapter.poll(context(), upstream.upstream_job_id)
         replayed = await adapter.poll(context(), upstream.upstream_job_id)
@@ -107,7 +129,7 @@ def test_chiyun_pending_updates_are_safe_across_adapter_instances(tmp_path: Path
     first, second = build(), build()
     job_a = asyncio.run(first.submit(context(), JobRequest(
         "image.edit", "chiyun-gpt-image-2", "a", "job-a",
-        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+        {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
     )))
     original_read = first._read_index
 
@@ -125,7 +147,7 @@ def test_chiyun_pending_updates_are_safe_across_adapter_instances(tmp_path: Path
         submitted = pool.submit(
             lambda: asyncio.run(second.submit(context(), JobRequest(
                 "image.edit", "chiyun-gpt-image-2", "b", "job-b",
-                {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+                {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
             )))
         ).result()
         acknowledgement.result()
@@ -144,7 +166,7 @@ def test_chiyun_local_index_io_is_retryable_and_pending_is_replayable(tmp_path: 
     )
     submitted = asyncio.run(adapter.submit(context(), JobRequest(
         "image.edit", "chiyun-gpt-image-2", "recover", "local-io",
-        {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+        {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
     )))
     original_read_text = Path.read_text
     failed_read = False
@@ -188,7 +210,7 @@ def test_chiyun_preserves_the_actual_returned_image_mime(tmp_path: Path) -> None
     async def scenario() -> None:
         upstream = await adapter.submit(context(), JobRequest(
             "image.edit", "chiyun-gpt-image-2", "x", "jpeg-key",
-            {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
+            {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)},
         ))
         state = await adapter.poll(context(), upstream.upstream_job_id)
         assert state.result is not None and state.result.mime_type == "image/jpeg"
@@ -200,9 +222,9 @@ def test_chiyun_preserves_the_actual_returned_image_mime(tmp_path: Path) -> None
 @pytest.mark.parametrize(
     "job_request",
     [
-        JobRequest("image.generate", "chiyun-gpt-image-2", "x", "key", {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}),
-        JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"size": "auto", "output_count": 1}),
-        JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"size": "auto", "output_count": 1}, inputs={"reference_images": tuple(str(i) for i in range(11))}),
+        JobRequest("image.generate", "chiyun-gpt-image-2", "x", "key", {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}),
+        JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"ratio": "auto", "output_count": 1}),
+        JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"ratio": "auto", "output_count": 1}, inputs={"reference_images": tuple(str(i) for i in range(11))}),
     ],
 )
 def test_chiyun_rejects_operations_or_inputs_outside_the_model_contract(tmp_path: Path, job_request: JobRequest) -> None:
@@ -228,7 +250,7 @@ def test_chiyun_classifies_errors_without_leaking_response(tmp_path: Path, statu
     )
     async def scenario():
         with pytest.raises(PortalUpstreamError) as caught:
-            await adapter.submit(context(), JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}))
+            await adapter.submit(context(), JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}))
         return caught.value
     error = asyncio.run(scenario())
     assert error.retryable is retryable
@@ -243,5 +265,5 @@ def test_chiyun_rejects_invalid_or_unsafe_results(tmp_path: Path, body: bytes) -
     )
     async def scenario() -> None:
         with pytest.raises(InvalidUpstreamResult):
-            await adapter.submit(context(), JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"size": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}))
+            await adapter.submit(context(), JobRequest("image.edit", "chiyun-gpt-image-2", "x", "key", {"ratio": "auto", "output_count": 1}, inputs={"reference_images": ("one",)}))
     asyncio.run(scenario())

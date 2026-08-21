@@ -189,11 +189,11 @@ def test_route_factory_builds_exact_chiyun_edit_from_trusted_protocol(tmp_path: 
         ModelOperation.IMAGE_EDIT,
         inputs=(ModelInputPort("prompt", "text", 1, 1), ModelInputPort("reference_images", "image", 1, 10)),
         properties={
-            "size": {"type": "string", "enum": ["auto", "1024x1024", "1024x1536", "1536x1024"], "default": "auto"},
+            "ratio": {"type": "string", "enum": ["auto", "1:1", "3:2", "2:3", "16:9", "9:16"], "default": "auto"},
             "output_count": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
         },
-        mappings={"size": "size", "output_count": "n"},
-        required=["size", "output_count"],
+        mappings={"ratio": "ratio", "output_count": "n"},
+        required=["ratio", "output_count"],
     )
     route = _route(provider_id="chiyun", provider_model_name="gpt-image-2", adapter_type="chiyun_openai_images", contract=contract)
     adapter = factory.build(route, _lease(route.route_id))
@@ -203,7 +203,7 @@ def test_route_factory_builds_exact_chiyun_edit_from_trusted_protocol(tmp_path: 
         route.model_id,
         "use refs",
         "same",
-        {"size": "1024x1024", "output_count": 1},
+        {"ratio": "1:1", "output_count": 1},
         inputs={"reference_images": ("ref-two", "ref-one")},
     )))
 
