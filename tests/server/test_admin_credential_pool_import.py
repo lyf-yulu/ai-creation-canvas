@@ -53,17 +53,38 @@ def test_json_candidate_rejects_duplicate_keys_and_yaml() -> None:
         parse_credential_pool_json(b"version: 1\npools: {}\n")
 
 
-def test_import_replaces_valid_json_atomically_and_returns_only_safe_summary(tmp_path: Path) -> None:
+def test_import_merges_by_pool_id_atomically_and_returns_only_safe_summary(tmp_path: Path) -> None:
     loader, target = configured_loader(tmp_path)
 
     result = import_credential_pool_json(loader, target, tmp_path, pool_json(secret="new-secret"))
 
     imported = result.snapshot.get("banana-chiyun")
     assert imported is not None and imported.keys[0].secret == "new-secret"
-    assert result.snapshot.get("old-pool") is None
+    # Pools absent from the upload keep their current credentials.
+    preserved = result.snapshot.get("old-pool")
+    assert preserved is not None and preserved.keys[0].secret == "old-secret"
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     encoded = json.dumps(result.safe_summaries)
     assert "new-secret" not in encoded and "key-1" not in encoded
+
+
+def test_placeholder_import_never_clobbers_real_credentials(tmp_path: Path) -> None:
+    loader, target = configured_loader(tmp_path)
+    real = json.loads(pool_json(pool_id="banana-chiyun", secret="real-provider-secret"))
+    import_credential_pool_json(loader, target, tmp_path, json.dumps(real).encode())
+
+    template = pool_json(pool_id="banana-chiyun", secret="replace-with-provider-key")
+    result = import_credential_pool_json(loader, target, tmp_path, template)
+    kept = result.snapshot.get("banana-chiyun")
+    assert kept is not None and kept.keys[0].secret == "real-provider-secret"
+
+    # A brand-new pool may still be imported verbatim from the template.
+    fresh = json.loads(pool_json(pool_id="pindo-gpt-image2", secret="replace-with-provider-key"))
+    fresh["pools"]["pindo-gpt-image2"]["provider"] = "pindo-gpt-image2"
+    fresh["pools"]["pindo-gpt-image2"]["group"] = "gpt-image"
+    fresh["pools"]["pindo-gpt-image2"]["allowed_families"] = ["gpt-image"]
+    result = import_credential_pool_json(loader, target, tmp_path, json.dumps(fresh).encode())
+    assert result.snapshot.get("pindo-gpt-image2") is not None
 
 
 def test_import_failure_preserves_previous_bytes_and_snapshot(tmp_path: Path) -> None:

@@ -71,13 +71,13 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
             <label className="mt-3 flex items-start gap-2 text-xs text-[#c5d7ca]">
                 <input
                     type="checkbox"
-                    aria-label="确认替换现有凭据池"
+                    aria-label="确认增量合并凭据池"
                     checked={confirmed}
                     disabled={!file || locked}
                     onChange={(event) => setConfirmed(event.target.checked)}
                     className="mt-0.5 accent-[#58ed87]"
                 />
-                确认替换现有凭据池；新任务使用新配置，已提交任务不会重放。
+                确认增量合并：文件中的凭据池按名称更新或新增，未提到的现有凭据池保持不变；占位符不会覆盖已配置的真实密钥。
             </label>
             <button
                 type="button"
@@ -85,7 +85,7 @@ export function CredentialPoolImport({ onImport = importAdminCredentialPools, on
                 onClick={() => void submit()}
                 className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40"
             >
-                {locked ? "正在导入…" : "导入并替换凭据池"}
+                {locked ? "正在导入…" : "导入并合并凭据池"}
             </button>
             {status === "succeeded" && <p role="status" className="mt-3 text-sm text-[#58d881]">已导入 {poolCount} 个凭据池。</p>}
             {status === "failed" && <p role="alert" className="mt-3 text-sm text-[#ffbd73]">{detail || "导入失败，请检查 JSON 格式和服务端配置。"}</p>}

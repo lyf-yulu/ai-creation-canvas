@@ -37,8 +37,8 @@ describe("CredentialPoolImport", () => {
         expect(upload).not.toHaveBeenCalled();
         expect(text).not.toHaveBeenCalled();
 
-        fireEvent.click(screen.getByLabelText("确认替换现有凭据池"));
-        fireEvent.click(screen.getByRole("button", { name: "导入并替换凭据池" }));
+        fireEvent.click(screen.getByLabelText("确认增量合并凭据池"));
+        fireEvent.click(screen.getByRole("button", { name: "导入并合并凭据池" }));
 
         await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
         expect(upload).toHaveBeenCalledTimes(1);
@@ -54,8 +54,8 @@ describe("CredentialPoolImport", () => {
         render(<CredentialPoolImport onImport={upload} onImported={vi.fn()} />);
         const file = new File(["{}"], "credential-pools.json", { type: "application/json" });
         fireEvent.change(screen.getByLabelText("选择凭据 JSON"), { target: { files: [file] } });
-        fireEvent.click(screen.getByLabelText("确认替换现有凭据池"));
-        const button = screen.getByRole("button", { name: "导入并替换凭据池" });
+        fireEvent.click(screen.getByLabelText("确认增量合并凭据池"));
+        const button = screen.getByRole("button", { name: "导入并合并凭据池" });
         fireEvent.click(button);
         fireEvent.click(button);
         expect(upload).toHaveBeenCalledTimes(1);
