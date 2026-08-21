@@ -253,6 +253,31 @@ it("stops polling a permanently missing job, clears its saved reference and repo
     expect(JSON.stringify(lastWrite)).not.toContain("j-missing");
 });
 
+it("stops polling on an expired session, keeps the saved reference and reports a re-login message", async () => {
+    const savedWrites: unknown[] = [];
+    setScopedStoreFactoryForTest(
+        () =>
+            ({
+                getItem: async () => [{ jobId: "j-unauth", projectId: "project-a", sourceNodeId: "model-a", request: { operation: "image.generate", model_id: "m", prompt: "p", params: {}, asset_ids: [], idempotency_key: "key" } }],
+                setItem: async (_name: string, value: unknown) => { savedWrites.push(value); },
+                removeItem: async () => undefined,
+                iterate: async () => undefined,
+            }) as never,
+    );
+    await setStorageScope({ environment: "test", userId: "u-a" });
+    const unauthorized = new ApiRequestError({ code: "unauthorized", message: "Authentication is required.", retryable: false, request_id: "r", phase: "response" });
+    const api = { create: vi.fn(), fetch: vi.fn().mockRejectedValue(unauthorized) };
+    const onFailed = vi.fn();
+    const { result } = renderHook(() => useGenerationJob({ api: api as any, pollDelayMs: 1, onFailed }));
+
+    await waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1));
+    expect(onFailed).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-a", sourceNodeId: "model-a", message: expect.stringContaining("登录") }));
+    expect(result.current.state).toMatchObject({ status: "failed", jobId: "j-unauth" });
+    expect(api.fetch.mock.calls.length).toBeLessThanOrEqual(2);
+    // The reference is kept for post-login recovery, so no clearing write is persisted.
+    expect(savedWrites).toHaveLength(0);
+});
+
 it("creates typed same-origin result nodes once beside their source node", () => {
     const source = { id: "source", type: "text", title: "source", position: { x: 10, y: 20 }, width: 100, height: 100 };
     const image = createResultNode({ id: "image-job", operation: "image.generate", status: "succeeded", result_url: "/api/v1/results/image" }, source);

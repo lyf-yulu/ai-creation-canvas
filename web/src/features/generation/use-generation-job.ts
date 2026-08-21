@@ -79,6 +79,16 @@ export function useGenerationJob(options: Options = {}) {
                     job = await apiRef.current.fetch(jobId, signal.signal);
                 } catch (error) {
                     if (error instanceof DOMException && error.name === "AbortError") return;
+                    if (error instanceof ApiRequestError && error.code === "unauthorized") {
+                        // The session expired; polling would 401 forever. Keep the
+                        // reference so a reload after re-login resumes the job.
+                        const ref = refs.current.get(jobId);
+                        const message = generationErrorMessage(error);
+                        publish({ status: "failed", jobId, message, retryable: true }, captured);
+                        useGenerationTasks.getState().upsert({ jobId, title: ref?.request.prompt.slice(0, 32) || jobId, status: "failed", sourceNodeId: ref?.sourceNodeId });
+                        if (ref) optionsRef.current.onFailed?.({ request: ref.request, projectId: ref.projectId, sourceNodeId: ref.sourceNodeId, message });
+                        return;
+                    }
                     const missing = error instanceof ApiRequestError && error.code === "JOB_NOT_FOUND";
                     if (missing) missingAttempts += 1;
                     if (!missing || missingAttempts < 3) {
