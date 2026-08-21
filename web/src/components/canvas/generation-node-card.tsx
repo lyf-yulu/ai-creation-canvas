@@ -12,12 +12,12 @@ export function GenerationNodeCard({ node, onRetry, onDelete }: { node: CanvasNo
                 <strong>{node.title}</strong>
             </header>
             {status === "success" && node.type === "image" && node.metadata?.content ? (
-                <div className="media-surface m-3 min-h-0 flex-1 overflow-hidden rounded-lg">
-                    <img src={node.metadata.content} alt="生成结果" className="block h-full w-full object-fill" />
+                <div className="media-surface m-3 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg">
+                    <img src={node.metadata.content} alt="生成结果" className="block max-h-full max-w-full object-contain" />
                 </div>
             ) : status === "success" && node.type === "video" && node.metadata?.content ? (
-                <div className="media-surface m-3 min-h-0 flex-1 overflow-hidden rounded-lg">
-                    <video aria-label="生成视频结果" className="block h-full w-full object-fill" controls preload="metadata" src={node.metadata.content}>
+                <div className="media-surface m-3 flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg bg-black">
+                    <video aria-label="生成视频结果" className="block max-h-full max-w-full object-contain" controls preload="metadata" src={node.metadata.content}>
                         当前浏览器无法播放该视频。
                     </video>
                 </div>

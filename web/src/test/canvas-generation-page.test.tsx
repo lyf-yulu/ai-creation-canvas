@@ -155,6 +155,7 @@ it("submits canvas video generation through jobs and writes a video result node"
     const result = useCanvasStore.getState().openProject(projectId)?.nodes.find((node) => node.metadata?.sourceJobId === "video-job-1");
     expect(result?.type).toBe(CanvasNodeType.Video);
     expect(await screen.findByLabelText("生成视频结果")).toHaveAttribute("src", "/api/v1/results/video-job-1");
+    expect(screen.getByLabelText("生成视频结果")).toHaveClass("object-contain");
     const [, request] = (fetch as any).mock.calls[1];
     expect(JSON.parse(request.body).operation).toBe("video.generate");
     expect(JSON.parse(request.body).model_id).toBe("video-model");

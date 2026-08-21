@@ -75,6 +75,7 @@ it("previews, removes, drags, and keyboard-reorders one ordered image collection
     const { rerender } = render(<MediaCollectionNode node={collectionNode()} onItemsChange={change} />);
 
     expect(screen.getByRole("img", { name: "@图片1 一.png" })).toHaveAttribute("src", "/api/v1/assets/asset-a/content");
+    expect(screen.getByRole("img", { name: "@图片1 一.png" })).toHaveClass("object-cover");
     expect(screen.getByText("@图片2")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "上移 @图片3" }));
     expect(changes.at(-1)?.map((item) => item.assetId)).toEqual(["asset-a", "asset-c", "asset-b"]);

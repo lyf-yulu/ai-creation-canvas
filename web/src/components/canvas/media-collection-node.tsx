@@ -55,8 +55,8 @@ function MediaPreview({ mediaType, item, label, nodeWidth }: { mediaType: GraphM
     const accessibleName = `${label} ${item.displayName}`;
     // Thumbnails scale with the node so resizing visibly stretches the media previews.
     const thumbWidth = Math.max(48, Math.min(160, Math.round(nodeWidth * 0.22)));
-    if (mediaType === "image") return <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] object-fill" />;
-    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] bg-black object-fill" />;
+    if (mediaType === "image") return <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] object-cover" />;
+    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] bg-black object-cover" />;
     return <audio src={source} aria-label={accessibleName} controls preload="metadata" className="h-9 w-40 max-w-full" />;
 }
 
