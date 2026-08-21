@@ -276,8 +276,8 @@ class Settings:
                 raise ValueError("redis_url must use redis:// or rediss://")
         for field_name in ("generation_global_concurrency", "generation_provider_concurrency", "generation_user_concurrency"):
             value = getattr(self, field_name)
-            if type(value) is not int or not 1 <= value <= 32:
-                raise ValueError(f"{field_name} must be between 1 and 32")
+            if type(value) is not int or not 1 <= value <= 512:
+                raise ValueError(f"{field_name} must be between 1 and 512")
         if self.generation_provider_concurrency > self.generation_global_concurrency or self.generation_user_concurrency > self.generation_global_concurrency:
             raise ValueError("generation concurrency hierarchy is invalid")
         if self.enable_ark_adapter:
