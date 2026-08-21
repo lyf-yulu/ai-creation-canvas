@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import ipaddress
+import os
 from pathlib import Path
 import sqlite3
 import stat
@@ -168,7 +169,7 @@ def _local_data_dir(data_dir: Path) -> Path:
     return resolved
 
 
-def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, asset_library_config: Path | None = None, asset_library_config_root: Path | None = None, credential_pools: Path | None = None, credential_pools_root: Path | None = None, ark_key_config: Path | None = None, ark_key_config_root: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB):
+def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_origins: tuple[str, ...] | None = None, bootstrap_if_empty: bool = False, ark_models_config: Path | None = None, comfyui_services_config: Path | None = None, prompt_skill_model: str | None = None, redis_url: str | None = None, asset_library_config: Path | None = None, asset_library_config_root: Path | None = None, credential_pools: Path | None = None, credential_pools_root: Path | None = None, ark_key_config: Path | None = None, ark_key_config_root: Path | None = None, max_image_upload_bytes: int = 10 * _MIB, max_video_upload_bytes: int = 64 * _MIB, max_audio_upload_bytes: int = 32 * _MIB, upload_concurrency: int = 4, user_asset_quota_bytes: int = 2048 * _MIB, total_asset_quota_bytes: int = 10240 * _MIB, generation_global_concurrency: int = 8, generation_provider_concurrency: int = 4, generation_user_concurrency: int = 2):
     origins = public_origins or (f"http://127.0.0.1:{port}",)
     local_data_dir = _local_data_dir(data_dir)
     comfy_config_path, comfy_config_root = _local_comfyui_config(local_data_dir, comfyui_services_config)
@@ -200,6 +201,9 @@ def create_local_app(*, port: int, data_dir: Path, static_dir: Path, public_orig
         upload_concurrency=upload_concurrency,
         user_asset_quota_bytes=user_asset_quota_bytes,
         total_asset_quota_bytes=total_asset_quota_bytes,
+        generation_global_concurrency=generation_global_concurrency,
+        generation_provider_concurrency=generation_provider_concurrency,
+        generation_user_concurrency=generation_user_concurrency,
     )
     canvas_store = None
     if credential_pools is not None:
@@ -301,6 +305,9 @@ def _run_serve_local(argv: list[str]) -> None:
     parser.add_argument("--credential-pools-root", type=Path, help="trusted administrator-owned root for credential pools")
     parser.add_argument("--ark-key-config", type=Path, help="administrator-owned Ark generation key file (web-importable, hot-reloaded)")
     parser.add_argument("--ark-key-config-root", type=Path, help="trusted administrator-owned root for the Ark key config")
+    parser.add_argument("--generation-global-concurrency", type=int, default=int(os.environ.get("AICC_GENERATION_GLOBAL_CONCURRENCY", "8")), help="managed generation global concurrency (env AICC_GENERATION_GLOBAL_CONCURRENCY)")
+    parser.add_argument("--generation-provider-concurrency", type=int, default=int(os.environ.get("AICC_GENERATION_PROVIDER_CONCURRENCY", "4")), help="managed generation per-provider concurrency (env AICC_GENERATION_PROVIDER_CONCURRENCY)")
+    parser.add_argument("--generation-user-concurrency", type=int, default=int(os.environ.get("AICC_GENERATION_USER_CONCURRENCY", "2")), help="managed generation per-user concurrency (env AICC_GENERATION_USER_CONCURRENCY)")
     _add_upload_limit_arguments(parser)
     args = parser.parse_args(argv)
     bind_address = ipaddress.IPv4Address(args.host)
@@ -310,7 +317,7 @@ def _run_serve_local(argv: list[str]) -> None:
         parser.error("LAN public origin ports must match --port")
     if not bind_address.is_loopback and args.open_browser:
         parser.error("--open is only supported for loopback hosts")
-    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, comfyui_services_config=args.comfyui_services, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, asset_library_config=args.asset_library_config, asset_library_config_root=args.asset_library_config_root, credential_pools=args.credential_pools, credential_pools_root=args.credential_pools_root, ark_key_config=args.ark_key_config, ark_key_config_root=args.ark_key_config_root, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes)
+    app, accounts = create_local_app(port=args.port, data_dir=args.data_dir, static_dir=args.static_dir, public_origins=tuple(args.public_origin), bootstrap_if_empty=args.bootstrap_if_empty, ark_models_config=args.ark_models, comfyui_services_config=args.comfyui_services, prompt_skill_model=args.prompt_skill_model, redis_url=args.redis_url, asset_library_config=args.asset_library_config, asset_library_config_root=args.asset_library_config_root, credential_pools=args.credential_pools, credential_pools_root=args.credential_pools_root, ark_key_config=args.ark_key_config, ark_key_config_root=args.ark_key_config_root, max_image_upload_bytes=args.max_image_upload_bytes, max_video_upload_bytes=args.max_video_upload_bytes, max_audio_upload_bytes=args.max_audio_upload_bytes, upload_concurrency=args.upload_concurrency, user_asset_quota_bytes=args.user_asset_quota_bytes, total_asset_quota_bytes=args.total_asset_quota_bytes, generation_global_concurrency=args.generation_global_concurrency, generation_provider_concurrency=args.generation_provider_concurrency, generation_user_concurrency=args.generation_user_concurrency)
     _print_bootstrap(accounts)
     if args.open_browser:
         url = f"http://127.0.0.1:{args.port}/login"

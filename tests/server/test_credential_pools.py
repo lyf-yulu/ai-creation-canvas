@@ -168,7 +168,7 @@ pools:
         CredentialPoolLoader(path, production=True).load()
 
 
-@pytest.mark.parametrize("max_concurrency", [0, 33])
+@pytest.mark.parametrize("max_concurrency", [0, 65])
 def test_loader_bounds_per_key_concurrency(tmp_path: Path, max_concurrency: int) -> None:
     path = tmp_path / "credential-pools.yaml"
     path.write_text(

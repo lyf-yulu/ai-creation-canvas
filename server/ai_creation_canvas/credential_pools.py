@@ -93,7 +93,7 @@ class _CredentialKeyInput(BaseModel):
 
     key_id: str = Field(alias="id", min_length=1)
     secret: str = Field(alias="api_key", min_length=1)
-    max_concurrency: int = Field(ge=1, le=32)
+    max_concurrency: int = Field(ge=1, le=64)
 
 
 class _CredentialPoolInput(BaseModel):
