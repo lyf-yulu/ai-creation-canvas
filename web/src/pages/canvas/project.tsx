@@ -922,7 +922,7 @@ export default function CanvasProjectPage() {
                                     ) : modelNode ? (
                                         <ModelCallNode
                                             node={node}
-                                            models={models.filter((model) => modelOperation && model.operations.includes(modelOperation))}
+                                            models={models.filter((model) => modelOperation && model.operations.some((operation) => operation.split(".")[0] === modelOperation.split(".")[0]))}
                                             disabled={readOnly}
                                             message={modelMessages[node.id]}
                                             onChange={(graph) => updateModelNode(node.id, graph)}

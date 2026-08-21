@@ -46,6 +46,26 @@ const node = {
 afterEach(cleanup);
 
 describe("ModelCallNode", () => {
+    it("offers a mode switch across operations and selects the matching model", () => {
+        const editModel: ModelSpec = {
+            model_id: "edit",
+            service_id: "pindo",
+            display_name: "GPT-Image2",
+            operations: ["image.edit"],
+            input_media: ["text", "image"],
+            input_ports: [{ port_id: "reference_images", media_type: "image", min_items: 1, max_items: 10 }],
+            parameter_schema: { type: "object", properties: {}, additionalProperties: false },
+            parameter_mappings: {},
+        };
+        const onChange = vi.fn();
+        render(<ModelCallNode node={node} models={[...models, editModel]} onChange={onChange} onRun={vi.fn()} />);
+        const mode = screen.getByLabelText("模式");
+        expect(mode).toBeInTheDocument();
+        expect(screen.getByLabelText("模型")).toHaveValue("image");
+        fireEvent.change(mode, { target: { value: "image.edit" } });
+        expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ operation: "image.edit", modelId: "edit" }));
+    });
+
     it("renders declared parameters in-node and preserves exact values", () => {
         const onChange = vi.fn();
         const onRun = vi.fn();

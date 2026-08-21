@@ -1,7 +1,7 @@
 import { Play, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import type { ModelSpec } from "@/api/contracts";
+import type { ModelOperation, ModelSpec } from "@/api/contracts";
 import { parameterControls } from "@/components/model-picker";
 import type { GraphModelMetadata, GraphParameterValue } from "@/features/graph/contracts";
 import { declaredModelPorts, graphPortsForModel } from "@/features/graph/model-capabilities";
@@ -22,11 +22,21 @@ function defaults(model: ModelSpec) {
     return Object.fromEntries(parameterControls(model.parameter_schema).flatMap((control) => (control.default === undefined ? [] : [[control.name, control.default]]))) as Record<string, GraphParameterValue>;
 }
 
+const OPERATION_LABELS: Record<string, string> = {
+    "image.generate": "图片生成",
+    "image.edit": "图片编辑",
+    "video.generate": "视频生成",
+    "video.image_to_video": "图生视频",
+};
+
 export function ModelCallNode({ node, models, disabled = false, message, onChange, onRun, onRetry, onCancel }: Props) {
     const graph = node.metadata?.graph;
     if (graph?.role !== "model") return null;
     const [customOpen, setCustomOpen] = useState<Record<string, boolean>>({});
-    const selected = models.find((model) => model.model_id === graph.modelId) ?? models[0];
+    const operations = useMemo(() => [...new Set(models.flatMap((model) => model.operations))], [models]);
+    const operation = operations.includes(graph.operation as ModelOperation) ? (graph.operation as ModelOperation) : operations[0];
+    const operationModels = useMemo(() => models.filter((model) => operation !== undefined && model.operations.includes(operation)), [models, operation]);
+    const selected = operationModels.find((model) => model.model_id === graph.modelId) ?? operationModels[0];
     const controls = useMemo(() => parameterControls(selected?.parameter_schema ?? {}), [selected]);
     const visibleControls = controls.filter((control) => !control.visibleWhen || Object.is(graph.parameters[control.visibleWhen.name], control.visibleWhen.equals));
     const busy = node.metadata?.status === "loading" || node.metadata?.jobStatus === "queued" || node.metadata?.jobStatus === "running";
@@ -34,9 +44,15 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     if (!selected) return <article className="rounded-xl border border-[#6b4b2c] bg-[#171008] p-3 text-xs text-[#ffbd73]">暂无可用模型。</article>;
     const updateParameter = (name: string, value: GraphParameterValue) => onChange({ ...graph, parameters: { ...graph.parameters, [name]: value } });
     const choose = (modelId: string) => {
-        const next = models.find((model) => model.model_id === modelId);
+        const next = operationModels.find((model) => model.model_id === modelId);
         if (!next) return;
         onChange({ ...graph, modelId, operation: next.operations[0], inputPorts: graphPortsForModel(next), parameters: defaults(next) });
+    };
+    const switchOperation = (nextOperation: string) => {
+        if (nextOperation === operation) return;
+        const next = models.find((model) => model.operations.includes(nextOperation as ModelOperation));
+        if (!next) return;
+        onChange({ ...graph, operation: nextOperation, modelId: next.model_id, inputPorts: graphPortsForModel(next), parameters: defaults(next) });
     };
     return (
         <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
@@ -48,10 +64,22 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                 <p role="status" className="text-[11px] text-[#9fb5a5]">
                     任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中（平台不支持取消运行中任务）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
                 </p>
+                {operations.length > 1 ? (
+                    <label className="block text-[11px] text-[#9fb5a5]">
+                        模式
+                        <select aria-label="模式" disabled={editDisabled} value={operation} onChange={(event) => switchOperation(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
+                            {operations.map((item) => (
+                                <option key={item} value={item}>
+                                    {OPERATION_LABELS[item] ?? item}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                ) : null}
                 <label className="block text-[11px] text-[#9fb5a5]">
                     模型
                     <select aria-label="模型" disabled={editDisabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
-                        {models.map((model) => (
+                        {operationModels.map((model) => (
                             <option key={model.model_id} value={model.model_id}>
                                 {model.display_name}
                             </option>
