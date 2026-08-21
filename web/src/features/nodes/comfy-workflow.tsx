@@ -69,11 +69,11 @@ export function ComfyWorkflowNodeCard({ node }: { node: CanvasNodeData }) {
     const graph = node.metadata?.graph;
     if (graph?.role !== "comfy-workflow") return null;
     return (
-        <section className="flex h-full min-h-[200px] flex-col rounded-xl border border-[#356b48] bg-[#0b1710] p-4 text-[#dceee1]" aria-label="ComfyUI 工作流节点">
-            <div className="flex items-center gap-2 text-sm font-semibold"><Boxes className="size-4 text-[#58ed87]" />{node.title}</div>
-            <p className="mt-3 text-xs text-[#9ab5a2]">工作流版本：{graph.workflowRevision}</p>
-            <p className="mt-1 text-xs text-[#9ab5a2]">执行状态：{graph.executionEnabled ? "可执行" : "暂不可执行"}</p>
-            <button type="button" disabled className="mt-auto rounded border border-[#356b48] px-3 py-2 text-left text-xs text-[#9ab5a2] disabled:cursor-not-allowed disabled:opacity-80" title="执行将在 ComfyUI 执行切片启用">
+        <section className="flex h-full min-h-[200px] flex-col rounded-xl border border-[var(--c-border-strong)] bg-[var(--c-panel)] p-4 text-[var(--c-text)]" aria-label="ComfyUI 工作流节点">
+            <div className="flex items-center gap-2 text-sm font-semibold"><Boxes className="size-4 text-[var(--c-accent)]" />{node.title}</div>
+            <p className="mt-3 text-xs text-[var(--c-text-2)]">工作流版本：{graph.workflowRevision}</p>
+            <p className="mt-1 text-xs text-[var(--c-text-2)]">执行状态：{graph.executionEnabled ? "可执行" : "暂不可执行"}</p>
+            <button type="button" disabled className="mt-auto rounded border border-[var(--c-border-strong)] px-3 py-2 text-left text-xs text-[var(--c-text-2)] disabled:cursor-not-allowed disabled:opacity-80" title="执行将在 ComfyUI 执行切片启用">
                 执行将在 ComfyUI 执行切片启用
             </button>
         </section>

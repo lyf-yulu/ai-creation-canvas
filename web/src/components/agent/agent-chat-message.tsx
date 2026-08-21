@@ -157,7 +157,7 @@ export function AgentPendingToolCard({ summary, detail, theme, onReject, onAppro
                     <Button danger type="text" className="!h-8" icon={<XCircle className="size-3.5" />} onClick={() => onReject?.()}>
                         拒绝执行
                     </Button>
-                    <Button type="text" className="!h-8" icon={<CheckCircle2 className="size-3.5" />} style={{ color: "#16a34a" }} onClick={() => onApprove?.()}>
+                    <Button type="text" className="!h-8" icon={<CheckCircle2 className="size-3.5" />} style={{ color: "var(--c-accent)" }} onClick={() => onApprove?.()}>
                         批准执行
                     </Button>
                 </div>
@@ -184,7 +184,7 @@ export function AgentApprovalCard({ approval, theme, onDecision }: { approval: A
             <div className="mt-3 flex flex-wrap justify-end gap-1.5 border-t pt-3" style={{ borderColor: theme.node.stroke }}>
                 <Button danger type="text" className="!h-8" disabled={Boolean(approval.deciding)} loading={approval.deciding === "decline"} onClick={() => onDecision("decline")}>拒绝</Button>
                 <Button type="text" className="!h-8" disabled={Boolean(approval.deciding)} loading={approval.deciding === "accept"} onClick={() => onDecision("accept")}>允许一次</Button>
-                <Button type="text" className="!h-8" disabled={Boolean(approval.deciding)} loading={approval.deciding === "acceptForSession"} style={{ color: "#ea580c" }} onClick={() => onDecision("acceptForSession")}>本会话允许</Button>
+                <Button type="text" className="!h-8" disabled={Boolean(approval.deciding)} loading={approval.deciding === "acceptForSession"} style={{ color: "var(--c-warning)" }} onClick={() => onDecision("acceptForSession")}>本会话允许</Button>
             </div>
         </div>
     );
@@ -251,7 +251,7 @@ export function AgentCommandGroup({ items, theme }: { items: AgentCommandItem[];
     const running = states.some((state) => state.running);
     const failed = states.filter((state) => state.failed).length;
     const expandable = items.some((item) => Boolean(item.text.trim() || userDetail(item.detail)));
-    const color = running ? "#d97706" : failed ? "#dc2626" : theme.node.muted;
+    const color = running ? "var(--c-warning)" : failed ? "#dc2626" : theme.node.muted;
     const label = running
         ? items.length > 1 ? `正在执行 ${items.length} 条命令` : "正在执行命令"
         : `已执行 ${items.length} 条命令${failed ? ` · ${failed} 条失败` : ""}`;
@@ -290,7 +290,7 @@ function AgentCommandEntry({ item, index, theme }: { item: AgentCommandItem; ind
     const view = userDetail(item.detail);
     const state = commandViewState(item.detail);
     const status = state.failed ? "执行失败" : state.running ? "执行中" : "已完成";
-    const color = state.failed ? "#dc2626" : state.running ? "#d97706" : "#16a34a";
+    const color = state.failed ? "#dc2626" : state.running ? "var(--c-warning)" : "var(--c-accent)";
     const content = (
         <>
             <span className="w-4 shrink-0 text-center text-[10px] tabular-nums opacity-50" style={{ color: theme.node.muted }}>{index + 1}</span>
@@ -470,11 +470,11 @@ function toolCardState(title: string, text: string, detail?: unknown) {
     const raw = `${title} ${text} ${normalizeText(objectField(detail, "error"))}`;
     const lower = raw.toLowerCase();
     const status = String(objectField(detail, "status") || "").toLowerCase();
-    if (status === "noop" || /未生效|无需|没有找到|没有.*可|已存在/.test(raw)) return { label: "未生效", color: "#d97706", icon: <CircleAlert className="size-4" />, isError: false };
+    if (status === "noop" || /未生效|无需|没有找到|没有.*可|已存在/.test(raw)) return { label: "未生效", color: "var(--c-warning)", icon: <CircleAlert className="size-4" />, isError: false };
     if (["declined", "rejected", "cancelled", "canceled"].includes(status) || /拒绝|取消/.test(raw)) return { label: "已取消", color: "#dc2626", icon: <XCircle className="size-4" />, isError: true };
     if (["failed", "error"].includes(status) || /失败|错误/.test(raw) || lower.includes("failed") || lower.includes("error")) return { label: "执行失败", color: "#dc2626", icon: <XCircle className="size-4" />, isError: true };
-    if (["inprogress", "in_progress", "running", "started", "pending"].includes(status)) return { label: "进行中", color: "#d97706", icon: <LoaderCircle className="size-4 animate-spin" />, isError: false };
-    if (["completed", "succeeded", "success"].includes(status) || /完成|成功/.test(raw)) return { label: "已完成", color: "#16a34a", icon: <CheckCircle2 className="size-4" />, isError: false };
+    if (["inprogress", "in_progress", "running", "started", "pending"].includes(status)) return { label: "进行中", color: "var(--c-warning)", icon: <LoaderCircle className="size-4 animate-spin" />, isError: false };
+    if (["completed", "succeeded", "success"].includes(status) || /完成|成功/.test(raw)) return { label: "已完成", color: "var(--c-accent)", icon: <CheckCircle2 className="size-4" />, isError: false };
     return { label: "已记录", color: "#2563eb", icon: <Wrench className="size-4" />, isError: false };
 }
 
@@ -487,15 +487,15 @@ function toolIcon(kind: string | undefined, fallback: ReactNode) {
 
 function planCardState(plan: PlanDetail, completed: number) {
     if (plan.status === "failed") return { label: "执行失败", color: "#dc2626" };
-    if (["interrupted", "cancelled", "canceled"].includes(plan.status)) return { label: "已停止", color: "#d97706" };
-    if (completed === plan.tasks.length) return { label: "已完成", color: "#16a34a" };
+    if (["interrupted", "cancelled", "canceled"].includes(plan.status)) return { label: "已停止", color: "var(--c-warning)" };
+    if (completed === plan.tasks.length) return { label: "已完成", color: "var(--c-accent)" };
     if (plan.status === "finished") return { label: "已结束", color: "#2563eb" };
-    return { label: "进行中", color: "#d97706" };
+    return { label: "进行中", color: "var(--c-warning)" };
 }
 
 function planTaskState(status: string, muted: string) {
-    if (status === "completed") return { label: "已完成", color: "#16a34a", icon: <CheckCircle2 className="size-3.5" /> };
-    if (status === "inProgress") return { label: "进行中", color: "#d97706", icon: <LoaderCircle className="size-3.5 animate-spin" /> };
+    if (status === "completed") return { label: "已完成", color: "var(--c-accent)", icon: <CheckCircle2 className="size-3.5" /> };
+    if (status === "inProgress") return { label: "进行中", color: "var(--c-warning)", icon: <LoaderCircle className="size-3.5 animate-spin" /> };
     return { label: "待处理", color: muted, icon: <Circle className="size-3.5" /> };
 }
 

@@ -140,7 +140,7 @@ export default function AdminComfyWorkflowsPage() {
         <div className="mx-auto max-w-7xl p-5 md:p-8">
             <header>
                 <h1 className="text-2xl font-semibold">ComfyUI 工作流库</h1>
-                <p className="mt-1 text-sm text-[#86a991]">管理员管理受控模板、只读预览、兼容性和账号派发。工作流不会在浏览器中执行。</p>
+                <p className="mt-1 text-sm text-[var(--c-text-3)]">管理员管理受控模板、只读预览、兼容性和账号派发。工作流不会在浏览器中执行。</p>
             </header>
             <div className="mt-6">
                 <WorkflowImport
@@ -151,12 +151,12 @@ export default function AdminComfyWorkflowsPage() {
                 />
             </div>
             {status === "failed" && (
-                <p role="alert" className="mt-4 text-sm text-[#ffbd73]">
+                <p role="alert" className="mt-4 text-sm text-[var(--c-warning)]">
                     操作未完成，请重试。
                 </p>
             )}
             <div className="mt-6 grid gap-5 lg:grid-cols-[18rem_1fr]">
-                <section className="rounded-xl border border-[#245a35] bg-[#07110b] p-4">
+                <section className="rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-4">
                     <h2 className="font-semibold">模板列表</h2>
                     <div className="mt-3 space-y-2">
                         {workflows.map((workflow) => (
@@ -164,70 +164,70 @@ export default function AdminComfyWorkflowsPage() {
                                 type="button"
                                 key={workflow.workflow_id}
                                 onClick={() => setSelectedId(workflow.workflow_id)}
-                                className={`w-full rounded border p-3 text-left text-sm ${selectedId === workflow.workflow_id ? "border-[#58ed87] bg-[#102619]" : "border-[#1e482b] hover:bg-[#0d1b12]"}`}
+                                className={`w-full rounded border p-3 text-left text-sm ${selectedId === workflow.workflow_id ? "border-[var(--c-accent)] bg-[var(--c-panel-hover)]" : "border-[var(--c-border)] hover:bg-[var(--c-panel)]"}`}
                             >
                                 <span className="block font-medium">{workflow.display_name}</span>
-                                <span className="mt-1 block text-xs text-[#86a991]">
+                                <span className="mt-1 block text-xs text-[var(--c-text-3)]">
                                     r{workflow.revision} · {lifecycleLabel(workflow)}
                                 </span>
                             </button>
                         ))}
                     </div>
-                    {status === "loading" && <p className="mt-3 text-sm text-[#86a991]">正在加载…</p>}
-                    {status === "ready" && !workflows.length && <p className="mt-3 text-sm text-[#86a991]">尚未导入工作流。</p>}
+                    {status === "loading" && <p className="mt-3 text-sm text-[var(--c-text-3)]">正在加载…</p>}
+                    {status === "ready" && !workflows.length && <p className="mt-3 text-sm text-[var(--c-text-3)]">尚未导入工作流。</p>}
                 </section>
-                <section className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-4">
-                    {!selected && <p className="text-sm text-[#86a991]">选择一个工作流以查看安全投影。</p>}
+                <section className="min-w-0 rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-4">
+                    {!selected && <p className="text-sm text-[var(--c-text-3)]">选择一个工作流以查看安全投影。</p>}
                     {selected && (
                         <>
                             <div className="flex flex-wrap items-start justify-between gap-3">
                                 <div>
                                     <h2 className="text-xl font-semibold">{selected.display_name}</h2>
-                                    <p className="mt-1 text-sm text-[#a9c6b0]">
+                                    <p className="mt-1 text-sm text-[var(--c-text-2)]">
                                         版本 r{selected.revision} · {lifecycleLabel(selected)} · 服务标识 {selected.service_id}
                                     </p>
                                 </div>
                                 <div className="flex flex-wrap gap-2">
                                     {selected.lifecycle.archived ? (
-                                        <button type="button" onClick={() => void lifecycle("restore")} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#8ff0aa]">
+                                        <button type="button" onClick={() => void lifecycle("restore")} className="rounded border border-[var(--c-border-strong)] px-3 py-1.5 text-sm text-[var(--c-accent-soft)]">
                                             恢复
                                         </button>
                                     ) : (
                                         <>
                                             {selected.lifecycle.enabled ? (
-                                                <button type="button" onClick={() => void lifecycle("disable")} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm">
+                                                <button type="button" onClick={() => void lifecycle("disable")} className="rounded border border-[var(--c-border-strong)] px-3 py-1.5 text-sm">
                                                     停用
                                                 </button>
                                             ) : (
-                                                <button type="button" onClick={() => void lifecycle("enable")} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm text-[#8ff0aa]">
+                                                <button type="button" onClick={() => void lifecycle("enable")} className="rounded border border-[var(--c-border-strong)] px-3 py-1.5 text-sm text-[var(--c-accent-soft)]">
                                                     启用
                                                 </button>
                                             )}
-                                            <button type="button" onClick={() => void lifecycle("archive")} className="rounded border border-[#6c6131] px-3 py-1.5 text-sm text-[#eadc91]">
+                                            <button type="button" onClick={() => void lifecycle("archive")} className="rounded border border-[var(--c-amber-border)] px-3 py-1.5 text-sm text-[var(--c-amber)]">
                                                 归档
                                             </button>
                                         </>
                                     )}
                                 </div>
                             </div>
-                            {!revision && <p className="mt-5 text-sm text-[#86a991]">正在加载安全预览…</p>}
+                            {!revision && <p className="mt-5 text-sm text-[var(--c-text-3)]">正在加载安全预览…</p>}
                             {revision && (
                                 <div className="mt-5 space-y-5">
                                     <dl className="grid gap-3 text-sm sm:grid-cols-3">
                                         <div>
-                                            <dt className="text-[#86a991]">格式</dt>
+                                            <dt className="text-[var(--c-text-3)]">格式</dt>
                                             <dd>{revision.formats.join("、")}</dd>
                                         </div>
                                         <div>
-                                            <dt className="text-[#86a991]">校验和前缀</dt>
+                                            <dt className="text-[var(--c-text-3)]">校验和前缀</dt>
                                             <dd className="font-mono">{revision.checksum_prefix}</dd>
                                         </div>
                                         <div>
-                                            <dt className="text-[#86a991]">执行状态</dt>
+                                            <dt className="text-[var(--c-text-3)]">执行状态</dt>
                                             <dd>{revision.execution_available ? "可用" : "当前切片未启用执行"}</dd>
                                         </div>
                                     </dl>
-                                    <p className="rounded border border-[#285038] bg-[#0b1710] px-3 py-2 text-sm text-[#b9d0c0]">
+                                    <p className="rounded border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2 text-sm text-[var(--c-text-2)]">
                                         兼容性：{compatibilityMessage(selected, revision, capabilities)}
                                     </p>
                                     <WorkflowPreview preview={revision.preview} />
@@ -235,8 +235,8 @@ export default function AdminComfyWorkflowsPage() {
                                         <h3 className="font-semibold">依赖状态</h3>
                                         <ul className="mt-2 flex flex-wrap gap-2">
                                             {revision.dependencies.node_types.map((dependency) => (
-                                                <li key={dependency.type} className="rounded border border-[#285038] px-2 py-1 text-xs">
-                                                    {dependency.type} · <span className={dependency.is_core ? "text-[#8ff0aa]" : "text-[#eadc91]"}>{dependency.is_core ? "核心节点" : "需确认"}</span>
+                                                <li key={dependency.type} className="rounded border border-[var(--c-border)] px-2 py-1 text-xs">
+                                                    {dependency.type} · <span className={dependency.is_core ? "text-[var(--c-accent-soft)]" : "text-[var(--c-amber)]"}>{dependency.is_core ? "核心节点" : "需确认"}</span>
                                                 </li>
                                             ))}
                                         </ul>
@@ -245,17 +245,17 @@ export default function AdminComfyWorkflowsPage() {
                                         <h3 className="font-semibold">导出</h3>
                                         <div className="mt-2 flex flex-wrap gap-2">
                                             {revision.formats.map((format) => (
-                                                <button key={format} type="button" onClick={() => void download(format)} className="rounded border border-[#3a7650] px-3 py-1.5 text-sm">
+                                                <button key={format} type="button" onClick={() => void download(format)} className="rounded border border-[var(--c-border-strong)] px-3 py-1.5 text-sm">
                                                     下载 {format} JSON
                                                 </button>
                                             ))}
                                         </div>
                                     </section>
-                                    <section className="border-t border-[#1e482b] pt-5">
+                                    <section className="border-t border-[var(--c-border)] pt-5">
                                         <h3 className="font-semibold">账号派发</h3>
                                         {capabilities.assignments.available ? (
                                             <>
-                                                <p className="mt-1 text-xs text-[#86a991]">只有已派发且启用的工作流会出现在普通用户的可用模板中。</p>
+                                                <p className="mt-1 text-xs text-[var(--c-text-3)]">只有已派发且启用的工作流会出现在普通用户的可用模板中。</p>
                                                 <div className="mt-3 space-y-2">
                                                     {users
                                                         .filter((user) => user.role !== "admin")
@@ -267,9 +267,9 @@ export default function AdminComfyWorkflowsPage() {
                                                                     checked={(assignments[user.user_id] || []).includes(selected.workflow_id)}
                                                                     onChange={() => toggleAssignment(user.user_id)}
                                                                     disabled={status === "saving"}
-                                                                    className="accent-[#58ed87]"
+                                                                    className="accent-[var(--c-accent)]"
                                                                 />
-                                                                {user.display_name} <span className="text-xs text-[#86a991]">{user.username}</span>
+                                                                {user.display_name} <span className="text-xs text-[var(--c-text-3)]">{user.username}</span>
                                                             </label>
                                                         ))}
                                                 </div>
@@ -277,13 +277,13 @@ export default function AdminComfyWorkflowsPage() {
                                                     type="button"
                                                     disabled={!dirtyUsers.size || status === "saving"}
                                                     onClick={() => void saveAssignments()}
-                                                    className="mt-3 rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40"
+                                                    className="mt-3 rounded bg-[var(--c-accent)] px-4 py-2 text-sm font-semibold text-[var(--c-accent-fg)] disabled:opacity-40"
                                                 >
                                                     {status === "saving" ? "正在保存派发…" : "保存派发"}
                                                 </button>
                                             </>
                                         ) : (
-                                            <p className="mt-1 text-xs text-[#eadc91]">派发不可用：当前 Portal 身份只能验证请求用户，尚未配置受验证的用户目录。</p>
+                                            <p className="mt-1 text-xs text-[var(--c-amber)]">派发不可用：当前 Portal 身份只能验证请求用户，尚未配置受验证的用户目录。</p>
                                         )}
                                     </section>
                                 </div>

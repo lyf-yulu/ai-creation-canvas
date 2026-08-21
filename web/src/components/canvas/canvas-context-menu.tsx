@@ -107,7 +107,7 @@ function MenuButton({ icon, label, onClick, danger = false }: { icon: ReactNode;
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     return (
-        <button role="menuitem" type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:opacity-80" style={{ color: danger ? "#f87171" : theme.node.text }} onClick={onClick}>
+        <button role="menuitem" type="button" className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:opacity-80" style={{ color: danger ? "var(--c-danger)" : theme.node.text }} onClick={onClick}>
             {icon}
             <span>{label}</span>
         </button>

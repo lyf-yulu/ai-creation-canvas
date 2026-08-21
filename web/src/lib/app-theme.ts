@@ -3,7 +3,7 @@ import { theme as antdTheme } from "antd";
 
 const neutral = {
     light: {
-        primary: "#171717",
+        primary: "#2563eb",
         primaryHover: "#000000",
         primaryText: "#ffffff",
         menuBg: "#f5f5f5",
@@ -15,16 +15,16 @@ const neutral = {
         tableSelectedHoverBg: "rgba(17, 17, 17, 0.08)",
     },
     dark: {
-        primary: "#58ed87",
-        primaryHover: "#74f29a",
-        primaryText: "#041108",
-        menuBg: "#102619",
-        menuText: "#e9fff0",
-        selectActiveBg: "#102619",
-        selectSelectedBg: "#173823",
-        selectText: "#e9fff0",
-        tableSelectedBg: "rgba(88, 237, 135, 0.08)",
-        tableSelectedHoverBg: "rgba(88, 237, 135, 0.12)",
+        primary: "var(--c-accent)",
+        primaryHover: "var(--c-accent-soft)",
+        primaryText: "var(--c-accent-fg)",
+        menuBg: "var(--c-panel-hover)",
+        menuText: "var(--c-text)",
+        selectActiveBg: "var(--c-panel-hover)",
+        selectSelectedBg: "var(--c-panel-hover)",
+        selectText: "var(--c-text)",
+        tableSelectedBg: "rgba(var(--c-accent-rgb), 0.08)",
+        tableSelectedHoverBg: "rgba(var(--c-accent-rgb), 0.12)",
     },
 };
 

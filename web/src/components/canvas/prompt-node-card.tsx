@@ -136,57 +136,57 @@ export function PromptNodeCard({ node, disabled = false, onTextChange }: PromptN
     };
 
     return (
-        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
-            <header className="flex shrink-0 items-center gap-2 border-b border-[#1c3826] px-3 py-2">
-                <FileText className="size-4 text-[#58ed87]" />
+        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] text-xs text-[var(--c-text)] shadow-xl">
+            <header className="flex shrink-0 items-center gap-2 border-b border-[var(--c-border)] px-3 py-2">
+                <FileText className="size-4 text-[var(--c-accent)]" />
                 <strong>{node.title}</strong>
             </header>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-                <label className="block text-[11px] text-[#8fa596]" htmlFor={`prompt-node-${node.id}`}>提示词内容</label>
+                <label className="block text-[11px] text-[var(--c-text-3)]" htmlFor={`prompt-node-${node.id}`}>提示词内容</label>
                 <textarea
                     id={`prompt-node-${node.id}`}
                     aria-label="提示词内容"
                     disabled={disabled}
                     value={text}
                     placeholder="在这里输入提示词，也可以导入本地 TXT 文件"
-                    className="min-h-24 w-full resize-y rounded-lg border border-[#285038] bg-[#050806] p-2.5 text-sm leading-6 text-[#dceee1] placeholder:text-[#58705f] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#58ed87]"
+                    className="min-h-24 w-full resize-y rounded-lg border border-[var(--c-border)] bg-[var(--c-bg)] p-2.5 text-sm leading-6 text-[var(--c-text)] placeholder:text-[var(--c-text-3)] disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--c-accent)]"
                     onPointerDown={stopEditingGesture}
                     onChange={(event) => onTextChange(event.target.value)}
                 />
-                <label className="block text-[11px] text-[#8fa596]">
+                <label className="block text-[11px] text-[var(--c-text-3)]">
                     导入 TXT
                     <input
                         aria-label="导入 TXT"
                         disabled={disabled}
                         type="file"
                         accept="text/plain,.txt"
-                        className="mt-1 block w-full max-w-full text-[11px] text-[#9fb5a5] file:mr-2 file:rounded-md file:border file:border-[#356b48] file:bg-[#102319] file:px-2 file:py-1 file:text-[#65e98d] disabled:opacity-60"
+                        className="mt-1 block w-full max-w-full text-[11px] text-[var(--c-text-3)] file:mr-2 file:rounded-md file:border file:border-[var(--c-border-strong)] file:bg-[var(--c-panel-hover)] file:px-2 file:py-1 file:text-[var(--c-accent)] disabled:opacity-60"
                         onPointerDown={stopEditingGesture}
                         onChange={(event) => void importTxt(event)}
                     />
                 </label>
-                <section className="space-y-2 rounded-lg border border-[#285038] bg-[#07100a] p-2.5" data-canvas-no-drag>
-                    <button type="button" aria-expanded={skillPanelOpen} disabled={disabled} onClick={() => void openSkillPanel()} className="flex w-full items-center justify-between gap-2 text-[11px] font-medium text-[#65e98d] disabled:opacity-40"><span className="flex items-center gap-1.5"><Sparkles className="size-3.5" />提示词优化</span><span aria-hidden="true">{skillPanelOpen ? "−" : "+"}</span></button>
+                <section className="space-y-2 rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] p-2.5" data-canvas-no-drag>
+                    <button type="button" aria-expanded={skillPanelOpen} disabled={disabled} onClick={() => void openSkillPanel()} className="flex w-full items-center justify-between gap-2 text-[11px] font-medium text-[var(--c-accent)] disabled:opacity-40"><span className="flex items-center gap-1.5"><Sparkles className="size-3.5" />提示词优化</span><span aria-hidden="true">{skillPanelOpen ? "−" : "+"}</span></button>
                     {skillPanelOpen ? <div className="space-y-2">
-                        <select aria-label="优化 Skill" disabled={disabled || optimizing || skillsLoading || !skills.length} value={selectedSkill} onChange={(event) => { setSelectedSkill(event.target.value); setOptimized(null); setSkillError(null); }} className="block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1] disabled:opacity-50">
+                        <select aria-label="优化 Skill" disabled={disabled || optimizing || skillsLoading || !skills.length} value={selectedSkill} onChange={(event) => { setSelectedSkill(event.target.value); setOptimized(null); setSkillError(null); }} className="block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2 text-[var(--c-text)] disabled:opacity-50">
                             {skills.length ? skills.map((skill) => <option key={skill.skill_id} value={skill.skill_id}>{skill.title}</option>) : <option value="">{skillsLoading ? "正在读取 Skill…" : "暂无可用 Skill"}</option>}
                         </select>
-                        {selected ? <p className="text-[10px] leading-4 text-[#8fa596]">{selected.description}</p> : null}
-                        {!selected?.available && selected ? <p className="text-[10px] text-[#d6a35d]">管理员尚未启用提示词优化服务</p> : null}
-                        <button type="button" disabled={disabled || optimizing || !selected?.available || !text.trim()} onClick={() => void runOptimization()} className="w-full rounded-md border border-[#356b48] px-2 py-1.5 text-[#65e98d] disabled:opacity-40">{optimizing ? "正在优化…" : "一键优化"}</button>
+                        {selected ? <p className="text-[10px] leading-4 text-[var(--c-text-3)]">{selected.description}</p> : null}
+                        {!selected?.available && selected ? <p className="text-[10px] text-[var(--c-amber-2)]">管理员尚未启用提示词优化服务</p> : null}
+                        <button type="button" disabled={disabled || optimizing || !selected?.available || !text.trim()} onClick={() => void runOptimization()} className="w-full rounded-md border border-[var(--c-border-strong)] px-2 py-1.5 text-[var(--c-accent)] disabled:opacity-40">{optimizing ? "正在优化…" : "一键优化"}</button>
                     {optimized !== null ? <div className="space-y-2">
-                        <label className="block text-[10px] text-[#8fa596]">优化预览
-                            <textarea aria-label="优化预览" readOnly value={optimized} className="mt-1 min-h-24 w-full resize-y rounded-md border border-[#356b48] bg-[#050806] p-2 text-xs leading-5 text-[#dceee1]" />
+                        <label className="block text-[10px] text-[var(--c-text-3)]">优化预览
+                            <textarea aria-label="优化预览" readOnly value={optimized} className="mt-1 min-h-24 w-full resize-y rounded-md border border-[var(--c-border-strong)] bg-[var(--c-bg)] p-2 text-xs leading-5 text-[var(--c-text)]" />
                         </label>
                         <div className="flex gap-2">
-                            <button type="button" onClick={() => { onTextChange(optimized); setOptimized(null); }} className="flex-1 rounded-md bg-[#47d978] px-2 py-1.5 font-medium text-[#041008]">应用优化</button>
-                            <button type="button" onClick={() => setOptimized(null)} className="flex-1 rounded-md border border-[#435348] px-2 py-1.5">放弃</button>
+                            <button type="button" onClick={() => { onTextChange(optimized); setOptimized(null); }} className="flex-1 rounded-md bg-[var(--c-accent)] px-2 py-1.5 font-medium text-[var(--c-accent-fg)]">应用优化</button>
+                            <button type="button" onClick={() => setOptimized(null)} className="flex-1 rounded-md border border-[var(--c-border-strong)] px-2 py-1.5">放弃</button>
                         </div>
                     </div> : null}
-                        {skillError ? <p role="status" className="text-[10px] text-[#ff9b91]">{skillError}</p> : null}
+                        {skillError ? <p role="status" className="text-[10px] text-[var(--c-danger)]">{skillError}</p> : null}
                     </div> : null}
                 </section>
-                {error ? <p role="alert" className="rounded-md border border-[#743c36] bg-[#2a110f] px-2 py-1.5 text-[#ff9b91]">{error}</p> : null}
+                {error ? <p role="alert" className="rounded-md border border-[var(--c-danger-border)] bg-[var(--c-danger-bg)] px-2 py-1.5 text-[var(--c-danger)]">{error}</p> : null}
             </div>
         </article>
     );

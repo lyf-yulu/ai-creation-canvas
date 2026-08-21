@@ -58,12 +58,12 @@ function MediaPreview({ mediaType, item, label, nodeWidth, onView }: { mediaType
     const thumbWidth = Math.max(48, Math.min(160, Math.round(nodeWidth * 0.22)));
     if (mediaType === "image") {
         return (
-            <button type="button" aria-label={`查看 ${label} 详情`} title="点击查看大图" onClick={() => onView?.(item)} className="shrink-0 cursor-zoom-in rounded-md border border-[#294936] p-0 hover:border-[var(--c-accent)]">
+            <button type="button" aria-label={`查看 ${label} 详情`} title="点击查看大图" onClick={() => onView?.(item)} className="shrink-0 cursor-zoom-in rounded-md border border-[var(--c-border-strong)] p-0 hover:border-[var(--c-accent)]">
                 <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md object-cover" />
             </button>
         );
     }
-    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] bg-black object-cover" />;
+    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[var(--c-border-strong)] bg-black object-cover" />;
     return <audio src={source} aria-label={accessibleName} controls preload="metadata" className="h-9 w-40 max-w-full" />;
 }
 
@@ -84,7 +84,7 @@ function MediaPreviewDialog({ item, label, onClose }: { item: GraphMediaItem; la
             <section role="dialog" aria-modal="true" aria-label={`${label} 大图预览`} className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] text-[var(--c-text)] shadow-2xl">
                 <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--c-border)] px-4 py-2.5">
                     <h2 className="min-w-0 truncate text-sm font-semibold">{item.displayName}</h2>
-                    <button type="button" aria-label="关闭预览" onClick={onClose} className="shrink-0 rounded-lg border border-[#355f43] px-2.5 py-1 text-xs text-[var(--c-text-2)] hover:bg-[var(--c-panel-hover)]">关闭</button>
+                    <button type="button" aria-label="关闭预览" onClick={onClose} className="shrink-0 rounded-lg border border-[var(--c-border-strong)] px-2.5 py-1 text-xs text-[var(--c-text-2)] hover:bg-[var(--c-panel-hover)]">关闭</button>
                 </header>
                 <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/40 p-4">
                     <img
@@ -295,8 +295,8 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
     const resized = node.resized === true;
     const viewingDialog = viewing && items.some((candidate) => candidate.id === viewing.item.id) ? viewing : null;
 
-    return <> <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[var(--c-text)] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
-        <header className="flex shrink-0 items-center justify-between border-b border-[#203e2c] px-3 py-2">
+    return <> <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] text-[var(--c-text)] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
+        <header className="flex shrink-0 items-center justify-between border-b border-[var(--c-border)] px-3 py-2">
             <div><p className="text-[10px] tracking-[0.16em] text-[var(--c-accent)]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
             {!readOnly ? <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[var(--c-border-strong)] bg-[var(--c-panel-hover)] px-2 py-1 text-xs text-[var(--c-text-2)] hover:border-[var(--c-accent)]">
                 <Plus className="size-3.5" />添加
@@ -308,7 +308,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
             </label> : null}
         </header>
         <ol data-overflowing={String(overflowing)} className={`${resized ? "min-h-0 flex-1 overflow-y-auto" : overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
-            {selectionError ? <li role="alert" className="rounded-lg border border-[#744038] bg-[#281411] px-3 py-2 text-xs text-[#ffc0b5]">{selectionError}</li> : null}
+            {selectionError ? <li role="alert" className="rounded-lg border border-[var(--c-danger-border)] bg-[var(--c-panel)] px-3 py-2 text-xs text-[var(--c-danger-text)]">{selectionError}</li> : null}
             {items.map((item, index) => {
                 const label = mediaItemLabel(mediaType, index);
                 return <li key={item.id} data-testid={`media-item-${item.id}`} draggable={!readOnly || undefined}
@@ -321,8 +321,8 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                         draggedItemRef.current = null;
                         if (dragged) onItemsChange((current) => [...moveMediaItemTo(current, dragged, item.id)]);
                     }}
-                    className="flex items-center gap-2 rounded-lg border border-[#1e3a29] bg-[var(--c-panel)] p-2">
-                    {!readOnly ? <GripVertical className="size-4 shrink-0 text-[#647b6a]" aria-hidden="true" /> : null}
+                    className="flex items-center gap-2 rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] p-2">
+                    {!readOnly ? <GripVertical className="size-4 shrink-0 text-[var(--c-text-3)]" aria-hidden="true" /> : null}
                     <MediaPreview mediaType={mediaType} item={item} label={label} nodeWidth={node.width} onView={(mediaItem) => setViewing({ item: mediaItem, label })} />
                     <div className="min-w-0 flex-1"><p className="text-xs font-medium text-[var(--c-text-2)]">{label}</p>{readOnly
                         ? <p className="truncate text-[11px] text-[var(--c-text-3)]">{item.displayName}</p>
@@ -331,18 +331,18 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                             onItemsChange((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, displayName } : candidate));
                         }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} className="w-full rounded border border-transparent bg-transparent text-[11px] text-[var(--c-text-3)] outline-none focus:border-[var(--c-border-strong)] focus:bg-[var(--c-panel)]" />}</div>
                     {!readOnly ? <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" aria-label={`上移 ${label}`} disabled={index === 0} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, -1)])} className="rounded p-1 text-[#9db4a3] hover:bg-[#183322] disabled:opacity-30"><ChevronUp className="size-3.5" /></button>
-                        <button type="button" aria-label={`下移 ${label}`} disabled={index === items.length - 1} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, 1)])} className="rounded p-1 text-[#9db4a3] hover:bg-[#183322] disabled:opacity-30"><ChevronDown className="size-3.5" /></button>
-                        <button type="button" aria-label={`移除 ${label}`} onClick={() => onItemsChange((current) => current.filter((candidate) => candidate.id !== item.id))} className="rounded p-1 text-[#e7a69a] hover:bg-[#3a1e1b]"><Trash2 className="size-3.5" /></button>
+                        <button type="button" aria-label={`上移 ${label}`} disabled={index === 0} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, -1)])} className="rounded p-1 text-[var(--c-text-2)] hover:bg-[var(--c-border-strong)] disabled:opacity-30"><ChevronUp className="size-3.5" /></button>
+                        <button type="button" aria-label={`下移 ${label}`} disabled={index === items.length - 1} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, 1)])} className="rounded p-1 text-[var(--c-text-2)] hover:bg-[var(--c-border-strong)] disabled:opacity-30"><ChevronDown className="size-3.5" /></button>
+                        <button type="button" aria-label={`移除 ${label}`} onClick={() => onItemsChange((current) => current.filter((candidate) => candidate.id !== item.id))} className="rounded p-1 text-[var(--c-danger-text)] hover:bg-[var(--c-panel)]"><Trash2 className="size-3.5" /></button>
                     </div> : null}
                 </li>;
             })}
-            {pending.map((entry) => <li key={entry.id} role={entry.failed ? "alert" : "status"} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${entry.failed ? "border-[#744038] bg-[#281411] text-[#ffc0b5]" : "border-[#355f43] bg-[var(--c-panel-hover)] text-[var(--c-text-2)]"}`}>
+            {pending.map((entry) => <li key={entry.id} role={entry.failed ? "alert" : "status"} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${entry.failed ? "border-[var(--c-danger-border)] bg-[var(--c-panel)] text-[var(--c-danger-text)]" : "border-[var(--c-border-strong)] bg-[var(--c-panel-hover)] text-[var(--c-text-2)]"}`}>
                 <span className="min-w-0 flex-1 truncate">{entry.failed ? `${entry.name} 上传失败，请重试。` : `${entry.name} · ${entry.progress}%`}</span>
-                {!readOnly && entry.failed ? <><button type="button" aria-label={`重试 ${entry.name}`} onClick={() => retryEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">重试</button><button type="button" aria-label={`移除 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">移除错误</button></> : null}
-                {!entry.failed && !readOnly ? <button type="button" aria-label={`取消上传 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded p-1 hover:bg-[#24452f]"><X className="size-3.5" /></button> : null}
+                {!readOnly && entry.failed ? <><button type="button" aria-label={`重试 ${entry.name}`} onClick={() => retryEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[var(--c-panel)]">重试</button><button type="button" aria-label={`移除 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[var(--c-panel)]">移除错误</button></> : null}
+                {!entry.failed && !readOnly ? <button type="button" aria-label={`取消上传 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded p-1 hover:bg-[var(--c-border)]"><X className="size-3.5" /></button> : null}
             </li>)}
-            {items.length === 0 && pending.length === 0 ? <li className="rounded-lg border border-dashed border-[#31523c] px-4 py-7 text-center text-xs text-[var(--c-text-3)]">添加一个或多个{details.noun}，顺序会决定 @引用编号。</li> : null}
+            {items.length === 0 && pending.length === 0 ? <li className="rounded-lg border border-dashed border-[var(--c-border)] px-4 py-7 text-center text-xs text-[var(--c-text-3)]">添加一个或多个{details.noun}，顺序会决定 @引用编号。</li> : null}
         </ol>
     </article>
     {viewingDialog ? <MediaPreviewDialog item={viewingDialog.item} label={viewingDialog.label} onClose={() => setViewing(null)} /> : null}

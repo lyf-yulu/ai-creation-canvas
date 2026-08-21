@@ -342,7 +342,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
             aria-selected={selected}
             aria-disabled={disabled || undefined}
             tabIndex={0}
-            className={`absolute rounded-xl outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#7bff9f] ${selected ? "outline outline-2 outline-[#58ed87] shadow-[0_0_0_4px_rgba(88,237,135,0.18)]" : ""}`}
+            className={`absolute rounded-xl outline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--c-accent-soft)] ${selected ? "outline outline-2 outline-[var(--c-accent)] shadow-[0_0_0_4px_rgba(var(--c-accent-rgb),0.18)]" : ""}`}
             style={{ left: node.position.x, top: node.position.y, width: boxWidth, ...(boxHeight === undefined ? {} : { height: boxHeight }) }}
             onPointerDownCapture={handlePointerDownCapture}
             onPointerDown={handlePointerDown}
@@ -378,7 +378,7 @@ export function DraggableCanvasNode({ node, scale, onPositionChange, onMeasuredS
                     data-canvas-no-drag
                     data-canvas-no-zoom
                     onPointerDown={handleResizePointerDown}
-                    className="absolute -right-1.5 -bottom-1.5 z-20 size-4 cursor-nwse-resize rounded-sm border-2 border-[#0a140e] bg-[#58ed87] shadow-[0_0_0_1px_rgba(88,237,135,0.55)]"
+                    className="absolute -right-1.5 -bottom-1.5 z-20 size-4 cursor-nwse-resize rounded-sm border-2 border-[var(--c-panel)] bg-[var(--c-accent)] shadow-[0_0_0_1px_rgba(var(--c-accent-rgb),0.55)]"
                 />
             ) : null}
         </div>

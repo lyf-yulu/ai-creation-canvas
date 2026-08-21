@@ -35,27 +35,27 @@ export default function RegisterPage() {
     const formReady = username.trim() !== "" && displayName.trim() !== "" && password.length >= 12 && confirm.length >= 12;
 
     return (
-        <main className="flex min-h-dvh items-center justify-center bg-[#050806] px-5 text-[#e5f5e9]">
-            <section className="w-full max-w-sm rounded-2xl border border-[#21472f] bg-[#0a130d] p-7 shadow-2xl">
+        <main className="flex min-h-dvh items-center justify-center bg-[var(--c-bg)] px-5 text-[var(--c-text)]">
+            <section className="w-full max-w-sm rounded-2xl border border-[var(--c-border)] bg-[var(--c-panel)] p-7 shadow-2xl">
                 {submitted ? <div>
-                    <p className="text-xs tracking-[0.25em] text-[#55e986]">AI CREATION CANVAS</p>
+                    <p className="text-xs tracking-[0.25em] text-[var(--c-accent)]">AI CREATION CANVAS</p>
                     <h1 className="mt-3 text-2xl font-semibold">注册已提交</h1>
-                    <p className="mt-2 text-sm text-[#8da995]">注册已提交，请等待管理员审核后登录。</p>
-                    <p className="mt-6 text-center text-sm text-[#8da995]"><Link to="/login" className="text-[#55e986] hover:underline">返回登录</Link></p>
+                    <p className="mt-2 text-sm text-[var(--c-text-3)]">注册已提交，请等待管理员审核后登录。</p>
+                    <p className="mt-6 text-center text-sm text-[var(--c-text-3)]"><Link to="/login" className="text-[var(--c-accent)] hover:underline">返回登录</Link></p>
                 </div> : <div>
-                    <p className="text-xs tracking-[0.25em] text-[#55e986]">AI CREATION CANVAS</p>
+                    <p className="text-xs tracking-[0.25em] text-[var(--c-accent)]">AI CREATION CANVAS</p>
                     <h1 className="mt-3 text-2xl font-semibold">注册新账号</h1>
-                    <p className="mt-2 text-sm text-[#8da995]">注册后需等待管理员审核通过，才能登录使用。</p>
+                    <p className="mt-2 text-sm text-[var(--c-text-3)]">注册后需等待管理员审核通过，才能登录使用。</p>
                     <form className="mt-6 space-y-4" onSubmit={(event) => void submit(event)}>
-                        <label className="block text-sm">用户名<input aria-label="用户名" autoComplete="username" className="mt-1 w-full rounded-lg border border-[#284d35] bg-[#071009] px-3 py-2 text-[#ecfff1] outline-none focus:border-[#59ed87]" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
-                        <label className="block text-sm">显示名称<input aria-label="显示名称" className="mt-1 w-full rounded-lg border border-[#284d35] bg-[#071009] px-3 py-2 text-[#ecfff1] outline-none focus:border-[#59ed87]" value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
-                        <label className="block text-sm">密码<input aria-label="密码" type="password" autoComplete="new-password" minLength={12} className="mt-1 w-full rounded-lg border border-[#284d35] bg-[#071009] px-3 py-2 text-[#ecfff1] outline-none focus:border-[#59ed87]" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-                        <label className="block text-sm">确认密码<input aria-label="确认密码" type="password" autoComplete="new-password" minLength={12} className="mt-1 w-full rounded-lg border border-[#284d35] bg-[#071009] px-3 py-2 text-[#ecfff1] outline-none focus:border-[#59ed87]" value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>
-                        <p className="text-xs text-[#688371]">密码至少 12 个字符。</p>
-                        {message ? <p role="alert" className="text-sm text-[#ffbd73]">{message}</p> : null}
-                        <button type="submit" disabled={busy || !formReady} className="w-full rounded-lg bg-[#54e982] px-4 py-2.5 font-semibold text-[#041108] disabled:opacity-45">{busy ? "提交中…" : "提交注册"}</button>
+                        <label className="block text-sm">用户名<input aria-label="用户名" autoComplete="username" className="mt-1 w-full rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2 text-[var(--c-text)] outline-none focus:border-[var(--c-accent)]" value={username} onChange={(event) => setUsername(event.target.value)} /></label>
+                        <label className="block text-sm">显示名称<input aria-label="显示名称" className="mt-1 w-full rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2 text-[var(--c-text)] outline-none focus:border-[var(--c-accent)]" value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label>
+                        <label className="block text-sm">密码<input aria-label="密码" type="password" autoComplete="new-password" minLength={12} className="mt-1 w-full rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2 text-[var(--c-text)] outline-none focus:border-[var(--c-accent)]" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+                        <label className="block text-sm">确认密码<input aria-label="确认密码" type="password" autoComplete="new-password" minLength={12} className="mt-1 w-full rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2 text-[var(--c-text)] outline-none focus:border-[var(--c-accent)]" value={confirm} onChange={(event) => setConfirm(event.target.value)} /></label>
+                        <p className="text-xs text-[var(--c-text-3)]">密码至少 12 个字符。</p>
+                        {message ? <p role="alert" className="text-sm text-[var(--c-warning)]">{message}</p> : null}
+                        <button type="submit" disabled={busy || !formReady} className="w-full rounded-lg bg-[var(--c-accent)] px-4 py-2.5 font-semibold text-[var(--c-accent-fg)] disabled:opacity-45">{busy ? "提交中…" : "提交注册"}</button>
                     </form>
-                    <p className="mt-5 text-center text-sm text-[#8da995]">已有账号？<Link to="/login" className="text-[#55e986] hover:underline">登录</Link></p>
+                    <p className="mt-5 text-center text-sm text-[var(--c-text-3)]">已有账号？<Link to="/login" className="text-[var(--c-accent)] hover:underline">登录</Link></p>
                 </div>}
             </section>
         </main>

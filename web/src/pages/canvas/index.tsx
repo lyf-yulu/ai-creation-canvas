@@ -106,8 +106,8 @@ export default function CanvasPage() {
                     </div>
                 </header>
 
-                {syncNotice ? <p role="status" className="rounded-lg border border-[#70502b] bg-[#241a0c] px-4 py-3 text-sm text-[#ffbd73]">{syncNotice}</p> : null}
-                {loadError ? <p role="alert" className="rounded-lg border border-[#70502b] bg-[#241a0c] px-4 py-3 text-sm text-[#ffbd73]">{loadError.message}</p> : null}
+                {syncNotice ? <p role="status" className="rounded-lg border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] px-4 py-3 text-sm text-[var(--c-warning)]">{syncNotice}</p> : null}
+                {loadError ? <p role="alert" className="rounded-lg border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] px-4 py-3 text-sm text-[var(--c-warning)]">{loadError.message}</p> : null}
 
                 {!hydrated ? (
                     <section className="flex min-h-[360px] items-center justify-center border-y border-stone-200 text-sm text-stone-500 dark:border-stone-800">正在加载画布...</section>

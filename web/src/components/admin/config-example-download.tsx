@@ -30,7 +30,7 @@ export function ConfigExampleDownload({ kind }: Props) {
             type="button"
             disabled={busy}
             onClick={() => void click()}
-            className="rounded border border-[#3a7650] px-3 py-1.5 text-xs text-[#8ff0aa] disabled:opacity-40"
+            className="rounded border border-[var(--c-border-strong)] px-3 py-1.5 text-xs text-[var(--c-accent-soft)] disabled:opacity-40"
         >
             {busy ? "下载中…" : "下载示例 JSON"}
         </button>

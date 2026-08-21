@@ -41,7 +41,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
     const visibleControls = controls.filter((control) => !control.visibleWhen || Object.is(graph.parameters[control.visibleWhen.name], control.visibleWhen.equals));
     const busy = node.metadata?.status === "loading" || node.metadata?.jobStatus === "queued" || node.metadata?.jobStatus === "running";
     const editDisabled = disabled || busy;
-    if (!selected) return <article className="rounded-xl border border-[#6b4b2c] bg-[#171008] p-3 text-xs text-[#ffbd73]">暂无可用模型。</article>;
+    if (!selected) return <article className="rounded-xl border border-[var(--c-amber-border)] bg-[var(--c-panel)] p-3 text-xs text-[var(--c-warning)]">暂无可用模型。</article>;
     const updateParameter = (name: string, value: GraphParameterValue) => onChange({ ...graph, parameters: { ...graph.parameters, [name]: value } });
     const choose = (modelId: string) => {
         const next = operationModels.find((model) => model.model_id === modelId);
@@ -55,19 +55,19 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
         onChange({ ...graph, operation: nextOperation, modelId: next.model_id, inputPorts: graphPortsForModel(next), parameters: defaults(next) });
     };
     return (
-        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
-            <header className="flex shrink-0 items-center gap-2 border-b border-[#1c3826] px-3 py-2">
-                <Sparkles className="size-4 text-[#58ed87]" />
+        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] text-xs text-[var(--c-text)] shadow-xl">
+            <header className="flex shrink-0 items-center gap-2 border-b border-[var(--c-border)] px-3 py-2">
+                <Sparkles className="size-4 text-[var(--c-accent)]" />
                 <strong>{node.title}</strong>
             </header>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-canvas-no-zoom>
-                <p role="status" className="text-[11px] text-[#9fb5a5]">
+                <p role="status" className="text-[11px] text-[var(--c-text-3)]">
                     任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中（平台不支持取消运行中任务）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
                 </p>
                 {operations.length > 1 ? (
-                    <label className="block text-[11px] text-[#9fb5a5]">
+                    <label className="block text-[11px] text-[var(--c-text-3)]">
                         模式
-                        <select aria-label="模式" disabled={editDisabled} value={operation} onChange={(event) => switchOperation(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
+                        <select aria-label="模式" disabled={editDisabled} value={operation} onChange={(event) => switchOperation(event.target.value)} className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2 text-[var(--c-text)]">
                             {operations.map((item) => (
                                 <option key={item} value={item}>
                                     {OPERATION_LABELS[item] ?? item}
@@ -76,9 +76,9 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         </select>
                     </label>
                 ) : null}
-                <label className="block text-[11px] text-[#9fb5a5]">
+                <label className="block text-[11px] text-[var(--c-text-3)]">
                     模型
-                    <select aria-label="模型" disabled={editDisabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2 text-[#dceee1]">
+                    <select aria-label="模型" disabled={editDisabled} value={selected.model_id} onChange={(event) => choose(event.target.value)} className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2 text-[var(--c-text)]">
                         {operationModels.map((model) => (
                             <option key={model.model_id} value={model.model_id}>
                                 {model.display_name}
@@ -86,15 +86,15 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         ))}
                     </select>
                 </label>
-                <div className="flex flex-wrap gap-1 text-[10px] text-[#8fa596]">
+                <div className="flex flex-wrap gap-1 text-[10px] text-[var(--c-text-3)]">
                     {declaredModelPorts(selected).map((port) => (
-                        <span key={port.port_id} className="rounded border border-[#264532] px-1.5 py-1">
+                        <span key={port.port_id} className="rounded border border-[var(--c-border)] px-1.5 py-1">
                             {port.port_id === "prompt" ? "提示词" : port.port_id}：{port.max_items}
                         </span>
                     ))}
                 </div>
                 {visibleControls.map((control) => (
-                    <label key={control.name} className="block text-[11px] text-[#9fb5a5]">
+                    <label key={control.name} className="block text-[11px] text-[var(--c-text-3)]">
                         {control.title ?? control.name}
                         {control.type === "enum" ? (
                             (() => {
@@ -106,7 +106,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                                         disabled={editDisabled}
                                         value={String(index >= 0 ? index : 0)}
                                         onChange={(event) => updateParameter(control.name, control.enum?.[Number(event.target.value)] ?? null)}
-                                        className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                                        className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2"
                                     >
                                         {control.enum?.map((value, optionIndex) => (
                                             <option key={String(value)} value={optionIndex}>
@@ -138,7 +138,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                                                 setCustomOpen((previous) => ({ ...previous, [control.name]: false }));
                                                 updateParameter(control.name, presets[next]);
                                             }}
-                                            className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                                            className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2"
                                         >
                                             {presets.map((preset) => (
                                                 <option key={preset} value={presets.indexOf(preset)}>
@@ -155,7 +155,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                                                 placeholder="如 2048x1024"
                                                 value={typeof raw === "string" ? raw : ""}
                                                 onChange={(event) => updateParameter(control.name, event.target.value)}
-                                                className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                                                className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2"
                                             />
                                         ) : null}
                                     </div>
@@ -168,7 +168,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                                 type="checkbox"
                                 checked={graph.parameters[control.name] === true}
                                 onChange={(event) => updateParameter(control.name, event.target.checked)}
-                                className="ml-2 accent-[#58ed87]"
+                                className="ml-2 accent-[var(--c-accent)]"
                             />
                         ) : (
                             <input
@@ -180,30 +180,30 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                                 step={control.type === "integer" ? 1 : undefined}
                                 value={String(graph.parameters[control.name] ?? "")}
                                 onChange={(event) => updateParameter(control.name, control.type === "number" || control.type === "integer" ? event.target.value === "" ? null : Number(event.target.value) : event.target.value)}
-                                className="mt-1 block w-full rounded-md border border-[#285038] bg-[#050806] p-2"
+                                className="mt-1 block w-full rounded-md border border-[var(--c-border)] bg-[var(--c-bg)] p-2"
                             />
                         )}
-                        {control.description ? <span className="mt-1 block text-[10px] leading-4 text-[#789080]">{control.description}</span> : null}
+                        {control.description ? <span className="mt-1 block text-[10px] leading-4 text-[var(--c-text-3)]">{control.description}</span> : null}
                     </label>
                 ))}
             </div>
-            <footer className="shrink-0 space-y-2 border-t border-[#1c3826] p-3">
+            <footer className="shrink-0 space-y-2 border-t border-[var(--c-border)] p-3">
                 <button
                     type="button"
                     disabled={editDisabled}
                     onClick={node.metadata?.status === "error" && node.metadata.idempotencyKey && onRetry ? () => onRetry(node.metadata!.idempotencyKey!) : onRun}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#47d978] px-3 py-2 font-semibold text-[#041008] disabled:opacity-40"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--c-accent)] px-3 py-2 font-semibold text-[var(--c-accent-fg)] disabled:opacity-40"
                 >
                     <Play className="size-3.5" />
                     {node.metadata?.status === "error" && node.metadata.idempotencyKey ? "使用原任务键重试" : "运行模型"}
                 </button>
                 {node.metadata?.jobStatus === "queued" && node.metadata.jobId && onCancel ? (
-                    <button type="button" disabled={disabled} onClick={() => onCancel(node.metadata!.jobId!)} className="w-full rounded-lg border border-[#6b4b2c] px-3 py-2 text-[#ffbd73] disabled:opacity-40">
+                    <button type="button" disabled={disabled} onClick={() => onCancel(node.metadata!.jobId!)} className="w-full rounded-lg border border-[var(--c-amber-border)] px-3 py-2 text-[var(--c-warning)] disabled:opacity-40">
                         取消排队任务
                     </button>
                 ) : null}
                 {message ? (
-                    <p role="status" className="text-[#ffbd73]">
+                    <p role="status" className="text-[var(--c-warning)]">
                         {message}
                     </p>
                 ) : null}

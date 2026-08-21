@@ -111,23 +111,23 @@ export function AssetLibraryPanel({
     };
 
     return (
-        <aside className="fixed bottom-20 right-6 z-40 flex max-h-[60vh] w-80 flex-col rounded-xl border border-[#245a35] bg-[#07110b] p-4 shadow-2xl" aria-label="人像资产库">
+        <aside className="fixed bottom-20 right-6 z-40 flex max-h-[60vh] w-80 flex-col rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-4 shadow-2xl" aria-label="人像资产库">
             <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold">人像资产库</h2>
-                <button type="button" onClick={onClose} aria-label="关闭人像资产库" className="text-xs text-[#86a991] hover:text-[#8ff0aa]">关闭</button>
+                <button type="button" onClick={onClose} aria-label="关闭人像资产库" className="text-xs text-[var(--c-text-3)] hover:text-[var(--c-accent-soft)]">关闭</button>
             </div>
-            <p className="mt-1 text-xs text-[#86a991]">上传的人像会进入火山方舟私域资产库，生成视频时以资产引用方式使用。</p>
+            <p className="mt-1 text-xs text-[var(--c-text-3)]">上传的人像会进入火山方舟私域资产库，生成视频时以资产引用方式使用。</p>
             {targets.length ? (
-                <label className="mt-3 text-xs text-[#b9d0c0]">
+                <label className="mt-3 text-xs text-[var(--c-text-2)]">
                     添加到素材节点
-                    <select value={targetId} onChange={(event) => setTargetId(event.target.value)} aria-label="选择目标素材节点" className="mt-1 block w-full rounded border border-[#285038] bg-[#102719] px-2 py-1 text-xs text-[#8ff0aa]">
+                    <select value={targetId} onChange={(event) => setTargetId(event.target.value)} aria-label="选择目标素材节点" className="mt-1 block w-full rounded border border-[var(--c-border)] bg-[var(--c-panel-hover)] px-2 py-1 text-xs text-[var(--c-accent-soft)]">
                         {targets.map((target) => (
                             <option key={target.nodeId} value={target.nodeId}>{target.label}</option>
                         ))}
                     </select>
                 </label>
             ) : (
-                <p className="mt-3 rounded border border-[#245a35] bg-[#0a1a10] p-2 text-xs text-[#95ad9c]">先在画布中添加一个图片素材节点，再从这里添加人像。</p>
+                <p className="mt-3 rounded border border-[var(--c-border)] bg-[var(--c-panel)] p-2 text-xs text-[var(--c-text-3)]">先在画布中添加一个图片素材节点，再从这里添加人像。</p>
             )}
             <div className="mt-3 flex items-center gap-2">
                 <input
@@ -140,20 +140,20 @@ export function AssetLibraryPanel({
                         const selected = event.target.files?.[0];
                         if (selected) void submitFile(selected);
                     }}
-                    className="block max-w-full text-xs file:mr-3 file:rounded file:border file:border-[#285038] file:bg-[#102719] file:px-3 file:py-2 file:text-[#8ff0aa]"
+                    className="block max-w-full text-xs file:mr-3 file:rounded file:border file:border-[var(--c-border)] file:bg-[var(--c-panel-hover)] file:px-3 file:py-2 file:text-[var(--c-accent-soft)]"
                 />
-                <button type="button" onClick={() => void refresh()} disabled={uploading} aria-label="刷新资产库" className="shrink-0 rounded border border-[#285038] bg-[#102719] px-2 py-1 text-xs text-[#8ff0aa] disabled:opacity-50">刷新</button>
+                <button type="button" onClick={() => void refresh()} disabled={uploading} aria-label="刷新资产库" className="shrink-0 rounded border border-[var(--c-border)] bg-[var(--c-panel-hover)] px-2 py-1 text-xs text-[var(--c-accent-soft)] disabled:opacity-50">刷新</button>
             </div>
-            {error ? <p className="mt-2 text-xs text-[#e8a17d]" role="alert">{error}</p> : null}
+            {error ? <p className="mt-2 text-xs text-[var(--c-warning)]" role="alert">{error}</p> : null}
             <div className="mt-3 flex-1 overflow-y-auto" aria-label="资产库列表">
-                {loading ? <p className="text-xs text-[#86a991]">加载中…</p> : null}
-                {!loading && !assets.length ? <p className="text-xs text-[#86a991]">资产库还没有人像，选择图片上传即可。</p> : null}
+                {loading ? <p className="text-xs text-[var(--c-text-3)]">加载中…</p> : null}
+                {!loading && !assets.length ? <p className="text-xs text-[var(--c-text-3)]">资产库还没有人像，选择图片上传即可。</p> : null}
                 <ul className="space-y-2">
                     {assets.map((asset) => (
-                        <li key={asset.id} className="flex items-center justify-between rounded border border-[#1d3a26] bg-[#0a1a10] p-2">
+                        <li key={asset.id} className="flex items-center justify-between rounded border border-[var(--c-border)] bg-[var(--c-panel)] p-2">
                             <div className="min-w-0">
-                                <p className="truncate text-xs text-[#b9d0c0]">{asset.id}</p>
-                                <p className="text-[10px] text-[#86a991]">
+                                <p className="truncate text-xs text-[var(--c-text-2)]">{asset.id}</p>
+                                <p className="text-[10px] text-[var(--c-text-3)]">
                                     {asset.status === "active" ? "已就绪" : asset.status === "processing" ? "审核处理中…" : "处理失败"}
                                 </p>
                             </div>
@@ -162,7 +162,7 @@ export function AssetLibraryPanel({
                                 disabled={asset.status !== "active" || !targets.length}
                                 onClick={() => addActive(asset)}
                                 aria-label={`添加 ${asset.id} 到素材节点`}
-                                className="shrink-0 rounded border border-[#285038] bg-[#102719] px-2 py-1 text-xs text-[#8ff0aa] disabled:cursor-not-allowed disabled:opacity-40"
+                                className="shrink-0 rounded border border-[var(--c-border)] bg-[var(--c-panel-hover)] px-2 py-1 text-xs text-[var(--c-accent-soft)] disabled:cursor-not-allowed disabled:opacity-40"
                             >
                                 添加
                             </button>

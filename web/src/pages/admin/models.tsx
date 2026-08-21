@@ -168,25 +168,25 @@ export default function AdminModelsPage() {
     const unavailableAssigned = assignedIds.filter((id) => !assignable.some((model) => model.model_id === id));
 
     return (
-        <section className="mx-auto min-w-0 max-w-7xl overflow-x-clip px-4 py-7 text-[#e5f5e9] sm:px-5">
-            <p className="text-xs tracking-[0.2em] text-[#58ed87]">ADMIN · LOGICAL MODELS</p>
+        <section className="mx-auto min-w-0 max-w-7xl overflow-x-clip px-4 py-7 text-[var(--c-text)] sm:px-5">
+            <p className="text-xs tracking-[0.2em] text-[var(--c-accent)]">ADMIN · LOGICAL MODELS</p>
             <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
                 <div>
                     <h1 className="text-2xl font-semibold sm:text-3xl">模型与调用线路</h1>
-                    <p className="mt-2 max-w-3xl text-sm text-[#95ad9c]">用户只选择逻辑模型。Provider、线路和凭据池由管理员在这里隔离管理，真实凭据仅由部署配置提供。</p>
+                    <p className="mt-2 max-w-3xl text-sm text-[var(--c-text-3)]">用户只选择逻辑模型。Provider、线路和凭据池由管理员在这里隔离管理，真实凭据仅由部署配置提供。</p>
                 </div>
-                <label className="flex items-center gap-2 text-sm text-[#b9d0c0]">
-                    <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="accent-[#58ed87]" />
+                <label className="flex items-center gap-2 text-sm text-[var(--c-text-2)]">
+                    <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} className="accent-[var(--c-accent)]" />
                     显示已归档
                 </label>
             </div>
             {status === "loading" && (
-                <p role="status" className="mt-5 text-sm text-[#86a991]">
+                <p role="status" className="mt-5 text-sm text-[var(--c-text-3)]">
                     正在加载管理配置…
                 </p>
             )}
             {status === "failed" && (
-                <p role="alert" className="mt-5 text-sm text-[#ffbd73]">
+                <p role="alert" className="mt-5 text-sm text-[var(--c-warning)]">
                     管理配置未能加载，请重试。
                 </p>
             )}
@@ -196,7 +196,7 @@ export default function AdminModelsPage() {
             <ArkKeyImport />
 
             <div className="mt-6 grid min-w-0 gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
-                <aside className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-3">
+                <aside className="min-w-0 rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-3">
                     <div className="flex items-center justify-between gap-2">
                         <h2 className="font-semibold">逻辑模型</h2>
                         <button
@@ -205,7 +205,7 @@ export default function AdminModelsPage() {
                                 setCreatingModel(true);
                                 setSelectedModelId("");
                             }}
-                            className="rounded bg-[#183f26] px-2.5 py-1.5 text-xs text-[#8ff0aa]"
+                            className="rounded bg-[var(--c-panel-hover)] px-2.5 py-1.5 text-xs text-[var(--c-accent-soft)]"
                         >
                             新建
                         </button>
@@ -220,10 +220,10 @@ export default function AdminModelsPage() {
                                     setCreatingModel(false);
                                     setSelectedModelId(model.model_id);
                                 }}
-                                className={`min-w-0 rounded-lg border p-3 text-left ${selectedModelId === model.model_id ? "border-[#58ed87] bg-[#102719]" : "border-[#1e482b] bg-[#0a1710]"}`}
+                                className={`min-w-0 rounded-lg border p-3 text-left ${selectedModelId === model.model_id ? "border-[var(--c-accent)] bg-[var(--c-panel-hover)]" : "border-[var(--c-border)] bg-[var(--c-panel)]"}`}
                             >
                                 <span className="block truncate text-sm font-medium">{model.display_name}</span>
-                                <span className="mt-1 block truncate text-xs text-[#86a991]">
+                                <span className="mt-1 block truncate text-xs text-[var(--c-text-3)]">
                                     {model.modality === "image" ? "图像" : "视频"} · {model.enabled ? "已启用" : "已停用"}
                                     {model.archived_at ? " · 已归档" : ""}
                                 </span>
@@ -235,12 +235,12 @@ export default function AdminModelsPage() {
                     {creatingModel && <ModelEditor model={null} onSave={createAdminLogicalModel} onSaved={replaceModel} />}
                     {selectedModel && historicalModel && (
                         <>
-                            <section className="rounded-xl border border-[#594d2a] bg-[#171408] p-4">
-                                <h2 className="text-lg font-semibold text-[#eadc91]">只读历史模型</h2>
-                                <p className="mt-2 text-sm text-[#cdbf83]">
+                            <section className="rounded-xl border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] p-4">
+                                <h2 className="text-lg font-semibold text-[var(--c-amber)]">只读历史模型</h2>
+                                <p className="mt-2 text-sm text-[var(--c-amber-2)]">
                                     {selectedModel.display_name} · {selectedModel.model_id} · 修订 {selectedModel.revision}
                                 </p>
-                                <p className="mt-1 text-xs text-[#9e966d]">运行配置已清理，仅保留不可执行的审计信息。</p>
+                                <p className="mt-1 text-xs text-[var(--c-amber-text)]">运行配置已清理，仅保留不可执行的审计信息。</p>
                             </section>
                             <ObjectLifecycleActions
                                 historical
@@ -258,7 +258,7 @@ export default function AdminModelsPage() {
                                 onChanged={replaceModel}
                                 onDeleted={removeModel}
                             />
-                            <section className="min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-4">
+                            <section className="min-w-0 rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-4">
                                 <h2 className="text-lg font-semibold">历史线路</h2>
                                 <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-2">
                                     {routes.map((route) => (
@@ -266,7 +266,7 @@ export default function AdminModelsPage() {
                                             key={route.route_id}
                                             type="button"
                                             onClick={() => setSelectedRouteId(route.route_id)}
-                                            className={`min-w-0 rounded-lg border p-3 text-left ${selectedRouteId === route.route_id ? "border-[#58ed87] bg-[#102719]" : "border-[#1e482b] bg-[#0a1710]"}`}
+                                            className={`min-w-0 rounded-lg border p-3 text-left ${selectedRouteId === route.route_id ? "border-[var(--c-accent)] bg-[var(--c-panel-hover)]" : "border-[var(--c-border)] bg-[var(--c-panel)]"}`}
                                         >
                                             {route.route_id}
                                         </button>
@@ -275,9 +275,9 @@ export default function AdminModelsPage() {
                             </section>
                             {selectedRoute && historicalRoute && (
                                 <>
-                                    <section className="rounded-xl border border-[#594d2a] bg-[#171408] p-4">
-                                        <h2 className="text-lg font-semibold text-[#eadc91]">只读历史线路</h2>
-                                        <p className="mt-2 text-sm text-[#cdbf83]">
+                                    <section className="rounded-xl border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] p-4">
+                                        <h2 className="text-lg font-semibold text-[var(--c-amber)]">只读历史线路</h2>
+                                        <p className="mt-2 text-sm text-[var(--c-amber-2)]">
                                             {selectedRoute.route_id} · 修订 {selectedRoute.revision}
                                         </p>
                                     </section>
@@ -344,12 +344,12 @@ export default function AdminModelsPage() {
                                 const auditRoutes = routes.filter((route) => Boolean(route.archived_at) || duplicateRouteIds.has(route.route_id) || !presets.some((preset) => routeMatchesCallingPreset(route, preset)));
                                 return (
                                     auditRoutes.length > 0 && (
-                                        <details className="min-w-0 rounded-xl border border-[#594d2a] bg-[#171408] p-4">
-                                            <summary className="cursor-pointer text-sm font-semibold text-[#eadc91]">历史审计记录（{auditRoutes.length}）</summary>
-                                            <p className="mt-2 text-xs text-[#cdbf83]">这些记录已归档、重复、运行配置已清理，或不属于当前受信预置；仅保留只读追溯。</p>
-                                            <ul className="mt-3 grid gap-2 text-sm text-[#cdbf83]">
+                                        <details className="min-w-0 rounded-xl border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] p-4">
+                                            <summary className="cursor-pointer text-sm font-semibold text-[var(--c-amber)]">历史审计记录（{auditRoutes.length}）</summary>
+                                            <p className="mt-2 text-xs text-[var(--c-amber-2)]">这些记录已归档、重复、运行配置已清理，或不属于当前受信预置；仅保留只读追溯。</p>
+                                            <ul className="mt-3 grid gap-2 text-sm text-[var(--c-amber-2)]">
                                                 {auditRoutes.map((route) => (
-                                                    <li key={route.route_id} className="rounded border border-[#594d2a] px-3 py-2">
+                                                    <li key={route.route_id} className="rounded border border-[var(--c-amber-border)] px-3 py-2">
                                                         <span className="font-mono">{route.route_id}</span> · 修订 {route.revision}
                                                     </li>
                                                 ))}
@@ -363,12 +363,12 @@ export default function AdminModelsPage() {
                 </main>
             </div>
 
-            <section className="mt-8 min-w-0 rounded-xl border border-[#245a35] bg-[#07110b] p-4">
+            <section className="mt-8 min-w-0 rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] p-4">
                 <h2 className="text-lg font-semibold">用户模型派发</h2>
-                <p className="mt-1 text-xs text-[#86a991]">只派发逻辑模型 ID；线路和凭据池对普通用户不可见。</p>
+                <p className="mt-1 text-xs text-[var(--c-text-3)]">只派发逻辑模型 ID；线路和凭据池对普通用户不可见。</p>
                 <label className="mt-4 block max-w-md text-sm">
                     选择账号
-                    <select aria-label="选择账号" value={userId} onChange={(event) => setUserId(event.target.value)} className="mt-1 block w-full min-w-0 rounded border border-[#285038] bg-[#0b1710] px-3 py-2">
+                    <select aria-label="选择账号" value={userId} onChange={(event) => setUserId(event.target.value)} className="mt-1 block w-full min-w-0 rounded border border-[var(--c-border)] bg-[var(--c-panel)] px-3 py-2">
                         <option value="">请选择账号</option>
                         {users.map((item) => (
                             <option key={item.user_id} value={item.user_id}>
@@ -379,24 +379,24 @@ export default function AdminModelsPage() {
                 </label>
                 <div className="mt-4 grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {assignable.map((model) => (
-                        <label key={model.model_id} className="flex min-w-0 gap-2 rounded-lg border border-[#1e482b] bg-[#0a1710] p-3 text-sm">
-                            <input type="checkbox" aria-label={model.display_name} disabled={!userId} checked={assignedIds.includes(model.model_id)} onChange={() => toggleAssignment(model.model_id)} className="accent-[#58ed87]" />
+                        <label key={model.model_id} className="flex min-w-0 gap-2 rounded-lg border border-[var(--c-border)] bg-[var(--c-panel)] p-3 text-sm">
+                            <input type="checkbox" aria-label={model.display_name} disabled={!userId} checked={assignedIds.includes(model.model_id)} onChange={() => toggleAssignment(model.model_id)} className="accent-[var(--c-accent)]" />
                             <span className="min-w-0 truncate">{model.display_name}</span>
                         </label>
                     ))}
                     {unavailableAssigned.map((id) => (
-                        <label key={id} className="flex min-w-0 gap-2 rounded-lg border border-[#594d2a] bg-[#171408] p-3 text-sm text-[#d8c981]">
-                            <input type="checkbox" aria-label={`取消不可用模型 ${id}`} checked onChange={() => toggleAssignment(id)} className="accent-[#d8c981]" />
+                        <label key={id} className="flex min-w-0 gap-2 rounded-lg border border-[var(--c-amber-border)] bg-[var(--c-amber-bg)] p-3 text-sm text-[var(--c-amber-2)]">
+                            <input type="checkbox" aria-label={`取消不可用模型 ${id}`} checked onChange={() => toggleAssignment(id)} className="accent-[var(--c-amber-2)]" />
                             <span className="min-w-0 truncate">{id} · 当前不可用，可取消</span>
                         </label>
                     ))}
                 </div>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <button type="button" disabled={!userId || status === "saving"} onClick={() => void saveAssignments()} className="rounded bg-[#42d977] px-4 py-2 text-sm font-semibold text-[#041008] disabled:opacity-40">
+                    <button type="button" disabled={!userId || status === "saving"} onClick={() => void saveAssignments()} className="rounded bg-[var(--c-accent)] px-4 py-2 text-sm font-semibold text-[var(--c-accent-fg)] disabled:opacity-40">
                         保存派发
                     </button>
                     {status === "saved" && (
-                        <span role="status" className="text-sm text-[#58d881]">
+                        <span role="status" className="text-sm text-[var(--c-accent)]">
                             派发已保存
                         </span>
                     )}
