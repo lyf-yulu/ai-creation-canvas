@@ -50,11 +50,13 @@ const copyByType: Readonly<Record<GraphMediaType, { noun: string; accept: string
     audio: { noun: "音频", accept: "audio/mpeg,audio/wav" },
 };
 
-function MediaPreview({ mediaType, item, label }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string }) {
+function MediaPreview({ mediaType, item, label, nodeWidth }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string; nodeWidth: number }) {
     const source = `/api/v1/assets/${encodeURIComponent(item.assetId)}/content`;
     const accessibleName = `${label} ${item.displayName}`;
-    if (mediaType === "image") return <img src={source} alt={accessibleName} className="h-16 w-20 rounded-md border border-[#294936] object-cover" />;
-    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" className="h-16 w-24 rounded-md border border-[#294936] bg-black object-cover" />;
+    // Thumbnails scale with the node so resizing visibly stretches the media previews.
+    const thumbWidth = Math.max(48, Math.min(160, Math.round(nodeWidth * 0.22)));
+    if (mediaType === "image") return <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] object-fill" />;
+    if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] bg-black object-fill" />;
     return <audio src={source} aria-label={accessibleName} controls preload="metadata" className="h-9 w-40 max-w-full" />;
 }
 
@@ -241,9 +243,10 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
     };
 
     const overflowing = items.length + pending.length > 8;
+    const resized = node.resized === true;
 
-    return <article className="overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[#dceee1] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
-        <header className="flex items-center justify-between border-b border-[#203e2c] px-3 py-2">
+    return <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[#dceee1] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
+        <header className="flex shrink-0 items-center justify-between border-b border-[#203e2c] px-3 py-2">
             <div><p className="text-[10px] tracking-[0.16em] text-[#58ed87]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
             {!readOnly ? <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[#356b48] bg-[#102319] px-2 py-1 text-xs text-[#bcebc9] hover:border-[#58ed87]">
                 <Plus className="size-3.5" />添加
@@ -254,7 +257,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                 }} />
             </label> : null}
         </header>
-        <ol data-overflowing={String(overflowing)} className={`${overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
+        <ol data-overflowing={String(overflowing)} className={`${resized ? "min-h-0 flex-1 overflow-y-auto" : overflowing ? "max-h-80 overflow-y-auto" : ""} space-y-2 p-2`}>
             {selectionError ? <li role="alert" className="rounded-lg border border-[#744038] bg-[#281411] px-3 py-2 text-xs text-[#ffc0b5]">{selectionError}</li> : null}
             {items.map((item, index) => {
                 const label = mediaItemLabel(mediaType, index);
@@ -270,7 +273,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                     }}
                     className="flex items-center gap-2 rounded-lg border border-[#1e3a29] bg-[#0d1b12] p-2">
                     {!readOnly ? <GripVertical className="size-4 shrink-0 text-[#647b6a]" aria-hidden="true" /> : null}
-                    <MediaPreview mediaType={mediaType} item={item} label={label} />
+                    <MediaPreview mediaType={mediaType} item={item} label={label} nodeWidth={node.width} />
                     <div className="min-w-0 flex-1"><p className="text-xs font-medium text-[#bcebc9]">{label}</p>{readOnly
                         ? <p className="truncate text-[11px] text-[#829889]">{item.displayName}</p>
                         : <input key={`${item.id}:${item.displayName}`} aria-label={`重命名 ${label}`} defaultValue={item.displayName} onBlur={(event) => {

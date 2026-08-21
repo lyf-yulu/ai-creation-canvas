@@ -136,12 +136,12 @@ export function PromptNodeCard({ node, disabled = false, onTextChange }: PromptN
     };
 
     return (
-        <article className="max-w-full overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
-            <header className="flex items-center gap-2 border-b border-[#1c3826] px-3 py-2">
+        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
+            <header className="flex shrink-0 items-center gap-2 border-b border-[#1c3826] px-3 py-2">
                 <FileText className="size-4 text-[#58ed87]" />
                 <strong>{node.title}</strong>
             </header>
-            <div className="space-y-3 p-3">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
                 <label className="block text-[11px] text-[#8fa596]" htmlFor={`prompt-node-${node.id}`}>提示词内容</label>
                 <textarea
                     id={`prompt-node-${node.id}`}

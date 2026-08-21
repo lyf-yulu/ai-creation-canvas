@@ -39,12 +39,12 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
         onChange({ ...graph, modelId, operation: next.operations[0], inputPorts: graphPortsForModel(next), parameters: defaults(next) });
     };
     return (
-        <article className="max-w-full overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
-            <header className="flex items-center gap-2 border-b border-[#1c3826] px-3 py-2">
+        <article className="flex h-full max-w-full flex-col overflow-hidden rounded-xl border border-[#285038] bg-[#0a140e] text-xs text-[#dceee1] shadow-xl">
+            <header className="flex shrink-0 items-center gap-2 border-b border-[#1c3826] px-3 py-2">
                 <Sparkles className="size-4 text-[#58ed87]" />
                 <strong>{node.title}</strong>
             </header>
-            <div className="space-y-3 p-3" data-canvas-no-zoom>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-canvas-no-zoom>
                 <p role="status" className="text-[11px] text-[#9fb5a5]">
                     任务状态：{node.metadata?.jobStatus === "queued" ? "排队中，可取消" : node.metadata?.jobStatus === "running" ? "运行中（平台不支持取消运行中任务）" : node.metadata?.status === "loading" ? "提交中" : node.metadata?.status === "success" ? "已完成" : node.metadata?.status === "error" ? "失败，可修改后重试" : "待运行"}
                 </p>
@@ -158,6 +158,8 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         {control.description ? <span className="mt-1 block text-[10px] leading-4 text-[#789080]">{control.description}</span> : null}
                     </label>
                 ))}
+            </div>
+            <footer className="shrink-0 space-y-2 border-t border-[#1c3826] p-3">
                 <button
                     type="button"
                     disabled={editDisabled}
@@ -177,7 +179,7 @@ export function ModelCallNode({ node, models, disabled = false, message, onChang
                         {message}
                     </p>
                 ) : null}
-            </div>
+            </footer>
         </article>
     );
 }
