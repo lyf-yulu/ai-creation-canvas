@@ -420,6 +420,42 @@ def test_polled_success_persists_ordered_multi_results_and_charges_once(tmp_path
     assert len(usage["jobs"]) == 1
 
 
+def test_rate_update_reprises_zero_price_snapshots_but_keeps_historical_charges(tmp_path):
+    store = CanvasStore(tmp_path / "data")
+    # Charged while both prices were zero: the snapshot records 0 fen.
+    reservation = store.reserve_job(
+        user_id="user-a", job_id="zero-priced", service_id="video", operation="video.generate",
+        idempotency_key="zero-key", request_hash="z" * 64, video_seconds=10,
+    )
+    store.mark_submitted("zero-priced", "up-zero", "running", str(reservation.job["submission_token"]))
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None and str(claim["id"]) == "zero-priced"
+    store.record_polled_job(str(claim["id"]), token=str(claim["submission_token"]), status="succeeded", result_ids=("result_0",))
+
+    # The first real pricing re-prices the zero snapshot.
+    store.set_usage_rates(video_price_fen=40, image_price_fen=150)
+    usage = store.usage_for_owner("user-a")
+    assert [item["cost_fen"] for item in usage["jobs"]] == [400]
+    assert [item["video_price_fen"] for item in usage["jobs"]] == [40]
+
+    # A job charged under the earlier nonzero rates keeps its history.
+    reservation = store.reserve_job(
+        user_id="user-a", job_id="old-priced", service_id="video", operation="video.generate",
+        idempotency_key="old-key", request_hash="o" * 64, video_seconds=10,
+    )
+    store.mark_submitted("old-priced", "up-old", "running", str(reservation.job["submission_token"]))
+    claim = store.claim_pollable_job(lease_seconds=30)
+    assert claim is not None and str(claim["id"]) == "old-priced"
+    store.record_polled_job(str(claim["id"]), token=str(claim["submission_token"]), status="succeeded", result_ids=("result_1",))
+
+    store.set_usage_rates(video_price_fen=100, image_price_fen=300)
+    usage = store.usage_for_owner("user-a")
+    costs = sorted(item["cost_fen"] for item in usage["jobs"])
+    assert costs == [400, 400]
+    assert sorted(item["video_price_fen"] for item in usage["jobs"]) == [40, 40]
+    assert usage["total_cost_fen"] == 800
+
+
 def test_success_cas_persists_acknowledgement_work_and_only_current_ack_token_clears_it(tmp_path):
     class Clock:
         value = 1_000.0

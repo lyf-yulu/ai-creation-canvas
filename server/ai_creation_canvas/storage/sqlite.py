@@ -2214,6 +2214,15 @@ class CanvasStore:
                 "UPDATE canvas_usage_rates SET video_price_fen=?,image_price_fen=?,updated_at=? WHERE singleton=1",
                 (video_price_fen, image_price_fen, _now()),
             )
+            # Jobs snapshotted while both prices were zero were never really
+            # priced; re-price them with the new rates so historical tasks
+            # reflect the edited pricing. Jobs charged under earlier nonzero
+            # rates keep their historical charge.
+            db.execute(
+                "UPDATE canvas_jobs SET video_price_fen=?,image_price_fen=?,cost_fen=video_seconds*?+image_count*?,updated_at=? "
+                "WHERE charged_at IS NOT NULL AND COALESCE(video_price_fen,0)=0 AND COALESCE(image_price_fen,0)=0",
+                (video_price_fen, image_price_fen, video_price_fen, image_price_fen, _now()),
+            )
         return {"video_price_fen": video_price_fen, "image_price_fen": image_price_fen}
 
     @staticmethod
