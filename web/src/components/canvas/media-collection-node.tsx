@@ -7,6 +7,7 @@ import type { OwnedMediaAsset } from "@/api/contracts";
 import type { GraphMediaItem, GraphMediaType } from "@/features/graph/contracts";
 import { mediaItemLabel, moveMediaItem, moveMediaItemTo, safeMediaDisplayName } from "@/features/graph/media-collection";
 import { sharedMediaUploadScheduler } from "@/features/graph/media-upload-scheduler";
+import { formatBytes } from "@/lib/image-utils";
 import type { CanvasNodeData } from "@/types/canvas";
 
 type UploadFunction = (file: File, mediaType: GraphMediaType, onProgress: (percent: number) => void, signal: AbortSignal) => Promise<OwnedMediaAsset>;
@@ -50,14 +51,61 @@ const copyByType: Readonly<Record<GraphMediaType, { noun: string; accept: string
     audio: { noun: "音频", accept: "audio/mpeg,audio/wav" },
 };
 
-function MediaPreview({ mediaType, item, label, nodeWidth }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string; nodeWidth: number }) {
+function MediaPreview({ mediaType, item, label, nodeWidth, onView }: { mediaType: GraphMediaType; item: GraphMediaItem; label: string; nodeWidth: number; onView?: (item: GraphMediaItem) => void }) {
     const source = `/api/v1/assets/${encodeURIComponent(item.assetId)}/content`;
     const accessibleName = `${label} ${item.displayName}`;
     // Thumbnails scale with the node so resizing visibly stretches the media previews.
     const thumbWidth = Math.max(48, Math.min(160, Math.round(nodeWidth * 0.22)));
-    if (mediaType === "image") return <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] object-cover" />;
+    if (mediaType === "image") {
+        return (
+            <button type="button" aria-label={`查看 ${label} 详情`} title="点击查看大图" onClick={() => onView?.(item)} className="shrink-0 cursor-zoom-in rounded-md border border-[#294936] p-0 hover:border-[var(--c-accent)]">
+                <img src={source} alt={accessibleName} style={{ width: thumbWidth, height: Math.round(thumbWidth * 0.8) }} className="rounded-md object-cover" />
+            </button>
+        );
+    }
     if (mediaType === "video") return <video src={source} aria-label={accessibleName} controls preload="metadata" style={{ width: Math.round(thumbWidth * 1.2), height: Math.round(thumbWidth * 0.8) }} className="rounded-md border border-[#294936] bg-black object-cover" />;
     return <audio src={source} aria-label={accessibleName} controls preload="metadata" className="h-9 w-40 max-w-full" />;
+}
+
+function MediaPreviewDialog({ item, label, onClose }: { item: GraphMediaItem; label: string; onClose: () => void }) {
+    const source = `/api/v1/assets/${encodeURIComponent(item.assetId)}/content`;
+    const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(item.width && item.height ? { width: item.width, height: item.height } : null);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [onClose]);
+
+    return (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/65 p-6" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
+            <section role="dialog" aria-modal="true" aria-label={`${label} 大图预览`} className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[var(--c-border)] bg-[var(--c-panel)] text-[var(--c-text)] shadow-2xl">
+                <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--c-border)] px-4 py-2.5">
+                    <h2 className="min-w-0 truncate text-sm font-semibold">{item.displayName}</h2>
+                    <button type="button" aria-label="关闭预览" onClick={onClose} className="shrink-0 rounded-lg border border-[#355f43] px-2.5 py-1 text-xs text-[var(--c-text-2)] hover:bg-[var(--c-panel-hover)]">关闭</button>
+                </header>
+                <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-black/40 p-4">
+                    <img
+                        src={source}
+                        alt={`${label} ${item.displayName}`}
+                        className="max-h-full max-w-full rounded-md"
+                        onLoad={(event) => {
+                            const image = event.currentTarget;
+                            if (!dimensions && image.naturalWidth > 0 && image.naturalHeight > 0) setDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+                        }}
+                    />
+                </div>
+                <footer className="shrink-0 space-y-1 border-t border-[var(--c-border)] px-4 py-2.5 text-xs text-[var(--c-text-3)]">
+                    <p>素材编号：{label}</p>
+                    <p>格式：{item.mimeType}</p>
+                    {item.bytes > 0 ? <p>大小：{formatBytes(item.bytes)}</p> : null}
+                    {dimensions ? <p>尺寸：{dimensions.width} × {dimensions.height}</p> : null}
+                </footer>
+            </section>
+        </div>
+    );
 }
 
 function isAbortError(error: unknown) {
@@ -71,6 +119,7 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
     const details = copyByType[mediaType];
     const [pending, setPending] = useState<PendingUpload[]>([]);
     const [selectionError, setSelectionError] = useState<string | null>(null);
+    const [viewing, setViewing] = useState<{ item: GraphMediaItem; label: string } | null>(null);
     const mountedRef = useRef(true);
     const activeRef = useRef(!readOnly);
     const generationRef = useRef(0);
@@ -244,11 +293,12 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
 
     const overflowing = items.length + pending.length > 8;
     const resized = node.resized === true;
+    const viewingDialog = viewing && items.some((candidate) => candidate.id === viewing.item.id) ? viewing : null;
 
-    return <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[#dceee1] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
+    return <> <article className="flex h-full flex-col overflow-hidden rounded-xl border border-[#285039] bg-[#09140d] text-[var(--c-text)] shadow-[0_12px_36px_rgba(0,0,0,0.36)]">
         <header className="flex shrink-0 items-center justify-between border-b border-[#203e2c] px-3 py-2">
-            <div><p className="text-[10px] tracking-[0.16em] text-[#58ed87]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
-            {!readOnly ? <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[#356b48] bg-[#102319] px-2 py-1 text-xs text-[#bcebc9] hover:border-[#58ed87]">
+            <div><p className="text-[10px] tracking-[0.16em] text-[var(--c-accent)]">MEDIA INPUT</p><h2 className="text-sm font-semibold">{node.title}</h2></div>
+            {!readOnly ? <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[var(--c-border-strong)] bg-[var(--c-panel-hover)] px-2 py-1 text-xs text-[var(--c-text-2)] hover:border-[var(--c-accent)]">
                 <Plus className="size-3.5" />添加
                 <input className="sr-only" type="file" multiple accept={details.accept} aria-label={`添加${details.noun}`} onChange={(event) => {
                     const selected = Array.from(event.currentTarget.files ?? []);
@@ -271,15 +321,15 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                         draggedItemRef.current = null;
                         if (dragged) onItemsChange((current) => [...moveMediaItemTo(current, dragged, item.id)]);
                     }}
-                    className="flex items-center gap-2 rounded-lg border border-[#1e3a29] bg-[#0d1b12] p-2">
+                    className="flex items-center gap-2 rounded-lg border border-[#1e3a29] bg-[var(--c-panel)] p-2">
                     {!readOnly ? <GripVertical className="size-4 shrink-0 text-[#647b6a]" aria-hidden="true" /> : null}
-                    <MediaPreview mediaType={mediaType} item={item} label={label} nodeWidth={node.width} />
-                    <div className="min-w-0 flex-1"><p className="text-xs font-medium text-[#bcebc9]">{label}</p>{readOnly
-                        ? <p className="truncate text-[11px] text-[#829889]">{item.displayName}</p>
+                    <MediaPreview mediaType={mediaType} item={item} label={label} nodeWidth={node.width} onView={(mediaItem) => setViewing({ item: mediaItem, label })} />
+                    <div className="min-w-0 flex-1"><p className="text-xs font-medium text-[var(--c-text-2)]">{label}</p>{readOnly
+                        ? <p className="truncate text-[11px] text-[var(--c-text-3)]">{item.displayName}</p>
                         : <input key={`${item.id}:${item.displayName}`} aria-label={`重命名 ${label}`} defaultValue={item.displayName} onBlur={(event) => {
                             const displayName = safeMediaDisplayName(event.currentTarget.value, mediaType);
                             onItemsChange((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, displayName } : candidate));
-                        }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} className="w-full rounded border border-transparent bg-transparent text-[11px] text-[#829889] outline-none focus:border-[#356b48] focus:bg-[#071009]" />}</div>
+                        }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} className="w-full rounded border border-transparent bg-transparent text-[11px] text-[var(--c-text-3)] outline-none focus:border-[var(--c-border-strong)] focus:bg-[var(--c-panel)]" />}</div>
                     {!readOnly ? <div className="flex shrink-0 items-center gap-1">
                         <button type="button" aria-label={`上移 ${label}`} disabled={index === 0} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, -1)])} className="rounded p-1 text-[#9db4a3] hover:bg-[#183322] disabled:opacity-30"><ChevronUp className="size-3.5" /></button>
                         <button type="button" aria-label={`下移 ${label}`} disabled={index === items.length - 1} onClick={() => onItemsChange((current) => [...moveMediaItem(current, item.id, 1)])} className="rounded p-1 text-[#9db4a3] hover:bg-[#183322] disabled:opacity-30"><ChevronDown className="size-3.5" /></button>
@@ -287,12 +337,14 @@ export function MediaCollectionNode({ node, readOnly = false, onItemsChange, upl
                     </div> : null}
                 </li>;
             })}
-            {pending.map((entry) => <li key={entry.id} role={entry.failed ? "alert" : "status"} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${entry.failed ? "border-[#744038] bg-[#281411] text-[#ffc0b5]" : "border-[#355f43] bg-[#102319] text-[#bcebc9]"}`}>
+            {pending.map((entry) => <li key={entry.id} role={entry.failed ? "alert" : "status"} className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${entry.failed ? "border-[#744038] bg-[#281411] text-[#ffc0b5]" : "border-[#355f43] bg-[var(--c-panel-hover)] text-[var(--c-text-2)]"}`}>
                 <span className="min-w-0 flex-1 truncate">{entry.failed ? `${entry.name} 上传失败，请重试。` : `${entry.name} · ${entry.progress}%`}</span>
                 {!readOnly && entry.failed ? <><button type="button" aria-label={`重试 ${entry.name}`} onClick={() => retryEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">重试</button><button type="button" aria-label={`移除 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded px-2 py-1 hover:bg-[#42221d]">移除错误</button></> : null}
                 {!entry.failed && !readOnly ? <button type="button" aria-label={`取消上传 ${entry.name}`} onClick={() => cancelEntry(entry.id)} className="rounded p-1 hover:bg-[#24452f]"><X className="size-3.5" /></button> : null}
             </li>)}
-            {items.length === 0 && pending.length === 0 ? <li className="rounded-lg border border-dashed border-[#31523c] px-4 py-7 text-center text-xs text-[#829889]">添加一个或多个{details.noun}，顺序会决定 @引用编号。</li> : null}
+            {items.length === 0 && pending.length === 0 ? <li className="rounded-lg border border-dashed border-[#31523c] px-4 py-7 text-center text-xs text-[var(--c-text-3)]">添加一个或多个{details.noun}，顺序会决定 @引用编号。</li> : null}
         </ol>
-    </article>;
+    </article>
+    {viewingDialog ? <MediaPreviewDialog item={viewingDialog.item} label={viewingDialog.label} onClose={() => setViewing(null)} /> : null}
+</>;
 }
