@@ -8,7 +8,7 @@ export function UserStatusActions({ variant: _variant = "default", onOpenShortcu
     const theme = useThemeStore((state) => state.theme);
     const setTheme = useThemeStore((state) => state.setTheme);
     const iconStyle: CSSProperties | undefined = undefined;
-    const iconClass = "inline-flex size-7 shrink-0 items-center justify-center text-stone-600 transition hover:text-stone-950 dark:text-stone-300 dark:hover:text-white [&_svg]:size-4";
+    const iconClass = "inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground transition hover:text-foreground dark:text-muted-foreground dark:hover:text-white [&_svg]:size-4";
     return <div className="inline-flex shrink-0 items-center gap-1">
         <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className={iconClass} style={iconStyle} aria-label="文档"><BookOpen /></a>
         <AnimatedThemeToggler theme={theme} onThemeChange={setTheme} className={iconClass} aria-label="切换主题" title="切换主题" />
