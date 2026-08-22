@@ -3,16 +3,16 @@ import { theme as antdTheme } from "antd";
 
 const neutral = {
     light: {
-        primary: "#2563eb",
+        primary: "#18181b",
         primaryHover: "#000000",
-        primaryText: "#ffffff",
-        menuBg: "#f5f5f5",
-        menuText: "#171717",
-        selectActiveBg: "#f5f5f5",
-        selectSelectedBg: "#f0f0f0",
-        selectText: "#171717",
-        tableSelectedBg: "rgba(17, 17, 17, 0.05)",
-        tableSelectedHoverBg: "rgba(17, 17, 17, 0.08)",
+        primaryText: "#fafafa",
+        menuBg: "#f4f4f5",
+        menuText: "#18181b",
+        selectActiveBg: "#f4f4f5",
+        selectSelectedBg: "#ececee",
+        selectText: "#18181b",
+        tableSelectedBg: "rgba(24, 24, 27, 0.05)",
+        tableSelectedHoverBg: "rgba(24, 24, 27, 0.08)",
     },
     dark: {
         primary: "var(--c-accent)",
