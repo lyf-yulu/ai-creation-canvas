@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useSessionStore } from "@/stores/portal/use-session-store";
+import { useSkinStore } from "@/stores/use-skin-store";
 
 
 type LoginLocationState = { from?: string; changePassword?: boolean };
@@ -32,6 +33,7 @@ export default function LoginPage() {
                 if (next.must_change_password) return;
             }
             navigate(destination, { replace: true });
+            void useSkinStore.getState().load();
         } catch {
             setMessage(changing ? "密码修改失败，请检查当前密码和新密码。" : "用户名或密码不正确。" );
         }

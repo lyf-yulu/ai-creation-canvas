@@ -105,7 +105,11 @@ def test_session_exposes_only_verified_public_user_fields(tmp_path):
     client = make_client(tmp_path)
     response = client.get("/api/v1/session", headers=signed_headers())
     assert response.status_code == 200
-    assert response.json() == {"user_id": "u-a", "username": "Alice Example", "role": "user"}
+    body = response.json()
+    assert {name: body[name] for name in ("user_id", "username", "role")} == {"user_id": "u-a", "username": "Alice Example", "role": "user"}
+    from ai_creation_canvas.user_skin import DEFAULT_SKIN
+    assert body["skin"] == dict(DEFAULT_SKIN)
+    assert set(body["skin_presets"]) == {"default", "monochrome", "classic-green"}
     assert_security_headers(response)
     assert "test-secret" not in response.text
 

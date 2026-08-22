@@ -367,6 +367,10 @@ class CanvasStore:
                 user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
                 expires_at REAL NOT NULL, created_at TEXT NOT NULL
             )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS canvas_user_skins (
+                user_id TEXT PRIMARY KEY REFERENCES canvas_users(user_id) ON DELETE CASCADE,
+                skin_json TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
         db.execute("""CREATE TABLE IF NOT EXISTS canvas_user_models (
                 user_id TEXT NOT NULL REFERENCES canvas_users(user_id) ON DELETE CASCADE,
                 model_id TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -2201,6 +2205,25 @@ class CanvasStore:
             "video_price_fen": int(row["video_price_fen"]),
             "image_price_fen": int(row["image_price_fen"]),
         }
+
+    def user_skin(self, user_id: str) -> dict[str, str] | None:
+        from ai_creation_canvas.user_skin import parse_skin
+        with self._connection() as db:
+            row = db.execute("SELECT skin_json FROM canvas_user_skins WHERE user_id=?", (user_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return parse_skin(str(row["skin_json"]))
+        except ValueError:
+            return None
+
+    def set_user_skin(self, user_id: str, skin_json: str) -> None:
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "INSERT INTO canvas_user_skins(user_id,skin_json,updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET skin_json=excluded.skin_json, updated_at=excluded.updated_at",
+                (user_id, skin_json, _now()),
+            )
 
     def set_usage_rates(self, *, video_price_fen: int, image_price_fen: int) -> dict[str, int]:
         video_price_fen = self._validated_usage_value(

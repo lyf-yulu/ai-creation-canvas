@@ -1,6 +1,6 @@
 export type ModelOperation = "image.generate" | "image.edit" | "video.generate" | "video.image_to_video";
 export type PortalSession = { user_id: string; username: string; role: "admin" | "user" | "viewer"; must_change_password?: boolean };
-export type SessionResponse = PortalSession & { csrf_token?: string };
+export type SessionResponse = PortalSession & { csrf_token?: string; skin?: Record<string, string>; skin_presets?: Record<string, Record<string, string>> };
 export type AuthResponse = { user: PortalSession; csrf_token: string };
 export type ModelInputPort = { port_id: string; media_type: "text" | "image" | "video" | "audio"; min_items: number; max_items: number; asset_kind?: "library" };
 export type ModelSpec = {
