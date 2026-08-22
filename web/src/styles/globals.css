@@ -108,49 +108,49 @@
 }
 
 .dark {
-    --background: #0c0c0d;
+    --background: #1a1a1e;
     --foreground: #e4e4e7;
-    --border: #2e2e33;
-    --ring: #a1a1aa;
-    --card: #151517;
+    --border: #333338;
+    --ring: #60a5fa;
+    --card: #232327;
     --card-foreground: #e4e4e7;
-    --popover: #151517;
+    --popover: #232327;
     --popover-foreground: #e4e4e7;
-    --primary: #f4f4f5;
-    --primary-foreground: #0c0c0d;
-    --secondary: #1f1f22;
+    --primary: #3b82f6;
+    --primary-foreground: #ffffff;
+    --secondary: #2e2e33;
     --secondary-foreground: #e4e4e7;
-    --muted: #1f1f22;
+    --muted: #2e2e33;
     --muted-foreground: #a1a1aa;
-    --accent: #1f1f22;
-    --accent-foreground: #f4f4f5;
+    --accent: #2e2e33;
+    --accent-foreground: #e4e4e7;
     --destructive: #ef4444;
-    --input: rgba(255, 255, 255, 0.14);
-    --chart-1: #d4d4d8;
+    --input: rgba(255, 255, 255, 0.12);
+    --chart-1: #60a5fa;
     --chart-2: #a1a1aa;
     --chart-3: #71717a;
     --chart-4: #52525b;
-    --chart-5: #f4f4f5;
-    --sidebar: #0c0c0d;
+    --chart-5: #3b82f6;
+    --sidebar: #1a1a1e;
     --sidebar-foreground: #e4e4e7;
-    --sidebar-primary: #f4f4f5;
-    --sidebar-primary-foreground: #0c0c0d;
-    --sidebar-accent: #1f1f22;
+    --sidebar-primary: #3b82f6;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #2e2e33;
     --sidebar-accent-foreground: #e4e4e7;
     --sidebar-border: rgba(255, 255, 255, 0.1);
-    --sidebar-ring: #52525b;
-    --c-bg: #0c0c0d;
-    --c-panel: #151517;
-    --c-panel-hover: #1f1f22;
-    --c-border: #2e2e33;
-    --c-border-strong: #404047;
+    --sidebar-ring: #60a5fa;
+    --c-bg: #1a1a1e;
+    --c-panel: #232327;
+    --c-panel-hover: #2e2e33;
+    --c-border: #333338;
+    --c-border-strong: #46464d;
     --c-text: #e4e4e7;
     --c-text-2: #c4c4cc;
     --c-text-3: #8b8b94;
-    --c-accent: #f4f4f5;
-    --c-accent-soft: #d4d4d8;
-    --c-accent-fg: #0c0c0d;
-    --c-accent-rgb: 244, 244, 245;
+    --c-accent: #3b82f6;
+    --c-accent-soft: #60a5fa;
+    --c-accent-fg: #ffffff;
+    --c-accent-rgb: 59, 130, 246;
     --c-warning: #e0b45c;
     --c-danger: #ef4444;
     --c-amber: #d6c06a;
@@ -161,7 +161,7 @@
     --c-danger-bg: #221212;
     --c-danger-border: #5c2e2a;
     --c-danger-text: #d9a9a5;
-    --c-canvas: #0c0c0d;
+    --c-canvas: #1a1a1e;
 }
 
 @layer base {

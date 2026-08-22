@@ -33,8 +33,8 @@ export const canvasThemes = {
     dark: {
         canvas: {
             background: "var(--c-bg)",
-            dot: "rgba(134,169,145,.28)",
-            line: "rgba(134,169,145,.12)",
+            dot: "rgba(139,139,148,.26)",
+            line: "rgba(139,139,148,.12)",
             selectionStroke: "var(--c-accent)",
             selectionFill: "rgba(var(--c-accent-rgb),.10)",
         },
@@ -50,7 +50,7 @@ export const canvasThemes = {
             faint: "var(--c-text-3)",
         },
         toolbar: {
-            panel: "rgba(21,21,23,.96)",
+            panel: "rgba(35,35,39,.96)",
             border: "var(--c-border)",
             item: "var(--c-text-2)",
             itemHover: "var(--c-panel-hover)",
